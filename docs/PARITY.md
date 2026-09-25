@@ -408,3 +408,7 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 - sv: PVS/PHS lookups for cluster -1 count as "not visible" (C reads out of bounds); configstring writes clamp at the array
   end; PF_*printf 1024-byte buffers truncate; clc_move checksum range bounded by buffer size.
 - sv: NET_Config, master heartbeats (inert), localtime, gamedir filesystem replaced by host, SaveStore, DemoCreate, FileSystem interfaces.
+- q2-client (TS, Phase 3): downloads replaced by async asset loading (map checksum still verified vs CS_MAPCHECKSUM);
+  async registration with generation guards; async `exec`; `seta/setu/sets/toggle` added; demos recorded in memory;
+  pingservers unavailable, rcon over current connection only, no CD audio / VID_CheckChanges; menus delegated to React host;
+  ProtocolError/CMError → ERR_DROP; V_RenderView entity sort groups by model then skin (C qsort order is implementation-defined).
