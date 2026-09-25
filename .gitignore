@@ -1,0 +1,17 @@
+/assets/
+/fixtures/generated/
+/oracle/build/
+/server/bin/
+node_modules/
+.next/
+dist/
+*.tsbuildinfo
+.turbo/
+playwright-report/
+test-results/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp

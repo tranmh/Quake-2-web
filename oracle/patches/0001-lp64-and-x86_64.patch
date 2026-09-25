@@ -1,0 +1,48 @@
+diff -ru -a orig/linux/sys_linux.c src/linux/sys_linux.c
+--- orig/linux/sys_linux.c	2026-09-25 21:21:49.558709717 +0200
++++ src/linux/sys_linux.c	2026-09-25 21:21:49.576952609 +0200
+@@ -205,7 +205,7 @@
+ #elif defined __alpha__
+ 	const char *gamename = "gameaxp.so";
+ #else
+-#error Unknown arch
++const char *gamename = "game.so";
+ #endif
+ 
+ 	setreuid(getuid(), getuid());
+diff -ru -a orig/qcommon/md4.c src/qcommon/md4.c
+--- orig/qcommon/md4.c	2026-09-25 21:21:49.531260907 +0200
++++ src/qcommon/md4.c	2026-09-25 21:21:49.565311216 +0200
+@@ -12,7 +12,7 @@
+ #ifdef __alpha__
+ typedef unsigned int UINT4;
+ #else
+-typedef unsigned long int UINT4;
++typedef unsigned int UINT4;
+ #endif
+ 
+   
+diff -ru -a orig/server/sv_ents.c src/server/sv_ents.c
+--- orig/server/sv_ents.c	2026-09-25 21:21:49.534213561 +0200
++++ src/server/sv_ents.c	2026-09-25 21:21:49.570019421 +0200
+@@ -506,7 +506,7 @@
+ 			continue;		// already have the cluster we want
+ 		src = CM_ClusterPVS(leafs[i]);
+ 		for (j=0 ; j<longs ; j++)
+-			((long *)fatpvs)[j] |= ((long *)src)[j];
++			((int *)fatpvs)[j] |= ((int *)src)[j];
+ 	}
+ }
+ 
+diff -ru -a orig/server/sv_world.c src/server/sv_world.c
+--- orig/server/sv_world.c	2026-09-25 21:21:49.533518971 +0200
++++ src/server/sv_world.c	2026-09-25 21:21:49.573311312 +0200
+@@ -33,7 +33,7 @@
+ // (type *)STRUCT_FROM_LINK(link_t *link, type, member)
+ // ent = STRUCT_FROM_LINK(link,entity_t,order)
+ // FIXME: remove this mess!
+-#define	STRUCT_FROM_LINK(l,t,m) ((t *)((byte *)l - (int)&(((t *)0)->m)))
++#define	STRUCT_FROM_LINK(l,t,m) ((t *)((byte *)l - (size_t)&(((t *)0)->m)))
+ 
+ #define	EDICT_FROM_AREA(l) STRUCT_FROM_LINK(l,edict_t,area)
+ 
