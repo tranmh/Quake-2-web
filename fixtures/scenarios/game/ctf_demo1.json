@@ -1,0 +1,15 @@
+{"map":"demo1","module":"ctf","entstring_override":null,"seed":5,"cvars":{"skill":"1","deathmatch":"1","coop":"0","maxclients":"4","ctf":"1","cheats":"1","dmflags":"0","fraglimit":"0","timelimit":"0","capturelimit":"0"},"clients":[{"userinfo":"\\name\\r0\\skin\\male/grunt\\hand\\0\\fov\\90"},{"userinfo":"\\name\\b0\\skin\\female/athena\\hand\\0\\fov\\90"},{"userinfo":"\\name\\r1\\skin\\male/cipher\\hand\\0\\fov\\90"},{"userinfo":"\\name\\b1\\skin\\female/jezebel\\hand\\0\\fov\\90"}],"frames":600,"entstring_append":"{\n\"classname\" \"info_player_team1\"\n\"origin\" \"$dm0\"\n}\n{\n\"classname\" \"info_player_team1\"\n\"origin\" \"$dm1\"\n}\n{\n\"classname\" \"info_player_team2\"\n\"origin\" \"$dm2\"\n}\n{\n\"classname\" \"info_player_team2\"\n\"origin\" \"$dm3\"\n}\n{\n\"classname\" \"item_flag_team1\"\n\"origin\" \"$dm4\"\n}\n{\n\"classname\" \"item_flag_team2\"\n\"origin\" \"$dm5\"\n}\n",
+"schedule":[
+{"frame":2,"client":0,"command":"team red"},
+{"frame":6,"client":0,"random_walk":{"seed":3000,"until":601}},
+{"frame":2,"client":1,"command":"team blue"},
+{"frame":6,"client":1,"random_walk":{"seed":3001,"until":601}},
+{"frame":2,"client":2,"command":"team red"},
+{"frame":6,"client":2,"random_walk":{"seed":3002,"until":601}},
+{"frame":2,"client":3,"command":"team blue"},
+{"frame":6,"client":3,"random_walk":{"seed":3003,"until":601}},
+{"frame":100,"client":0,"command":"give all"},
+{"frame":101,"client":0,"command":"use Rocket Launcher"},
+{"frame":250,"client":3,"command":"team red"},
+{"frame":400,"client":1,"command":"kill"}
+]}

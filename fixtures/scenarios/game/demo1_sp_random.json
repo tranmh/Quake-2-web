@@ -1,0 +1,4 @@
+{"map":"demo1","module":"baseq2","entstring_override":null,"seed":7,"cvars":{"skill":"1","deathmatch":"0","coop":"0","maxclients":"1"},"clients":[{"userinfo":"\\name\\player\\skin\\male/grunt\\hand\\0\\fov\\90"}],"frames":1200,
+"schedule":[
+{"frame":1,"client":0,"random_walk":{"seed":7,"until":1201}}
+]}

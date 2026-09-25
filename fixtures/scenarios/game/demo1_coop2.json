@@ -1,0 +1,7 @@
+{"map":"demo1","module":"baseq2","entstring_override":null,"seed":2,"cvars":{"skill":"1","deathmatch":"0","coop":"1","maxclients":"2"},"clients":[{"userinfo":"\\name\\c0\\skin\\male/grunt\\hand\\0\\fov\\90"},{"userinfo":"\\name\\c1\\skin\\female/athena\\hand\\0\\fov\\90"}],"frames":600,
+"schedule":[
+{"frame":5,"client":0,"random_walk":{"seed":2000,"until":601}},
+{"frame":5,"client":1,"random_walk":{"seed":2001,"until":601}},
+{"frame":200,"client":0,"command":"give shotgun"},
+{"frame":201,"client":0,"command":"use shotgun"}
+]}

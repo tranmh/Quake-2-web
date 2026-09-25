@@ -23,7 +23,7 @@ game_po  = $(addprefix $(O)/pic/game/,$(addsuffix .o,$(GAME)))
 ctf_po   = $(addprefix $(O)/pic/ctf/,$(addsuffix .o,$(CTF)))
 
 .PHONY: all sync clean
-all: $(B)/q2ded $(B)/baseq2/game.so $(B)/ctf/game.so
+all: $(B)/q2ded $(B)/baseq2/game.so $(B)/ctf/game.so $(B)/oracle_core $(B)/oracle_game $(B)/oracle_game_ctf
 
 sync:
 	./sync.sh
@@ -53,6 +53,35 @@ $(B)/baseq2/game.so: $(game_po)
 $(B)/ctf/game.so: $(ctf_po)
 	@mkdir -p $(dir $@)
 	$(CC) -shared -o $@ $^ -lm
+
+# ---- oracle drivers (sources in src/, see docs/ORACLE.md) ----
+# The oracle binaries use sys_oracle.c (headless Sys_*, inert NET_*) instead of sys_linux.c/net_udp.c.
+ORACLE_ENGINE := $(filter-out $(O)/linux/net_udp.o,$(core_o)) $(server_o) $(O)/null/cl_null.o $(O)/null/cd_null.o \
+                 $(O)/oracle/sys_oracle.o $(O)/oracle/ojson.o $(O)/oracle/ostate.o
+ORACLE_H := $(wildcard src/*.h)
+
+$(O)/oracle/%.o: $(ORACLE_H)
+
+$(O)/oracle/game_dump_baseq2.o: src/game_dump.c $(ORACLE_H)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(S)/game -c $< -o $@
+
+$(O)/oracle/game_dump_ctf.o: src/game_dump.c $(ORACLE_H)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(S)/ctf -DORACLE_CTF -c $< -o $@
+
+$(B)/oracle_core: $(ORACLE_ENGINE) $(O)/oracle/core_main.o
+	@mkdir -p $(dir $@)
+	$(CC) -o $@ $^ $(LDLIBS)
+
+# rand is exported from the executable so game.so's rand() calls resolve to the counting wrapper
+$(B)/oracle_game: $(ORACLE_ENGINE) $(O)/oracle/game_main.o $(O)/oracle/elfsym.o $(O)/oracle/game_dump_baseq2.o
+	@mkdir -p $(dir $@)
+	$(CC) -Wl,--export-dynamic-symbol=rand -o $@ $^ $(LDLIBS)
+
+$(B)/oracle_game_ctf: $(ORACLE_ENGINE) $(O)/oracle/game_main.o $(O)/oracle/elfsym.o $(O)/oracle/game_dump_ctf.o
+	@mkdir -p $(dir $@)
+	$(CC) -Wl,--export-dynamic-symbol=rand -o $@ $^ $(LDLIBS)
 
 clean:
 	rm -rf build/obj build/bin
