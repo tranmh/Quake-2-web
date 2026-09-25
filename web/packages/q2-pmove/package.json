@@ -1,0 +1,20 @@
+{
+  "name": "q2-pmove",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "q2-shared": "workspace:*",
+    "q2-formats": "workspace:*",
+    "q2-protocol": "workspace:*"
+  }
+}

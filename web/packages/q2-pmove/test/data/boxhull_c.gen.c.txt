@@ -1,0 +1,45 @@
+// Generator for boxhull_c.jsonl (first 400 records): boxmain.c + stubs.c compiled with oracle/build/src
+// qcommon/cmodel.c, qcommon/md4.c, game/q_shared.c and the oracle CFLAGS; run on maps/demo1.bsp.
+#include "qcommon.h"
+#include <stdio.h>
+static unsigned x = 777;
+static unsigned nx(void){ x ^= x<<13; x ^= x>>17; x ^= x<<5; return x; }
+static float rf(float lo, float hi){ return lo + (hi-lo)*(nx()/4294967296.0); }
+static void pv(vec3_t v){ printf("[%.9g,%.9g,%.9g]", v[0], v[1], v[2]); }
+int main(int argc, char **argv){
+  unsigned cs; int i;
+  Swap_Init();
+  CM_LoadMap(argv[1], true, &cs);
+  for (i = 0; i < 20000; i++) {
+    vec3_t bmins, bmaxs, origin, angles, s, e, mins, maxs; int hn, k; trace_t t;
+    for (k=0;k<3;k++){ bmins[k] = rf(-40,0); bmaxs[k]=rf(0,40); origin[k]=rf(-100,100); angles[k] = (i%3==0)? rf(-360,360):0;
+      s[k]=origin[k]+rf(-120,120); e[k]=(i%5==0)? s[k] : origin[k]+rf(-120,120); mins[k]= (i%4==0)?0:rf(-20,0); maxs[k]=(i%4==0)?0:rf(0,20); }
+    hn = CM_HeadnodeForBox(bmins, bmaxs);
+    t = CM_TransformedBoxTrace(s, e, mins, maxs, hn, MASK_ALL, origin, angles);
+    printf("{\"bmins\":"); pv(bmins); printf(",\"bmaxs\":"); pv(bmaxs); printf(",\"origin\":"); pv(origin); printf(",\"angles\":"); pv(angles);
+    printf(",\"start\":"); pv(s); printf(",\"end\":"); pv(e); printf(",\"mins\":"); pv(mins); printf(",\"maxs\":"); pv(maxs);
+    printf(",\"r\":{\"allsolid\":%d,\"startsolid\":%d,\"fraction\":%.9g,\"endpos\":", t.allsolid, t.startsolid, t.fraction); pv(t.endpos);
+    printf(",\"normal\":"); pv(t.plane.normal); printf(",\"dist\":%.9g,\"type\":%d,\"contents\":%d,\"pc\":%d}}\n", t.plane.dist, t.plane.type, t.contents,
+      CM_TransformedPointContents(s, hn, origin, angles));
+  }
+  return 0;
+}
+// ---- stubs.c ----
+#include "qcommon.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+void Com_Error(int code, char *fmt, ...) { va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a); exit(3); }
+void Com_Printf(char *fmt, ...) {}
+void Com_DPrintf(char *fmt, ...) {}
+void Sys_Error(char *fmt, ...) { exit(4); }
+static cvar_t dummy = {"x", "0", 0, 0, 0, 0, 0};
+cvar_t *Cvar_Get(char *n, char *v, int f) { return &dummy; }
+float Cvar_VariableValue(char *n) { return 0; }
+int FS_LoadFile(char *path, void **buffer) {
+  FILE *f = fopen(path, "rb"); if (!f) { *buffer = NULL; return -1; }
+  fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+  *buffer = malloc(n); fread(*buffer, 1, n, f); fclose(f); return (int)n;
+}
+void FS_FreeFile(void *b) { free(b); }
+void FS_Read(void *b, int l, FILE *f) {}

@@ -1,0 +1,41 @@
+// Generator for q_shared_c.jsonl: compiled against oracle/build/src/game/q_shared.c with the oracle CFLAGS
+// (gcc -m64 -O1 -std=gnu89 -fno-fast-math -ffp-contract=off -fexcess-precision=standard), first 400 records kept.
+#include "q_shared.h"
+#include <stdio.h>
+#include <stdarg.h>
+void Com_Printf(char *m, ...) {}
+void Sys_Error(char *m, ...) {}
+static unsigned x = 12345;
+static unsigned nx(void){ x ^= x<<13; x ^= x>>17; x ^= x<<5; return x; }
+static float rf(float lo, float hi){ return lo + (hi-lo)*(nx()/4294967296.0); }
+static void pv(vec3_t v){ printf("[%.9g,%.9g,%.9g]", v[0], v[1], v[2]); }
+int main(void){
+  int i;
+  printf("[\n");
+  for (i=0;i<3000;i++){
+    vec3_t a,f,r,u,n,d,p,c; float len, l2, am, la; int bops;
+    cplane_t pl;
+    a[0]=rf(-720,720); a[1]=rf(-720,720); a[2]=rf(-720,720);
+    if (i%7==0) { a[0]=(float)(int)a[0]; a[1]=(float)(int)a[1]; a[2]=0; }
+    AngleVectors(a,f,r,u);
+    n[0]=rf(-1000,1000); n[1]=rf(-1000,1000); n[2]=rf(-1000,1000);
+    VectorCopy(n,d); len = VectorNormalize(d);
+    l2 = VectorLength(n);
+    am = anglemod(a[0]);
+    { float fr_ = rf(0,1); la = LerpAngle(a[0], a[1], fr_); printf("%s{\"fr\":%.9g,", i?",":"", fr_); }
+    CrossProduct(f, n, c);
+    RotatePointAroundVector(p, f, n, a[2]);
+    VectorCopy(d, pl.normal); pl.dist = rf(-500,500); pl.type = 3 + (i%3); 
+    pl.signbits = (d[0]<0) | ((d[1]<0)<<1) | ((d[2]<0)<<2);
+    { vec3_t mn, mx; mn[0]=rf(-600,0); mn[1]=rf(-600,0); mn[2]=rf(-600,0); mx[0]=rf(0,600); mx[1]=rf(0,600); mx[2]=rf(0,600);
+      bops = BoxOnPlaneSide(mn, mx, &pl);
+      printf("\"a\":"); pv(a); printf(",\"f\":"); pv(f); printf(",\"r\":"); pv(r); printf(",\"u\":"); pv(u);
+      printf(",\"n\":"); pv(n); printf(",\"d\":"); pv(d); printf(",\"len\":%.9g,\"l2\":%.9g,\"am\":%.9g,\"la\":%.9g", len, l2, am, la);
+      printf(",\"c\":"); pv(c); printf(",\"p\":"); pv(p); printf(",\"pd\":%.9g,\"mn\":", pl.dist); pv(mn); printf(",\"mx\":"); pv(mx);
+      printf(",\"bops\":%d}\n", bops);
+    }
+    /* reproduce lerp frac */ 
+  }
+  printf("]\n");
+  return 0;
+}
