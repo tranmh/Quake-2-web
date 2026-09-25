@@ -1,0 +1,69 @@
+/* Harness that produced q_shared_c.txt from the real game/q_shared.c.
+ * Build: gcc -O1 -ffp-contract=off -fno-fast-math -fexcess-precision=standard -w \
+ *        -I Quake-2/game q_shared_c.c Quake-2/game/q_shared.c -lm -o qsbin && ./qsbin > q_shared_c.txt
+ * Line formats (floats as 8-hex-digit IEEE bits):
+ *   AV a0 a1 a2 f0 f1 f2 r0 r1 r2 u0 u1 u2       AngleVectors
+ *   AM a r                                       anglemod
+ *   LA a2 a1 frac r                              LerpAngle
+ *   VN v0 v1 v2 len o0 o1 o2                     VectorNormalize
+ *   RP d0 d1 d2 p0 p1 p2 deg o0 o1 o2            RotatePointAroundVector
+ *   BS mins3 maxs3 n3 dist type signbits sides   BoxOnPlaneSide
+ *   A2S f s                                      ANGLE2SHORT
+ */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "q_shared.h"
+void Sys_Error (char *error, ...) { exit(1); }
+void Com_Printf (char *msg, ...) { }
+static unsigned b(float f) { unsigned u; memcpy(&u, &f, 4); return u; }
+static unsigned s = 12345;
+static unsigned xr(void) { s = s * 1103515245u + 12345u; return s >> 8; }
+static float fr(float lo, float hi) { return lo + (hi - lo) * (float)(xr() & 0xffff) / 65535.0f; }
+int main(void)
+{
+	int i, k;
+	for (i = 0; i < 400; i++) {
+		vec3_t a, f, r, u;
+		for (k = 0; k < 3; k++) a[k] = (i < 50) ? (float)(i * 7 - 175) * (k + 1) : fr(-720, 720);
+		if (i % 5 == 0) a[2] = 0;
+		AngleVectors(a, f, r, u);
+		printf("AV %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", b(a[0]), b(a[1]), b(a[2]),
+			b(f[0]), b(f[1]), b(f[2]), b(r[0]), b(r[1]), b(r[2]), b(u[0]), b(u[1]), b(u[2]));
+	}
+	for (i = 0; i < 200; i++) {
+		float a = fr(-1000, 1000), a2 = fr(-360, 360), fr_ = fr(0, 1);
+		printf("AM %08x %08x\n", b(a), b(anglemod(a)));
+		printf("LA %08x %08x %08x %08x\n", b(a2), b(a), b(fr_), b(LerpAngle(a2, a, fr_)));
+		printf("A2S %08x %d\n", b(a), ANGLE2SHORT(a));
+	}
+	for (i = 0; i < 200; i++) {
+		vec3_t v, o;
+		for (k = 0; k < 3; k++) v[k] = fr(-500, 500);
+		if (i == 0) VectorClear(v);
+		VectorCopy(v, o);
+		{ float len = VectorNormalize(o);
+		printf("VN %08x %08x %08x %08x %08x %08x %08x\n", b(v[0]), b(v[1]), b(v[2]), b(len), b(o[0]), b(o[1]), b(o[2])); }
+	}
+	for (i = 0; i < 200; i++) {
+		vec3_t d, p, o; float deg = fr(-360, 360);
+		for (k = 0; k < 3; k++) { d[k] = fr(-1, 1); p[k] = fr(-100, 100); }
+		VectorNormalize(d);
+		RotatePointAroundVector(o, d, p, deg);
+		printf("RP %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n", b(d[0]), b(d[1]), b(d[2]), b(p[0]), b(p[1]), b(p[2]),
+			b(deg), b(o[0]), b(o[1]), b(o[2]));
+	}
+	for (i = 0; i < 300; i++) {
+		vec3_t mi, ma; cplane_t pl; int sides;
+		for (k = 0; k < 3; k++) { mi[k] = fr(-100, 50); ma[k] = mi[k] + fr(0, 100); pl.normal[k] = fr(-1, 1); }
+		pl.type = (i % 4 == 0) ? (i / 4) % 3 : 3 + (i % 3);
+		if (pl.type < 3) { VectorClear(pl.normal); pl.normal[pl.type] = 1; }
+		else VectorNormalize(pl.normal);
+		pl.dist = fr(-80, 80);
+		pl.signbits = 0; for (k = 0; k < 3; k++) if (pl.normal[k] < 0) pl.signbits |= 1 << k;
+		sides = BoxOnPlaneSide(mi, ma, &pl);
+		printf("BS %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %d %d %d\n", b(mi[0]), b(mi[1]), b(mi[2]),
+			b(ma[0]), b(ma[1]), b(ma[2]), b(pl.normal[0]), b(pl.normal[1]), b(pl.normal[2]), b(pl.dist), pl.type, pl.signbits, sides);
+	}
+	return 0;
+}

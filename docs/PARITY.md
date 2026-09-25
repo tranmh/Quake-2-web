@@ -399,3 +399,7 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 
 (deliberate deviations from the oracle; each behind a flag defaulting to original behavior)
 
+- cmodel/msg/cmd/cvar (Go, Phase 1): memory-safety guards where C has undefined behaviour — negative brush-side
+  texinfo resolves to a zero surface (matches the 64-bit oracle), load-time range checks on all BSP cross references
+  return errors, PVS decompression past the lump zero-fills, out-of-range area/portal indices raise ERR_DROP,
+  MSG_ReadDir with no data raises ERR_DROP, stale-memory reads return zeros. No behavior change on valid input.

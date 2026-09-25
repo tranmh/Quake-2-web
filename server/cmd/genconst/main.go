@@ -6,9 +6,9 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"go/format"
 	"flag"
 	"fmt"
+	"go/format"
 	"math"
 	"os"
 	"path/filepath"
