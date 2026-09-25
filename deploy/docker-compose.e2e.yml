@@ -1,0 +1,67 @@
+# End-to-end stack for CI: everything behind Caddy on http://localhost:8000,
+# throwaway Postgres (tmpfs), production images.
+#   docker compose -f deploy/docker-compose.e2e.yml up --build -d --wait
+#   (then run Playwright against http://localhost:8000)
+#   docker compose -f deploy/docker-compose.e2e.yml down -v
+name: q2web-e2e
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: q2
+      POSTGRES_PASSWORD: q2
+      POSTGRES_DB: q2
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U q2 -d q2"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    environment:
+      DATABASE_URL: postgres://q2:q2@postgres:5432/q2?sslmode=disable
+      Q2_BLOB_DIR: /data/blobs
+      Q2_DEMO_PAK: /assets/demo/baseq2/pak0.pak
+      Q2_COOKIE_SECURE: "false"
+      Q2_TRUST_PROXY: "true"
+      Q2_CORS_ORIGINS: ""
+      Q2_MAX_UPLOAD_BYTES: "1073741824"
+    tmpfs:
+      - /data:uid=65532,gid=65532
+    volumes:
+      - ../assets:/assets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    environment:
+      NEXT_PUBLIC_API_URL: ""
+    depends_on:
+      - server
+
+  caddy:
+    image: caddy:2
+    environment:
+      Q2_SITE_ADDRESS: ":80"
+    ports:
+      - "8000:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - server
+      - web
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 60

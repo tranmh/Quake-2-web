@@ -15,3 +15,8 @@ test-results/
 .idea/
 .vscode/
 *.swp
+
+# local server data (blob store default ./data/blobs)
+/data/
+/server/data/
+.claude/

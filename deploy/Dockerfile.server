@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.7
+# Multi-stage build of the Go game/API server (cmd/q2server) into a
+# distroless image. Build context: repository root.
+#   docker build -f deploy/Dockerfile.server -t q2web/server .
+ARG GO_VERSION=1.22
+
+FROM golang:${GO_VERSION}-bookworm AS build
+WORKDIR /src/server
+ENV CGO_ENABLED=0 GOAMD64=v1 GOTOOLCHAIN=auto
+COPY server/go.mod server/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY server/ ./
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/q2server ./cmd/q2server && \
+    go build -trimpath -ldflags="-s -w" -o /out/q2ingest ./cmd/q2ingest && \
+    mkdir -p /out/data/blobs
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/q2server /out/q2ingest /usr/local/bin/
+# blob store (content-addressed assets); mount a volume here
+COPY --from=build --chown=nonroot:nonroot /out/data /data
+ENV Q2_HTTP_ADDR=:8080 \
+    Q2_BLOB_DIR=/data/blobs \
+    Q2_DEMO_PAK=/assets/demo/baseq2/pak0.pak \
+    Q2_LOG_FORMAT=json
+VOLUME ["/data"]
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/q2server"]

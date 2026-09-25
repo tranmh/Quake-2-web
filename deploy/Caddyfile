@@ -1,0 +1,62 @@
+# Reverse proxy in front of the Go server and the Next.js shell.
+#   Q2_SITE_ADDRESS  e.g. "q2.example.com" (automatic TLS) or ":80" (default, plain HTTP)
+#   Q2_SERVER        upstream of the Go server  (default server:8080)
+#   Q2_WEB           upstream of the Next.js app (default web:3000)
+# The Go server must run with Q2_TRUST_PROXY=true behind this proxy.
+{
+	admin off
+}
+
+{$Q2_SITE_ADDRESS::80} {
+	# assets are served verbatim (Range requests, ETags): never re-encode
+	@compressible not path /assets/* /ws/*
+	encode @compressible zstd gzip
+
+	# Game WebSockets: plain passthrough (Upgrade is proxied automatically);
+	# no buffering, long-lived connections.
+	@ws path /ws/*
+	handle @ws {
+		reverse_proxy {$Q2_SERVER:server:8080} {
+			flush_interval -1
+			stream_timeout 24h
+			stream_close_delay 5s
+		}
+	}
+
+	# Content-addressed assets: immutable. The server sets
+	# "public, max-age=31536000, immutable" for public (demo) blobs and
+	# "private, …" for entitled ones; only the former are shared-cacheable.
+	handle /assets/* {
+		reverse_proxy {$Q2_SERVER:server:8080}
+	}
+
+	# Pak uploads can be large.
+	handle /api/v1/paks {
+		request_body {
+			max_size 1100MB
+		}
+		reverse_proxy {$Q2_SERVER:server:8080} {
+			flush_interval -1
+		}
+	}
+
+	@api path /api/* /healthz /readyz
+	handle @api {
+		reverse_proxy {$Q2_SERVER:server:8080}
+	}
+
+	# /metrics is not exposed publicly.
+	handle /metrics {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy {$Q2_WEB:web:3000}
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
