@@ -57,6 +57,8 @@ importers:
         specifier: workspace:*
         version: link:../q2-shared
 
+  packages/q2-ref: {}
+
   packages/q2-shared: {}
 
 packages:
