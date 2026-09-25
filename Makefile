@@ -32,6 +32,7 @@ golden:
 	cd web && Q2_FIXTURES=$(CURDIR)/fixtures/generated pnpm -r test
 
 parity:
+	tools/parity-check.sh
 	tools/check-oracle-untouched.sh
 
 dev:

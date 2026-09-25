@@ -1,0 +1,76 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - run: tools/check-oracle-untouched.sh && tools/parity-check.sh
+
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - uses: actions/cache@v4
+        with:
+          path: assets
+          key: q2demo-${{ hashFiles('tools/demo.sha256') }}
+      - run: make demo
+      - run: make fixtures
+      - run: git diff --exit-code fixtures/MANIFEST.sha256
+      - uses: actions/upload-artifact@v4
+        with: { name: fixtures, path: fixtures/generated, retention-days: 3 }
+
+  gen-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: server/go.mod }
+      - run: make gen-check
+
+  go:
+    needs: fixtures
+    runs-on: ubuntu-latest
+    env: { GOAMD64: v1 }
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: server/go.mod }
+      - uses: actions/cache@v4
+        with:
+          path: assets
+          key: q2demo-${{ hashFiles('tools/demo.sha256') }}
+      - run: make demo
+      - uses: actions/download-artifact@v4
+        with: { name: fixtures, path: fixtures/generated }
+      - run: cd server && go vet ./... && test -z "$(gofmt -l .)"
+      - run: cd server && go test -race ./...
+      - run: cd server && go test -tags golden ./...
+
+  ts:
+    needs: fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - uses: pnpm/action-setup@v4
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm, cache-dependency-path: web/pnpm-lock.yaml }
+      - uses: actions/cache@v4
+        with:
+          path: assets
+          key: q2demo-${{ hashFiles('tools/demo.sha256') }}
+      - run: make demo
+      - uses: actions/download-artifact@v4
+        with: { name: fixtures, path: fixtures/generated }
+      - run: cd web && pnpm install --frozen-lockfile && pnpm -r typecheck && pnpm -r lint && pnpm -r test
