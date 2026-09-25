@@ -259,25 +259,25 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 | `quake2.opt` | 1296 | N/A | build/docs | - | n/a |
 | `quake2.plg` | 715 | N/A | build/docs | - | n/a |
 | `readme.txt` | 29 | N/A | build/docs | - | n/a |
-| `ref_gl/anorms.h` | 181 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/anormtab.h` | 37 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_draw.c` | 415 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_image.c` | 1571 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_light.c` | 729 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_local.h` | 460 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_mesh.c` | 839 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_model.c` | 1223 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_model.h` | 261 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_rmain.c` | 1692 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_rmisc.c` | 246 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_rsurf.c` | 1660 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/gl_warp.c` | 662 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
-| `ref_gl/qgl.h` | 442 | R | WebGL2 context (no qgl function table) | - | pending |
+| `ref_gl/anorms.h` | 181 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/anormtab.h` | 37 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_draw.c` | 415 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_image.c` | 1571 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_light.c` | 729 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_local.h` | 460 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_mesh.c` | 839 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_model.c` | 1223 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_model.h` | 261 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_rmain.c` | 1692 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_rmisc.c` | 246 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_rsurf.c` | 1660 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/gl_warp.c` | 662 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
+| `ref_gl/qgl.h` | 442 | R | q2-render-gl qgl.ts: fixed-function emulation on WebGL2 | Playwright render smoke | ported |
 | `ref_gl/ref_gl.001` | 752 | N/A | build file | - | n/a |
 | `ref_gl/ref_gl.def` | 2 | N/A | build file | - | n/a |
 | `ref_gl/ref_gl.dsp` | 773 | N/A | build file | - | n/a |
 | `ref_gl/ref_gl.plg` | 17 | N/A | build file | - | n/a |
-| `ref_gl/warpsin.h` | 51 | P | TS q2-render-gl (WebGL2) | ref fixtures | pending |
+| `ref_gl/warpsin.h` | 51 | P | TS q2-render-gl (WebGL2) | q2-render-gl oracle.test.ts (scripts/oracle) | ported |
 | `ref_soft/adivtab.h` | 1077 | D | software renderer dropped (user decision) | - | n/a |
 | `ref_soft/anorms.h` | 181 | D | software renderer dropped (user decision) | - | n/a |
 | `ref_soft/asm_draw.h` | 121 | D | software renderer dropped (user decision) | - | n/a |
@@ -416,3 +416,17 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   and saves precache indices / player trail / static animation counters so save→load→continue equals an uninterrupted run;
   coop `item->drop = NULL` global mutation kept per game instance; `writeip` keeps filters in memory (no file);
   atan2/sin from Go math (may differ from glibc by 1 ulp before narrowing; not observed in goldens).
+- q2-render-gl (TS, Phase 2; see `web/packages/q2-render-gl/src/*.ts` headers): WebGL2 has no GL_SGIS_multitexture,
+  GL_EXT_paletted_texture or GL_EXT_point_parameters, so exactly the C code paths of a modern driver run
+  (non-multitexture world, RGBA uploads, textured-triangle particles). Immediate mode is emulated by a batching layer
+  (qgl.ts); the world/bmodel surfaces are drawn from a static VBO in (texture, lightmap page, SURF_FLOWING) batches and
+  the two-pass lightmap blend (GL_ZERO,GL_SRC_COLOR / ONE,ONE / SRC_ALPHA / gl_lightmap) is one shader pass (identical up
+  to one framebuffer rounding). Lightmap pages live in a TEXTURE_2D_ARRAY with canonical + displayed CPU mirrors: surfaces
+  C draws from the dynamic block 0 get their per-frame lightmap at their own page location and are restored afterwards
+  (same texels sampled). Water warp is computed on the CPU exactly as EmitWaterPolys. Draw_StretchRaw uses an R8UI
+  index texture + palette texture with bilinear filtering after the lookup (== the RGBA upload C uses without paletted
+  textures). Pics and model/texture files are prefetched asynchronously before the synchronous loaders run; a pic drawn
+  before its file arrived is skipped (Draw_GetPicSize returns 0,0 while pending) and failed lookups are cached until the
+  next BeginRegistration. No video modes (canvas size = vid size), no GL_FRONT drawbuffer / swapinterval / gl_log /
+  3dfx gamma; screenshot = canvas.toBlob PNG. Memory-safety guards on BSP cross references (planes, marksurfaces,
+  node children, sprite frame < 0) raise ERR_DROP where C would read out of bounds.

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>q2-render-gl dev harness</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #hud {
+        position: fixed;
+        right: 8px;
+        top: 8px;
+        color: #cfc;
+        font: 12px monospace;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 4px 8px;
+        white-space: pre;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div id="hud">loading...</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
