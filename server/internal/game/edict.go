@@ -27,7 +27,7 @@ type Edict struct {
 	InUse     bool
 	LinkCount int32
 
-	Area        Link // linked to a division node or leaf
+	Area        Link  // linked to a division node or leaf
 	NumClusters int32 // if -1, use headnode instead
 	ClusterNums [q2const.MAX_ENT_CLUSTERS]int32
 	HeadNode    int32 // unused if NumClusters != -1

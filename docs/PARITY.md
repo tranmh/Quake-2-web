@@ -412,3 +412,7 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   async registration with generation guards; async `exec`; `seta/setu/sets/toggle` added; demos recorded in memory;
   pingservers unavailable, rcon over current connection only, no CD audio / VID_CheckChanges; menus delegated to React host;
   ProtocolError/CMError → ERR_DROP; V_RenderView entity sort groups by model then skin (C qsort order is implementation-defined).
+- game (Go, Phase 4): save format stores all edicts below num_edicts (incl. freed-slot freetimes), restores linkcount,
+  and saves precache indices / player trail / static animation counters so save→load→continue equals an uninterrupted run;
+  coop `item->drop = NULL` global mutation kept per game instance; `writeip` keeps filters in memory (no file);
+  atan2/sin from Go math (may differ from glibc by 1 ulp before narrowing; not observed in goldens).

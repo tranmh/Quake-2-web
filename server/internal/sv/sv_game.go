@@ -136,7 +136,7 @@ func (g *gameImport) Configstring(index int, val string) {
 // WriteChar ... WriteAngle write to sv.multicast.
 // C: server/sv_game.c:209 PF_WriteChar ...
 func (g *gameImport) WriteChar(c int)         { g.s.SV.Multicast.MSG_WriteChar(int32(c)) }
-func (g *gameImport) WriteByte(c int)         { g.s.SV.Multicast.MSG_WriteByte(int32(c)) }
+func (g *gameImport) WriteByteC(c int)        { g.s.SV.Multicast.MSG_WriteByte(int32(c)) }
 func (g *gameImport) WriteShort(c int)        { g.s.SV.Multicast.MSG_WriteShort(int32(c)) }
 func (g *gameImport) WriteLong(c int)         { g.s.SV.Multicast.MSG_WriteLong(int32(c)) }
 func (g *gameImport) WriteFloat(f float32)    { g.s.SV.Multicast.MSG_WriteFloat(f) }

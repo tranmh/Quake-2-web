@@ -55,7 +55,8 @@ type Import interface {
 	Multicast(origin *Vec3, to int)
 	Unicast(ent *Edict, reliable bool)
 	WriteChar(c int)
-	WriteByte(c int)
+	// WriteByteC is gi.WriteByte (renamed: go vet stdmethods reserves WriteByte).
+	WriteByteC(c int)
 	WriteShort(c int)
 	WriteLong(c int)
 	WriteFloat(f float32)
