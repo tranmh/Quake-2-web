@@ -1,0 +1,7 @@
+{
+  "comment": "Per-fixture float comparison budgets in ULPs (float32). 0 = bitwise exact. Shared by Go and TS tests.",
+  "core/trace": 0,
+  "core/pmove": 0,
+  "core/msg": 0,
+  "game": { "default": 0 }
+}
