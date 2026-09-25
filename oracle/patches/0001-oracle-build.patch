@@ -1,3 +1,47 @@
+diff -ru -a orig/ctf/g_items.c src/ctf/g_items.c
+--- orig/ctf/g_items.c	2026-09-25 21:21:49.551750102 +0200
++++ src/ctf/g_items.c	2026-09-25 21:22:19.141668286 +0200
+@@ -40,9 +40,9 @@
+ gitem_armor_t combatarmor_info	= { 50, 100, .60, .30, ARMOR_COMBAT};
+ gitem_armor_t bodyarmor_info	= {100, 200, .80, .60, ARMOR_BODY};
+ 
+-static int	jacket_armor_index;
+-static int	combat_armor_index;
+-static int	body_armor_index;
++int	jacket_armor_index;
++int	combat_armor_index;
++int	body_armor_index;
+ static int	power_screen_index;
+ static int	power_shield_index;
+ 
+diff -ru -a orig/ctf/p_weapon.c src/ctf/p_weapon.c
+--- orig/ctf/p_weapon.c	2026-09-25 21:21:49.552452079 +0200
++++ src/ctf/p_weapon.c	2026-09-25 21:22:50.032041455 +0200
+@@ -23,7 +23,7 @@
+ #include "m_player.h"
+ 
+ 
+-static qboolean	is_quad;
++qboolean	is_quad;
+ static byte		is_silenced;
+ 
+ 
+diff -ru -a orig/game/g_items.c src/game/g_items.c
+--- orig/game/g_items.c	2026-09-25 21:21:49.539937301 +0200
++++ src/game/g_items.c	2026-09-25 21:22:19.140668274 +0200
+@@ -40,9 +40,9 @@
+ gitem_armor_t combatarmor_info	= { 50, 100, .60, .30, ARMOR_COMBAT};
+ gitem_armor_t bodyarmor_info	= {100, 200, .80, .60, ARMOR_BODY};
+ 
+-static int	jacket_armor_index;
+-static int	combat_armor_index;
+-static int	body_armor_index;
++int	jacket_armor_index;
++int	combat_armor_index;
++int	body_armor_index;
+ static int	power_screen_index;
+ static int	power_shield_index;
+ 
 diff -ru -a orig/linux/sys_linux.c src/linux/sys_linux.c
 --- orig/linux/sys_linux.c	2026-09-25 21:21:49.558709717 +0200
 +++ src/linux/sys_linux.c	2026-09-25 21:21:49.576952609 +0200
