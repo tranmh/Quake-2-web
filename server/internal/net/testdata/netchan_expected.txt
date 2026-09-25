@@ -1,0 +1,221 @@
+> time 1000
+> setup c 12345
+state c in=0 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1000 ls=0
+state s in=0 inack=0 inrack=0 inrel=0 out=0 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=0 ls=0
+> setup s 12345
+state c in=0 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1000 ls=0
+state s in=0 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1000 ls=0
+> time 1010
+> tx c 0102
+sent 010000000000000039300102
+state c in=0 inack=0 inrack=0 inrel=0 out=2 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1000 ls=1010
+state s in=0 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1000 ls=0
+> rxlast s c
+rx 1 10
+state c in=0 inack=0 inrack=0 inrel=0 out=2 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1000 ls=1010
+state s in=1 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1010 ls=0
+> rel s 0b6e657700
+state c in=0 inack=0 inrack=0 inrel=0 out=2 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1000 ls=1010
+state s in=1 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=5 ovf=0 lr=1010 ls=0
+> tx s 070707
+sent 01000080010000000b6e657700070707
+state c in=0 inack=0 inrack=0 inrel=0 out=2 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1000 ls=1010
+state s in=1 inack=0 inrack=0 inrel=0 out=2 rel=1 lastrel=2 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1010 ls=1010
+> rxlast c s
+rx 1 8
+state c in=1 inack=1 inrack=0 inrel=1 out=2 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1010 ls=1010
+state s in=1 inack=0 inrack=0 inrel=0 out=2 rel=1 lastrel=2 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1010 ls=1010
+> time 1020
+> tx c -
+sent 02000000010000803930
+state c in=1 inack=1 inrack=0 inrel=1 out=3 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1010 ls=1020
+state s in=1 inack=0 inrack=0 inrel=0 out=2 rel=1 lastrel=2 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1010 ls=1010
+> rxlast s c
+rx 1 10
+state c in=1 inack=1 inrack=0 inrel=1 out=3 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1010 ls=1020
+state s in=2 inack=1 inrack=1 inrel=0 out=2 rel=1 lastrel=2 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1010
+> tx s -
+sent 0200000002000000
+state c in=1 inack=1 inrack=0 inrel=1 out=3 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1010 ls=1020
+state s in=2 inack=1 inrack=1 inrel=0 out=3 rel=1 lastrel=2 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1020
+> rxlast c s
+rx 1 8
+state c in=2 inack=2 inrack=0 inrel=1 out=3 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1020
+state s in=2 inack=1 inrack=1 inrel=0 out=3 rel=1 lastrel=2 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1020
+> rel s 0d11223344
+state c in=2 inack=2 inrack=0 inrel=1 out=3 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1020
+state s in=2 inack=1 inrack=1 inrel=0 out=3 rel=1 lastrel=2 rellen=0 dropped=0 fatal=0 msg=5 ovf=0 lr=1020 ls=1020
+> time 1030
+> tx s aa
+sent 03000080020000000d11223344aa
+state c in=2 inack=2 inrack=0 inrel=1 out=3 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1020
+state s in=2 inack=1 inrack=1 inrel=0 out=4 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1030
+> tx c bb
+sent 03000000020000803930bb
+state c in=2 inack=2 inrack=0 inrel=1 out=4 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1030
+state s in=2 inack=1 inrack=1 inrel=0 out=4 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1030
+> rxlast s c
+rx 1 10
+state c in=2 inack=2 inrack=0 inrel=1 out=4 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1030
+state s in=3 inack=2 inrack=1 inrel=0 out=4 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> tx s cc
+sent 0400000003000000cc
+state c in=2 inack=2 inrack=0 inrel=1 out=4 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1020 ls=1030
+state s in=3 inack=2 inrack=1 inrel=0 out=5 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast c s
+rx 1 8
+state c in=4 inack=3 inrack=0 inrel=1 out=4 rel=0 lastrel=0 rellen=0 dropped=1 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=3 inack=2 inrack=1 inrel=0 out=5 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> tx c dd
+sent 04000000040000803930dd
+state c in=4 inack=3 inrack=0 inrel=1 out=5 rel=0 lastrel=0 rellen=0 dropped=1 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=3 inack=2 inrack=1 inrel=0 out=5 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast s c
+rx 1 10
+state c in=4 inack=3 inrack=0 inrel=1 out=5 rel=0 lastrel=0 rellen=0 dropped=1 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=4 inack=4 inrack=1 inrel=0 out=5 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> tx s ee
+sent 0500000004000000ee
+state c in=4 inack=3 inrack=0 inrel=1 out=5 rel=0 lastrel=0 rellen=0 dropped=1 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=4 inack=4 inrack=1 inrel=0 out=6 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast c s
+rx 1 8
+state c in=5 inack=4 inrack=0 inrel=1 out=5 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=4 inack=4 inrack=1 inrel=0 out=6 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> tx c -
+sent 05000000050000803930
+state c in=5 inack=4 inrack=0 inrel=1 out=6 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=4 inack=4 inrack=1 inrel=0 out=6 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast s c
+rx 1 10
+state c in=5 inack=4 inrack=0 inrel=1 out=6 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=5 inack=5 inrack=1 inrel=0 out=6 rel=0 lastrel=4 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> tx s -
+sent 06000080050000000d11223344
+state c in=5 inack=4 inrack=0 inrel=1 out=6 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=5 inack=5 inrack=1 inrel=0 out=7 rel=0 lastrel=7 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast c s
+rx 1 8
+state c in=6 inack=5 inrack=0 inrel=0 out=6 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=5 inack=5 inrack=1 inrel=0 out=7 rel=0 lastrel=7 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast c s
+rx 0 8
+state c in=6 inack=5 inrack=0 inrel=0 out=6 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=5 inack=5 inrack=1 inrel=0 out=7 rel=0 lastrel=7 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rel c 0463616d00
+state c in=6 inack=5 inrack=0 inrel=0 out=6 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=5 ovf=0 lr=1030 ls=1030
+state s in=5 inack=5 inrack=1 inrel=0 out=7 rel=0 lastrel=7 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rel c 0564
+state c in=6 inack=5 inrack=0 inrel=0 out=6 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=7 ovf=0 lr=1030 ls=1030
+state s in=5 inack=5 inrack=1 inrel=0 out=7 rel=0 lastrel=7 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> tx c 11
+sent 060000800600000039300463616d00056411
+state c in=6 inack=5 inrack=0 inrel=0 out=7 rel=1 lastrel=7 rellen=7 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=5 inack=5 inrack=1 inrel=0 out=7 rel=0 lastrel=7 rellen=5 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast s c
+rx 1 10
+state c in=6 inack=5 inrack=0 inrel=0 out=7 rel=1 lastrel=7 rellen=7 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=6 inack=6 inrack=0 inrel=1 out=7 rel=0 lastrel=7 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rel s 0e
+state c in=6 inack=5 inrack=0 inrel=0 out=7 rel=1 lastrel=7 rellen=7 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=6 inack=6 inrack=0 inrel=1 out=7 rel=0 lastrel=7 rellen=0 dropped=0 fatal=0 msg=1 ovf=0 lr=1030 ls=1030
+> tx s 22
+sent 07000080060000800e22
+state c in=6 inack=5 inrack=0 inrel=0 out=7 rel=1 lastrel=7 rellen=7 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=6 inack=6 inrack=0 inrel=1 out=8 rel=1 lastrel=8 rellen=1 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast c s
+rx 1 8
+state c in=7 inack=6 inrack=1 inrel=1 out=7 rel=1 lastrel=7 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=6 inack=6 inrack=0 inrel=1 out=8 rel=1 lastrel=8 rellen=1 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> tx c 33
+sent 0700000007000080393033
+state c in=7 inack=6 inrack=1 inrel=1 out=8 rel=1 lastrel=7 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=6 inack=6 inrack=0 inrel=1 out=8 rel=1 lastrel=8 rellen=1 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast s c
+rx 1 10
+state c in=7 inack=6 inrack=1 inrel=1 out=8 rel=1 lastrel=7 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=8 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> tx s 44
+sent 080000000700008044
+state c in=7 inack=6 inrack=1 inrel=1 out=8 rel=1 lastrel=7 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=9 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rxlast c s
+rx 1 8
+state c in=8 inack=7 inrack=1 inrel=1 out=8 rel=1 lastrel=7 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=9 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> time 2000
+> rx c 0a000080030000800102
+rx 1 8
+state c in=10 inack=3 inrack=1 inrel=0 out=8 rel=1 lastrel=7 rellen=0 dropped=1 fatal=0 msg=0 ovf=0 lr=2000 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=9 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rx c 05000000030000000102
+rx 0 8
+state c in=10 inack=3 inrack=1 inrel=0 out=8 rel=1 lastrel=7 rellen=0 dropped=1 fatal=0 msg=0 ovf=0 lr=2000 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=9 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rx c 20000000ffffff7f
+rx 1 8
+state c in=32 inack=2147483647 inrack=0 inrel=0 out=8 rel=1 lastrel=7 rellen=0 dropped=21 fatal=0 msg=0 ovf=0 lr=2000 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=9 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rx c 21000000
+rx 1 8
+state c in=33 inack=2147483647 inrack=1 inrel=0 out=8 rel=1 lastrel=7 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=9 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> rx c ff
+rx 1 8
+state c in=2147483647 inack=2147483647 inrack=1 inrel=1 out=8 rel=1 lastrel=7 rellen=0 dropped=2147483613 fatal=0 msg=0 ovf=0 lr=2000 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=9 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=1030
+> txfill s 1395
+print Netchan_Transmit: dumped unreliable
+sent 0900000007000080
+state c in=2147483647 inack=2147483647 inrack=1 inrel=1 out=8 rel=1 lastrel=7 rellen=0 dropped=2147483613 fatal=0 msg=0 ovf=0 lr=2000 ls=1030
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=2000
+> txfill c 1380
+sent 08000000ffffffff3930cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+state c in=2147483647 inack=2147483647 inrack=1 inrel=1 out=9 rel=1 lastrel=7 rellen=0 dropped=2147483613 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=1030 ls=2000
+> relfill s 1000
+state c in=2147483647 inack=2147483647 inrack=1 inrel=1 out=9 rel=1 lastrel=7 rellen=0 dropped=2147483613 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=1000 ovf=0 lr=1030 ls=2000
+> relfill s 500
+print SZ_GetSpace: overflow
+state c in=2147483647 inack=2147483647 inrack=1 inrel=1 out=9 rel=1 lastrel=7 rellen=0 dropped=2147483613 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=0 msg=500 ovf=1 lr=1030 ls=2000
+> tx s 01
+print adr:Outgoing message overflow
+state c in=2147483647 inack=2147483647 inrack=1 inrel=1 out=9 rel=1 lastrel=7 rellen=0 dropped=2147483613 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=1 msg=500 ovf=1 lr=1030 ls=2000
+> relfill c 1384
+state c in=2147483647 inack=2147483647 inrack=1 inrel=1 out=9 rel=1 lastrel=7 rellen=0 dropped=2147483613 fatal=0 msg=1384 ovf=0 lr=2000 ls=2000
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=1 msg=500 ovf=1 lr=1030 ls=2000
+> tx c 02
+sent 09000080ffffffff3930abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab02
+state c in=2147483647 inack=2147483647 inrack=1 inrel=1 out=10 rel=0 lastrel=10 rellen=1384 dropped=2147483613 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=1 msg=500 ovf=1 lr=1030 ls=2000
+> setup c 7
+state c in=0 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=0
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=1 msg=500 ovf=1 lr=1030 ls=2000
+> relfill c 1384
+state c in=0 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=1384 ovf=0 lr=2000 ls=0
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=1 msg=500 ovf=1 lr=1030 ls=2000
+> txfill c 4
+sent 01000080000000000700ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababcdcdcdcd
+state c in=0 inack=0 inrack=0 inrel=0 out=2 rel=1 lastrel=2 rellen=1384 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=1 msg=500 ovf=1 lr=1030 ls=2000
+> txfill c 1390
+sent 02000000000000000700cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+state c in=0 inack=0 inrack=0 inrel=0 out=3 rel=1 lastrel=2 rellen=1384 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=7 inack=7 inrack=1 inrel=1 out=10 rel=1 lastrel=8 rellen=0 dropped=0 fatal=1 msg=500 ovf=1 lr=1030 ls=2000
+> setup s 65535
+state c in=0 inack=0 inrack=0 inrel=0 out=3 rel=1 lastrel=2 rellen=1384 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=0 inack=0 inrack=0 inrel=0 out=1 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=0
+> tx s -
+sent 0100000000000000
+state c in=0 inack=0 inrack=0 inrel=0 out=3 rel=1 lastrel=2 rellen=1384 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=0 inack=0 inrack=0 inrel=0 out=2 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+> rel s 01
+state c in=0 inack=0 inrack=0 inrel=0 out=3 rel=1 lastrel=2 rellen=1384 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=0 inack=0 inrack=0 inrel=0 out=2 rel=0 lastrel=0 rellen=0 dropped=0 fatal=0 msg=1 ovf=0 lr=2000 ls=2000
+> txfill s 1386
+sent 020000800000000001cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+state c in=0 inack=0 inrack=0 inrel=0 out=3 rel=1 lastrel=2 rellen=1384 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=2000
+state s in=0 inack=0 inrack=0 inrel=0 out=3 rel=1 lastrel=3 rellen=1 dropped=0 fatal=0 msg=0 ovf=0 lr=2000 ls=2000

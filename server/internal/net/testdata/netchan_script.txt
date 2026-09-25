@@ -1,0 +1,74 @@
+# Netchan scenario replayed by the C driver (net_chan.c) and net_chan_test.go.
+# Channels: c = NS_CLIENT, s = NS_SERVER.
+time 1000
+setup c 12345
+setup s 12345
+time 1010
+tx c 0102
+rxlast s c
+rel s 0b6e657700
+tx s 070707
+rxlast c s
+# client acks the reliable
+time 1020
+tx c -
+rxlast s c
+tx s -
+rxlast c s
+# server queues reliable; packet dropped, then resend detection
+rel s 0d11223344
+time 1030
+tx s aa
+# dropped: client never sees it; client sends acks of old seq
+tx c bb
+rxlast s c
+tx s cc
+rxlast c s
+tx c dd
+rxlast s c
+# now incoming_acknowledged > last_reliable_sequence and rack != rel -> resend
+tx s ee
+rxlast c s
+tx c -
+rxlast s c
+tx s -
+# duplicate / stale delivery
+rxlast c s
+rxlast c s
+# client reliable while server reliable pending
+rel c 0463616d00
+rel c 0564
+tx c 11
+rxlast s c
+rel s 0e
+tx s 22
+rxlast c s
+tx c 33
+rxlast s c
+tx s 44
+rxlast c s
+# crafted packets: seq jump (dropped count), high bits
+time 2000
+rx c 0a000080030000800102
+rx c 05000000030000000102
+rx c 20000000ffffff7f
+rx c 21000000
+rx c ff
+# unreliable too large gets dumped
+txfill s 1395
+txfill c 1380
+# reliable overflow -> fatal
+relfill s 1000
+relfill s 500
+tx s 01
+relfill c 1384
+tx c 02
+# max reliable plus unreliable fits exactly
+setup c 7
+relfill c 1384
+txfill c 4
+txfill c 1390
+setup s 65535
+tx s -
+rel s 01
+txfill s 1386

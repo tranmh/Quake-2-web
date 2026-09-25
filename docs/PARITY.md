@@ -403,3 +403,8 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   texinfo resolves to a zero surface (matches the 64-bit oracle), load-time range checks on all BSP cross references
   return errors, PVS decompression past the lump zero-fills, out-of-range area/portal indices raise ERR_DROP,
   MSG_ReadDir with no data raises ERR_DROP, stale-memory reads return zeros. No behavior change on valid input.
+- sv (Go, Phase 3): `rand()` and `SV_CheckTimeouts` run exactly once per game frame just before it (C: every host-loop
+  iteration, timing-dependent); packets processed on arrival advancing `svs.realtime`; `Cbuf_Execute` before each frame and packet.
+- sv: PVS/PHS lookups for cluster -1 count as "not visible" (C reads out of bounds); configstring writes clamp at the array
+  end; PF_*printf 1024-byte buffers truncate; clc_move checksum range bounded by buffer size.
+- sv: NET_Config, master heartbeats (inert), localtime, gamedir filesystem replaced by host, SaveStore, DemoCreate, FileSystem interfaces.
