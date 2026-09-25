@@ -245,4 +245,127 @@ describe.skipIf(!available)('integration with the original q2ded', () => {
     expect(mismatched).toEqual([]);
     expect(matched.length).toBeGreaterThan(20);
   }, 90000);
+
+  it('fires weapons with cheats on: temp entities / muzzle flashes parse and reach the refdef', async () => {
+    const wdir = mkdtempSync(join(tmpdir(), 'q2ded-'));
+    mkdirSync(join(wdir, 'baseq2'));
+    symlinkSync(PAK, join(wdir, 'baseq2', 'pak0.pak'));
+    copyFileSync(GAME_SO, join(wdir, 'baseq2', 'game.so'));
+    const port = 30000 + Math.floor(Math.random() * 2000);
+    let serverOut = '';
+    const wproc = spawn(
+      Q2DED,
+      [
+        '+set',
+        'dedicated',
+        '1',
+        '+set',
+        'deathmatch',
+        '1',
+        '+set',
+        'cheats',
+        '1',
+        '+set',
+        'port',
+        String(port),
+        '+map',
+        'demo1',
+      ],
+      { cwd: wdir, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    wproc.stdout!.on('data', (d: Buffer) => (serverOut += d.toString('latin1')));
+    wproc.stderr!.on('data', (d: Buffer) => (serverOut += d.toString('latin1')));
+    try {
+      expect(await waitForServer(port, 10000), 'q2ded did not answer: ' + serverOut).toBe(true);
+      const pak = new Pak(new Uint8Array(readFileSync(PAK)));
+      let printed = '';
+      const errors: string[] = [];
+      const maxes = { particles: 0, entities: 0, dlights: 0 };
+      const refresh = stubRefresh();
+      refresh.renderFrame = (fd) => {
+        maxes.particles = Math.max(maxes.particles, fd.num_particles);
+        maxes.entities = Math.max(maxes.entities, fd.num_entities);
+        maxes.dlights = Math.max(maxes.dlights, fd.num_dlights);
+      };
+      const engine = await createClientEngine({
+        refresh,
+        transport: (addr) => new UdpTransport(addr),
+        loadFile: async (name) => pak.read(name) ?? null,
+        host: { onPrint: (t) => (printed += t), onError: (m) => errors.push(m) },
+        configText: 'set name fxclient\n',
+      });
+      const c = engine.context;
+      const counts = { tent: 0, mz: 0, mz2: 0 };
+      const fx = c.fx as unknown as Record<string, (m: unknown) => void>;
+      for (const [k, key] of [
+        ['parseTEnt', 'tent'],
+        ['parseMuzzleFlash', 'mz'],
+        ['parseMuzzleFlash2', 'mz2'],
+      ] as const) {
+        const orig = fx[k]!.bind(c.fx);
+        fx[k] = (m) => {
+          counts[key]++;
+          orig(m);
+        };
+      }
+      engine.connect(`127.0.0.1:${port}`);
+      const deadline = Date.now() + 30000;
+      while (c.cls.state !== ca_active && Date.now() < deadline && !errors.length) {
+        engine.frame();
+        await sleep(5);
+      }
+      expect(errors, printed).toEqual([]);
+      expect(c.cls.state, printed).toBe(ca_active);
+      const run = async (ms: number) => {
+        const end = Date.now() + ms;
+        while (Date.now() < end) {
+          engine.frame();
+          await sleep(5);
+        }
+      };
+      await run(1000);
+      engine.exec('give all');
+      await run(300);
+      // look slightly down so projectiles hit the floor nearby
+      engine.exec('+lookdown');
+      await run(250);
+      engine.exec('-lookdown');
+      for (const w of [
+        'Blaster',
+        'Shotgun',
+        'Super Shotgun',
+        'Machinegun',
+        'Chaingun',
+        'Grenade Launcher',
+        'Rocket Launcher',
+        'HyperBlaster',
+        'Railgun',
+        'BFG10K',
+      ]) {
+        engine.exec(`use ${w}`);
+        await run(700);
+        engine.exec('+attack');
+        await run(900);
+        engine.exec('-attack');
+        await run(300);
+      }
+      await run(1500);
+      console.log(
+        `q2ded weapons: tent ${counts.tent} muzzleflash ${counts.mz} muzzleflash2 ${counts.mz2}, ` +
+          `max refdef particles ${maxes.particles} entities ${maxes.entities} dlights ${maxes.dlights}`,
+      );
+      expect(errors, printed).toEqual([]);
+      expect(c.cls.state).toBe(ca_active);
+      expect(printed).not.toMatch(/bad type|Bad light style|CL_Parse/);
+      expect(counts.tent).toBeGreaterThan(5);
+      expect(counts.mz).toBeGreaterThan(5);
+      expect(maxes.particles).toBeGreaterThan(20);
+      expect(maxes.dlights).toBeGreaterThan(0);
+      expect(maxes.entities).toBeGreaterThan(0);
+      engine.disconnect();
+    } finally {
+      if (wproc.exitCode === null) wproc.kill('SIGKILL');
+      rmSync(wdir, { recursive: true, force: true });
+    }
+  }, 90000);
 });

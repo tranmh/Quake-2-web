@@ -23,8 +23,8 @@ import { Key_Event, Key_Init, Key_SetBinding, Key_StringToKeynum } from './keys'
 import { keyFromKeyboardEvent, keyFromMouseButton, keyFromWheel } from './keymap';
 import { Con_CheckResize } from './console';
 import { NullSound } from './sound';
-import { NullEffects } from './null_effects';
-import { NullCinematics } from './cinematic';
+import { createClientEffects } from './cl_effects';
+import { createClientCinematics } from './cl_cin';
 
 export interface ClientEngineOptions extends ClientOptions {
   /**
@@ -83,8 +83,8 @@ export async function createClientEngine(opts: ClientEngineOptions): Promise<Cli
   const c = new ClientContext({
     ...opts,
     sound: opts.sound ?? new NullSound(),
-    effects: opts.effects ?? new NullEffects(),
-    cinematics: opts.cinematics ?? new NullCinematics(),
+    effects: opts.effects ?? createClientEffects(),
+    cinematics: opts.cinematics ?? createClientCinematics(),
   });
   const host: ClientHostEvents = c.host;
   c.cvars.onChange = (v) => {

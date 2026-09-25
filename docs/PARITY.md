@@ -430,3 +430,7 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   next BeginRegistration. No video modes (canvas size = vid size), no GL_FRONT drawbuffer / swapinterval / gl_log /
   3dfx gamma; screenshot = canvas.toBlob PNG. Memory-safety guards on BSP cross references (planes, marksurfaces,
   node children, sprite frame < 0) raise ERR_DROP where C would read out of bounds.
+- q2-sound: portable C 8-bit mixer (`snd_mix.c` `vol>>11`) makes 8-bit sounds silent; default follows the retail x86
+  asm (`vol>>3`); `portableC8bit: true` reproduces the C. Sounds started before data loads play once loaded with the
+  original start time; worklet resamples linearly if the browser refuses the s_khz rate; commands dropped before first gesture.
+- cl_cin: async file load (C synchronous); short read → ERR_DROP. cl_fx: out-of-range flash index reads 0.
