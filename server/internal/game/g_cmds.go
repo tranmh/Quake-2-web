@@ -4,6 +4,7 @@ package game
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -107,6 +108,13 @@ func (g *Game) SelectPrevItem(ent *Edict, itflags int32) {
 	// scan  for the next valid one
 	for i := int32(1); i <= MAX_ITEMS; i++ {
 		index := (cl.Pers.SelectedItem + MAX_ITEMS - i) % MAX_ITEMS
+		if index < 0 {
+			// selected_item == -1, last iteration: C reads inventory[-1]
+			// (== selected_item, nonzero) and then itemlist[-1], out of
+			// bounds. Whatever that entry holds, the result is
+			// selected_item = -1, which the fall-through below also sets.
+			continue
+		}
 		if cmdsInventory(&cl.Pers, index) == 0 {
 			continue
 		}
@@ -710,8 +718,8 @@ func (g *Game) CheckFlood(ent *Edict) bool {
 		if i < 0 {
 			i = int32(len(cl.FloodWhen)) + i
 		}
-		if cl.FloodWhen[i] != 0 &&
-			g.level.Time-cl.FloodWhen[i] < g.flood_persecond.Value {
+		if when := floodWhen(cl, i); when != 0 &&
+			g.level.Time-when < g.flood_persecond.Value {
 			cl.FloodLocktill = g.level.Time + g.flood_waitdelay.Value
 			g.cprintf(ent, PRINT_CHAT, "Flood protection:  You can't talk for %d seconds.\n",
 				int32(g.flood_waitdelay.Value))
@@ -721,6 +729,27 @@ func (g *Game) CheckFlood(ent *Edict) bool {
 		cl.FloodWhen[cl.FloodWhenhead] = g.level.Time
 	}
 	return false
+}
+
+// floodWhen reads cl->flood_when[i]. With flood_msgs outside 1..11 the C
+// index leaves the array and reads the neighbouring gclient_t fields
+// (pickup_msg_time, flood_locktill | flood_when[10] | flood_whenhead,
+// respawn_time; same layout in both modules); further out it is undefined,
+// read as 0 here.
+func floodWhen(cl *GClient, i int32) float32 {
+	switch {
+	case i >= 0 && i < int32(len(cl.FloodWhen)):
+		return cl.FloodWhen[i]
+	case i == -2:
+		return cl.PickupMsgTime
+	case i == -1:
+		return cl.FloodLocktill
+	case i == 10:
+		return math.Float32frombits(uint32(cl.FloodWhenhead))
+	case i == 11:
+		return cl.RespawnTime
+	}
+	return 0
 }
 
 // C: game/g_cmds.c:787 Cmd_Say_f
@@ -825,6 +854,7 @@ func (g *Game) Cmd_PlayerList_f(ent *Edict) {
 // ClientCommand is game_export_t.ClientCommand.
 // C: game/g_cmds.c:908 ClientCommand
 func (g *Game) ClientCommand(ent *Edict) {
+	defer g.guard()
 	if ent.Client == nil {
 		return // not fully in game yet
 	}

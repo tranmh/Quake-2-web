@@ -548,6 +548,8 @@ func (g *Game) G_FindTeams() {
 // parsing textual entity definitions out of an ent file.
 // C: game/g_spawn.c:520 SpawnEntities
 func (g *Game) SpawnEntities(mapname, entities, spawnpoint string) {
+	defer g.guard()
+	g.callDepth = 0
 	var ent *Edict
 
 	skillLevel := math.Floor(float64(g.skill.Value))

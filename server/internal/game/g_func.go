@@ -1486,6 +1486,9 @@ func (g *Game) train_next(self *Edict) {
 	var ent *Edict
 	var dest Vec3
 
+	g.enterCall("train_next")
+	defer g.leaveCall()
+
 	first := true
 again:
 	if self.Target == "" {

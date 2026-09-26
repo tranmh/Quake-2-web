@@ -113,7 +113,9 @@ func (g *Game) SP_target_speaker(ent *Edict) {
 		return
 	}
 	if !strings.Contains(g.st.Noise, ".wav") {
-		buffer = targetStrncpy(g.st.Noise+".wav", MAX_QPATH)
+		// Com_sprintf (buffer, sizeof(buffer), "%s.wav", st.noise), with its
+		// overflow message
+		buffer = g.hudComSprintf(MAX_QPATH, "%s.wav", g.st.Noise)
 	} else {
 		buffer = targetStrncpy(g.st.Noise, MAX_QPATH)
 	}

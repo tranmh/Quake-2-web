@@ -424,11 +424,20 @@ func TestSaveRoundTripSynthetic(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 	fillRandom(a, reflect.ValueOf(&a.game).Elem(), r)
 	a.game.Maxclients, a.game.Maxentities = 4, 64
+	a.game.NumItems = int32(len(a.itemlist) - 1) // validated by ReadGame
 	fillRandom(a, reflect.ValueOf(&a.level).Elem(), r)
 	for i := range a.game.Clients {
 		fillRandom(a, reflect.ValueOf(&a.game.Clients[i]).Elem(), r)
 		a.game.Clients[i].Index = i
+		// fields used as indices are validated by ReadGame
+		for _, p := range []*ClientPersistant{&a.game.Clients[i].Pers, &a.game.Clients[i].Resp.CoopRespawn} {
+			p.SelectedItem = int32(r.Intn(len(a.itemlist)+1)) - 1
+			for k := len(a.itemlist); k < len(p.Inventory); k++ {
+				p.Inventory[k] = 0
+			}
+		}
 	}
+	a.level.BodyQue = int32(r.Intn(BODY_QUEUE_SIZE))
 	a.num_edicts = 40
 	for i := range a.edicts[:40] {
 		fillRandom(a, reflect.ValueOf(&a.edicts[i]).Elem(), r)

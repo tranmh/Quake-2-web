@@ -931,6 +931,14 @@ func (g *Game) CopyToBodyQue(ent *Edict) {
 	body.ClipMask = ent.ClipMask
 	body.Owner = ent.Owner
 	body.Movetype = ent.Movetype
+	if body.Movetype == MOVETYPE_WALK {
+		// Deviation (docs/review/03-go-game.md G-09): a dead player who
+		// toggled noclip twice is MOVETYPE_WALK instead of player_die's
+		// MOVETYPE_TOSS, and G_RunEntity has no case for WALK: C ends the
+		// server with gi.error("SV_Physics: bad movetype 4") on the next
+		// frame. Give the body the movetype of a normal corpse.
+		body.Movetype = MOVETYPE_TOSS
+	}
 
 	body.Die = body_die
 	body.Takedamage = DAMAGE_YES
@@ -1237,6 +1245,7 @@ func (g *Game) ClientBeginDeathmatch(ent *Edict) {
 // to be placed into the game.  This will happen every level load.
 // C: game/p_client.c:1296 ClientBegin
 func (g *Game) ClientBegin(ent *Edict) {
+	defer g.guard()
 	ent.Client = &g.game.Clients[ent.Index-1]
 
 	if g.deathmatch.Value != 0 {
@@ -1284,6 +1293,7 @@ func (g *Game) ClientBegin(ent *Edict) {
 
 // ClientUserinfoChanged is game_export_t.ClientUserinfoChanged.
 func (g *Game) ClientUserinfoChanged(ent *Edict, userinfo string) {
+	defer g.guard()
 	g.clientUserinfoChanged(ent, userinfo)
 }
 
@@ -1368,6 +1378,7 @@ func (g *Game) pclientSetValueForKey(s, key, value string) string {
 // loadgames will.
 // C: game/p_client.c:1431 ClientConnect
 func (g *Game) ClientConnect(ent *Edict, userinfo string) (bool, string) {
+	defer g.guard()
 	if g.ctfmod {
 		return g.ctfClientConnect(ent, userinfo)
 	}
@@ -1479,6 +1490,7 @@ func (g *Game) ctfClientConnect(ent *Edict, userinfo string) (bool, string) {
 // Will not be called between levels.
 // C: game/p_client.c:1504 ClientDisconnect
 func (g *Game) ClientDisconnect(ent *Edict) {
+	defer g.guard()
 	if ent.Client == nil {
 		return
 	}
@@ -1551,6 +1563,7 @@ func (g *Game) pclientEdict(id int) *Edict {
 // usually be a couple times for each server frame.
 // C: game/p_client.c:1570 ClientThink
 func (g *Game) ClientThink(ent *Edict, ucmd *shared.UserCmd) {
+	defer g.guard()
 	var other *Edict
 
 	g.level.CurrentEntity = ent

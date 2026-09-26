@@ -1,6 +1,12 @@
 package game
 
 import (
+	"errors"
+	"fmt"
+	"path/filepath"
+	"runtime"
+	"strings"
+
 	"quake2web/server/internal/pmove"
 	"quake2web/server/internal/qcommon/cvar"
 	"quake2web/server/internal/qcommon/shared"
@@ -104,4 +110,85 @@ type Export interface {
 	Edicts() []Edict
 	NumEdicts() int
 	MaxEdicts() int
+}
+
+// guard is deferred by every game_export_t entry point. A Go runtime panic
+// inside the game module (a nil edict or an index out of range on a
+// malformed map, a tampered save or an unforeseen input, where the C game
+// dereferences NULL or reads out of bounds) is turned into gi.error, which
+// ends this server instance with ERR_DROP like any other game error instead
+// of crashing the whole process that hosts every instance. gi.error panics
+// (shared.ComError) pass through unchanged. Valid input never gets here, so
+// this does not change any C-faithful behaviour.
+func (g *Game) guard() {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if _, ok := r.(shared.ComError); ok {
+		panic(r)
+	}
+	g.gi.Error(internalError(r))
+}
+
+// guardErr is guard for the entry points that return an error (ReadGame,
+// ReadLevel, WriteGame, WriteLevel): the panic becomes the returned error.
+func guardErr(errp *error) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	if ce, ok := r.(shared.ComError); ok {
+		*errp = ce
+		return
+	}
+	*errp = errors.New(internalError(r))
+}
+
+// internalError describes a recovered panic with the game function and
+// source line that raised it.
+func internalError(r any) string {
+	pcs := make([]uintptr, 32)
+	n := runtime.Callers(3, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		f, more := frames.Next()
+		if strings.HasPrefix(f.Function, "quake2web/server/internal/game.") &&
+			!strings.HasSuffix(f.Function, ".guard") && !strings.HasSuffix(f.Function, ".guardErr") {
+			return fmt.Sprintf("internal error: %v at %s:%d %s", r, filepath.Base(f.File), f.Line,
+				strings.TrimPrefix(f.Function, "quake2web/server/internal/game."))
+		}
+		if !more {
+			return fmt.Sprintf("internal error: %v", r)
+		}
+	}
+}
+
+// maxCallDepth bounds the nesting of the entity callback chains that the C
+// game recurses through without any limit: a target loop (trigger_relay A
+// targets B, B targets A: G_UseTargets -> use -> G_UseTargets ...) or a
+// func_train on zero-length wait-0 path_corner loop (train_next -> Move_Calc
+// -> Move_Done -> train_wait -> train_next ...). C overflows its stack and
+// crashes (SIGSEGV); in Go a goroutine stack overflow is a fatal error that
+// can not be recovered and would kill every instance of the process. A
+// non-looping chain nests at most once per entity (MAX_EDICTS = 1024), so
+// the limit is never reached by a map the C game can run.
+const maxCallDepth = 4096
+
+// enterCall enters one level of a recursive callback chain; past
+// maxCallDepth it raises gi.error (ERR_DROP of this instance). Pair with
+// defer g.leaveCall().
+func (g *Game) enterCall(what string) {
+	g.callDepth++
+	if g.callDepth > maxCallDepth {
+		g.callDepth = 0
+		g.error("%s: entity loop, recursion deeper than %d", what, maxCallDepth)
+	}
+}
+
+// leaveCall leaves a level entered by enterCall.
+func (g *Game) leaveCall() {
+	if g.callDepth > 0 {
+		g.callDepth--
+	}
 }

@@ -3868,9 +3868,9 @@ func (g *Game) CTFStats(ent *Edict) {
 		} else {
 			e = gh.Kills * 100 / (gh.Kills + gh.Deaths)
 		}
-		st := fmt.Sprintf("%3d|%-16.16s|%5d|%5d|%5d|%5d|%5d|%4d%%|\n",
+		st := fmt.Sprintf("%3d|%s|%5d|%5d|%5d|%5d|%5d|%4d%%|\n",
 			gh.Number,
-			gh.Netname,
+			cLeftPrec(gh.Netname, 16, 16),
 			gh.Score,
 			gh.Kills,
 			gh.Deaths,
@@ -3888,6 +3888,19 @@ func (g *Game) CTFStats(ent *Edict) {
 		text += st
 	}
 	g.gi.Cprintf(ent, PRINT_HIGH, text)
+}
+
+// cLeftPrec is C printf "%-<width>.<prec>s": truncate to prec bytes, pad
+// with spaces to width bytes (Go's fmt counts runes, which differs for UTF-8
+// netnames).
+func cLeftPrec(s string, width, prec int) string {
+	if len(s) > prec {
+		s = s[:prec]
+	}
+	if len(s) < width {
+		s += strings.Repeat(" ", width-len(s))
+	}
+	return s
 }
 
 // C: ctf/g_ctf.c:3884 CTFPlayerList
@@ -3918,9 +3931,9 @@ func (g *Game) CTFPlayerList(ent *Edict) {
 		if e2.Client.Resp.Admin {
 			admin = " (admin)"
 		}
-		st := fmt.Sprintf("%3d %-16.16s %02d:%02d %4d %3d%s%s\n",
+		st := fmt.Sprintf("%3d %s %02d:%02d %4d %3d%s%s\n",
 			i+1,
-			e2.Client.Pers.Netname,
+			cLeftPrec(e2.Client.Pers.Netname, 16, 16),
 			(g.level.Framenum-e2.Client.Resp.Enterframe)/600,
 			((g.level.Framenum-e2.Client.Resp.Enterframe)%600)/10,
 			e2.Client.Ping,

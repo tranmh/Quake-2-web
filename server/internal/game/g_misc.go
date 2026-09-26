@@ -1599,7 +1599,11 @@ func (g *Game) target_string_use(self, other, activator *Edict) {
 		}
 
 		var c byte // message[l] is the terminating NUL
-		if n < l {
+		if n < 0 {
+			// count < 0: C reads the heap byte before the string
+			// (undefined); use the blank frame
+			c = ' '
+		} else if n < l {
 			c = self.Message[n]
 		}
 		if c >= '0' && c <= '9' {

@@ -17,6 +17,10 @@ type Game struct {
 	gi  Import      // C: gi
 	rng *crand.Rand // shared with the server: rand() of the process
 
+	// callDepth is the nesting depth of the recursive entity callback
+	// chains bounded by enterCall (not C state).
+	callDepth int32
+
 	game       GameLocals  // C: game
 	level      LevelLocals // C: level
 	st         SpawnTemp   // C: st
@@ -200,13 +204,22 @@ func (g *Game) MaxEdicts() int { return int(g.game.Maxentities) }
 func (g *Game) Level() *LevelLocals { return &g.level }
 
 // Init is game_export_t.Init.
-func (g *Game) Init() { g.InitGame() }
+func (g *Game) Init() {
+	defer g.guard()
+	g.InitGame()
+}
 
 // Shutdown is game_export_t.Shutdown.
-func (g *Game) Shutdown() { g.ShutdownGame() }
+func (g *Game) Shutdown() {
+	defer g.guard()
+	g.ShutdownGame()
+}
 
 // RunFrame is game_export_t.RunFrame.
-func (g *Game) RunFrame() { g.G_RunFrame() }
+func (g *Game) RunFrame() {
+	defer g.guard()
+	g.G_RunFrame()
+}
 
 // dprintf etc. are printf-style conveniences for gi.*printf.
 func (g *Game) dprintf(format string, args ...any) { g.gi.Dprintf(cfmt(format, args...)) }
@@ -485,17 +498,32 @@ func (g *Game) CheckDMRules() {
 	}
 }
 
+// gamemapCommand builds ExitLevel's console command
+// Com_sprintf(command, sizeof(command), "gamemap \"%s\"\n", level.changemap).
+//
+// Deviation (security, docs/review/03-go-game.md G-11): changemap comes from
+// map data (target_changelevel "map", worldspawn "nextmap"), where a "\n"
+// escape or a quote would end the quoted argument and the command line, and
+// the rest would run as further console commands on the server. The name is
+// cut at the first quote or line break; real map names never contain them.
+func gamemapCommand(changemap string) string {
+	if i := strings.IndexAny(changemap, "\"\n\r"); i >= 0 {
+		changemap = changemap[:i]
+	}
+	command := fmt.Sprintf("gamemap \"%s\"\n", changemap)
+	if len(command) > 255 {
+		command = command[:255]
+	}
+	return command
+}
+
 // C: game/g_main.c:318 ExitLevel
 func (g *Game) ExitLevel() {
 	if g.ctfmod {
 		g.ctfExitLevel()
 		return
 	}
-	command := fmt.Sprintf("gamemap \"%s\"\n", g.level.Changemap)
-	if len(command) > 255 {
-		command = command[:255]
-	}
-	g.gi.AddCommandString(command)
+	g.gi.AddCommandString(gamemapCommand(g.level.Changemap))
 	g.level.Changemap = ""
 	g.level.Exitintermission = 0
 	g.level.Intermissiontime = 0
@@ -523,11 +551,7 @@ func (g *Game) ctfExitLevel() {
 		return
 	}
 
-	command := fmt.Sprintf("gamemap \"%s\"\n", g.level.Changemap)
-	if len(command) > 255 {
-		command = command[:255]
-	}
-	g.gi.AddCommandString(command)
+	g.gi.AddCommandString(gamemapCommand(g.level.Changemap))
 	g.ClientEndServerFrames()
 
 	g.level.Changemap = ""

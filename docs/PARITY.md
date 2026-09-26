@@ -456,3 +456,9 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   PVS decompression bounded (out-of-range cluster = all visible); MD2 glcmd counts validated (ERR_DROP); warp subdivision
   capped (2^18 polys/model, depth 64); BSP node cycles/shared subtrees rejected; sound channels with invalid loop points
   stopped; resampled sounds capped at 16 MiB. Valid assets unchanged (oracle tests bit-exact).
+- Review 03 (game, invalid/hostile input only): every game entry point converts Go panics to gi.error (instance
+  drop, not process crash); target/train recursion capped at 4096 nesting (stack overflow in C); SelectPrevItem skips
+  negative index; target_string with negative count draws blank; saves validated (array sizes/indices) and
+  decompression capped at 64 MB; dead noclip coop body gets a corpse movetype (C: bad movetype shutdown);
+  map/nextmap names cut at the first quote or line break (C allowed console command injection); flood_msgs
+  outside 1..11 reads the same neighbouring fields C does.

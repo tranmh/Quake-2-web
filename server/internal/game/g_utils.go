@@ -148,6 +148,9 @@ func (g *Game) Think_Delay(ent *Edict) {
 func (g *Game) G_UseTargets(ent, activator *Edict) {
 	var t *Edict
 
+	g.enterCall("G_UseTargets")
+	defer g.leaveCall()
+
 	//
 	// check for a delay
 	//

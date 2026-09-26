@@ -236,6 +236,7 @@ func (g *Game) svcmdsListIPText() string {
 // of the parameters
 // C: game/g_svcmds.c:282 ServerCommand
 func (g *Game) ServerCommand() {
+	defer g.guard()
 	cmd := g.gi.Argv(1)
 	if shared.Q_stricmp(cmd, "test") == 0 {
 		g.Svcmd_Test_f()

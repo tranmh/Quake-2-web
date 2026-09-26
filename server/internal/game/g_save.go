@@ -26,6 +26,8 @@ import (
 	"strconv"
 
 	"github.com/klauspost/compress/zstd"
+
+	. "quake2web/server/internal/q2const"
 )
 
 // SaveVersion is the version of the game/level save format.
@@ -479,6 +481,8 @@ var (
 		"bobcycle", "bobfracsin",
 		// server lifetime, not part of a savegame (C keeps them in the dll across loads)
 		"ipfilters", "numipfilters",
+		// recursion guard (enterCall), zero between frames
+		"callDepth",
 		// rebuilt by SpawnItem during SpawnEntities (C mutates the item table)
 		"itemDropCleared",
 		// ctf module: cvars, module identity (chosen at Init) and the
@@ -497,8 +501,14 @@ func zstdCompress(b []byte) ([]byte, error) {
 	return enc.EncodeAll(b, nil), nil
 }
 
+// maxSaveSize bounds the decompressed size of a save blob. A real level
+// save is about 1 MB for 200 edicts (~5 MB at MAX_EDICTS); without a bound a
+// tampered blob of a few KB expands to gigabytes and the process is
+// OOM-killed (docs/review/03-go-game.md G-20).
+const maxSaveSize = 64 << 20
+
 func zstdDecompress(b []byte) ([]byte, error) {
-	dec, err := zstd.NewReader(nil)
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxSaveSize), zstd.WithDecoderConcurrency(1))
 	if err != nil {
 		return nil, err
 	}
@@ -557,21 +567,23 @@ func checkHeader(m map[string]any, magic string) error {
 // Game information include cross level data, like multi level
 // triggers, help computer info, and all client states.
 // C: game/g_save.c:460 WriteGame
-func (g *Game) WriteGame(autosave bool) ([]byte, error) {
+func (g *Game) WriteGame(autosave bool) (data []byte, err error) {
+	defer guardErr(&err)
 	if !autosave {
 		g.SaveClientData()
 	}
 
 	g.game.Autosaved = autosave
 	f := &gameFile{Magic: saveMagicGame, Version: SaveVersion, Game: g.game, Clients: g.game.Clients}
-	data, err := g.marshalSave(f)
+	data, err = g.marshalSave(f)
 	g.game.Autosaved = false
 	return data, err
 }
 
 // ReadGame restores a game written by WriteGame.
 // C: game/g_save.c:487 ReadGame
-func (g *Game) ReadGame(data []byte) error {
+func (g *Game) ReadGame(data []byte) (err error) {
+	defer guardErr(&err)
 	m, err := g.unmarshalSave(data)
 	if err != nil {
 		return err
@@ -590,27 +602,69 @@ func (g *Game) ReadGame(data []byte) error {
 	if err := c.dec(m["Game"], reflect.ValueOf(&gl).Elem()); err != nil {
 		return err
 	}
+	// the counts below size arrays and bound loops: a tampered or foreign
+	// save must match this game (C trusts the file; the engine restores the
+	// latched maxclients/maxentities cvars before ReadGame, so a consistent
+	// save always passes)
+	if err := g.validateGameLocals(&gl); err != nil {
+		return err
+	}
+	cl, ok := m["Clients"].([]any)
+	if !ok || len(cl) != int(gl.Maxclients) {
+		return fmt.Errorf("save: client count mismatch")
+	}
 	g.game = gl
 	g.game.Clients = make([]GClient, g.game.Maxclients)
 	for i := range g.game.Clients {
 		g.game.Clients[i].Index = i
-	}
-	cl, ok := m["Clients"].([]any)
-	if !ok || len(cl) != len(g.game.Clients) {
-		return fmt.Errorf("save: client count mismatch")
 	}
 	for i := range cl {
 		if err := c.dec(cl[i], reflect.ValueOf(&g.game.Clients[i]).Elem()); err != nil {
 			return err
 		}
 		g.game.Clients[i].Index = i
+		if err := g.validateClient(&g.game.Clients[i]); err != nil {
+			return fmt.Errorf("client %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// validateGameLocals checks the game_locals_t counts of a save against this
+// game instance (memory-safety check for untrusted saves, docs/review/03-go-game.md G-04).
+func (g *Game) validateGameLocals(gl *GameLocals) error {
+	if gl.Maxclients < 1 || gl.Maxclients > MAX_CLIENTS || gl.Maxclients != int32(g.maxclients.Value) {
+		return fmt.Errorf("save: maxclients %d does not match the server (%g)", gl.Maxclients, g.maxclients.Value)
+	}
+	if int(gl.Maxentities) != len(g.edicts) || int(gl.Maxclients) >= len(g.edicts) {
+		return fmt.Errorf("save: maxentities %d does not match the server (%d)", gl.Maxentities, len(g.edicts))
+	}
+	if int(gl.NumItems) != len(g.itemlist)-1 {
+		return fmt.Errorf("save: num_items %d does not match the item table (%d)", gl.NumItems, len(g.itemlist)-1)
+	}
+	return nil
+}
+
+// validateClient checks the client fields that are used as indices
+// (docs/review/03-go-game.md G-03).
+func (g *Game) validateClient(cl *GClient) error {
+	if sel := cl.Pers.SelectedItem; sel < -1 || int(sel) >= len(g.itemlist) {
+		return fmt.Errorf("save: selected_item %d out of range", sel)
+	}
+	for _, p := range []*ClientPersistant{&cl.Pers, &cl.Resp.CoopRespawn} {
+		for i := len(g.itemlist); i < MAX_ITEMS; i++ {
+			if p.Inventory[i] != 0 {
+				return fmt.Errorf("save: inventory[%d] set for a nonexistent item", i)
+			}
+		}
 	}
 	return nil
 }
 
 // WriteLevel saves the level locals and the edicts.
 // C: game/g_save.c:628 WriteLevel
-func (g *Game) WriteLevel() ([]byte, error) {
+func (g *Game) WriteLevel() (data []byte, err error) {
+	defer guardErr(&err)
 	f := &levelFile{Magic: saveMagicLevel, Version: SaveVersion, Level: g.level, NumEdicts: g.num_edicts}
 	for i := 0; i < int(g.num_edicts); i++ {
 		f.Edicts = append(f.Edicts, edictRecord{N: i, E: g.edicts[i]})
@@ -663,7 +717,8 @@ func (g *Game) WriteLevel() ([]byte, error) {
 //
 // No clients are connected yet.
 // C: game/g_save.c:682 ReadLevel
-func (g *Game) ReadLevel(data []byte) error {
+func (g *Game) ReadLevel(data []byte) (err error) {
+	defer guardErr(&err)
 	m, err := g.unmarshalSave(data)
 	if err != nil {
 		return err
@@ -725,8 +780,22 @@ func (g *Game) ReadLevel(data []byte) error {
 			relink = append(relink, linkFix{ent, ent.LinkCount})
 		}
 	}
-	if n, err := jsonInt(m["NumEdicts"]); err == nil && int32(n) > g.num_edicts {
-		g.num_edicts = int32(n)
+	numEdicts, err := jsonInt(m["NumEdicts"])
+	if err != nil || numEdicts < 0 || numEdicts > int64(len(g.edicts)) {
+		return fmt.Errorf("save: num_edicts %v out of range", m["NumEdicts"])
+	}
+	if int32(numEdicts) > g.num_edicts {
+		g.num_edicts = int32(numEdicts)
+	}
+	// indices into fixed arrays (docs/review/03-go-game.md G-05)
+	if g.level.BodyQue < 0 || g.level.BodyQue >= BODY_QUEUE_SIZE {
+		return fmt.Errorf("save: body_que %d out of range", g.level.BodyQue)
+	}
+	if ex.TrailHead < 0 || ex.TrailHead >= TRAIL_LENGTH {
+		return fmt.Errorf("save: trail_head %d out of range", ex.TrailHead)
+	}
+	if len(g.game.Clients) < int(g.maxclients.Value) || int(g.maxclients.Value) >= len(g.edicts) {
+		return fmt.Errorf("save: level for %g clients, game has %d", g.maxclients.Value, len(g.game.Clients))
 	}
 	for _, r := range relink {
 		g.gi.LinkEntity(r.ent)
