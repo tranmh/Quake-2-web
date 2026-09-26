@@ -99,7 +99,9 @@ Scenario input (`fixtures/scenarios/game/<name>.json`):
 Committed scenarios may use `"entstring_append":"<entities>"` instead of an inline override (the map's entity string
 must not be committed). `oracle/scripts/prep_game_scenario.py` (run by `tools/gen-fixtures.sh`) materializes it into
 `generated/scenarios/game/<name>.json`: `entstring_override` = the map's own entity string + the appended text, where
-`$dmN` is replaced by the `origin` value of the N-th `info_player_deathmatch`; `entstring_append` is removed. The oracle
+`$dmN` is replaced by the `origin` value of the N-th `info_player_deathmatch`; `entstring_append` is removed. With `"entstring_strip":["monster_",...]` (a list of classname
+prefixes), the map's own entity blocks whose classname starts with one of the prefixes are dropped first (the key is
+removed too; used by the `synth_*` scenarios so the map's own monsters do not interfere). The oracle
 only reads the materialized form, and the output header echoes it.
 
 Input semantics (in order, per frame N ≥ 1): schedule entries with `frame == N` in file order (`cmd` →

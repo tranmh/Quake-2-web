@@ -5,7 +5,9 @@ Usage: prep_game_scenario.py <basedir> <in.json> <out.json>
 
 If the scenario has "entstring_append", the map's own entity string (read from pak0.pak) is taken, placeholders
 "$dmN" in the appended text are replaced by the origin of the N-th info_player_deathmatch entity, and the result
-becomes "entstring_override" (the key "entstring_append" is removed). Other scenarios are copied unchanged.
+becomes "entstring_override" (the key "entstring_append" is removed). With "entstring_strip" (a list of classname
+prefixes, e.g. ["monster_"]), entity blocks of the map's own entity string whose classname starts with one of the
+prefixes are removed first (the key is removed too). Other scenarios are copied unchanged.
 The output is derived from game data and lives under fixtures/generated (never committed).
 """
 import json
@@ -34,8 +36,14 @@ def main():
     with open(inp) as f:
         sc = json.load(f)
     app = sc.pop("entstring_append", None)
+    strip = sc.pop("entstring_strip", None)
     if app is not None:
         ents = entity_string(basedir, sc["map"])
+        if strip:
+            def keep(m):
+                kv = dict(re.findall(r'"([^"]*)"\s*"([^"]*)"', m.group(0)))
+                return "" if kv.get("classname", "").startswith(tuple(strip)) else m.group(0)
+            ents = re.sub(r"\{[^}]*\}\n?", keep, ents)
         dm = []
         for block in re.findall(r"\{([^}]*)\}", ents):
             kv = dict(re.findall(r'"([^"]*)"\s*"([^"]*)"', block))
