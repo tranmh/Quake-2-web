@@ -377,13 +377,27 @@ func parseFloatTable(path, marker string) ([]float64, error) {
 		j = len(s) - i - 1
 	}
 	body := s[i+1 : i+1+j]
+	// Elements are separated by commas; an element may be a constant
+	// product (m_flash.c: "21.1 * 1.2"), folded in double like the C compiler.
 	var out []float64
-	for _, m := range floatTripleRe.FindAllString(body, -1) {
-		f, err := strconv.ParseFloat(m, 64)
-		if err != nil {
-			return nil, err
+	body = strings.NewReplacer("{", ",", "}", ",").Replace(body)
+	for _, elem := range strings.Split(body, ",") {
+		if strings.TrimSpace(elem) == "" {
+			continue
 		}
-		out = append(out, f)
+		v := 1.0
+		for _, factor := range strings.Split(elem, "*") {
+			m := floatTripleRe.FindString(factor)
+			if m == "" || strings.TrimSpace(factor) != m {
+				return nil, fmt.Errorf("%s: cannot parse table element %q", path, elem)
+			}
+			f, err := strconv.ParseFloat(m, 64)
+			if err != nil {
+				return nil, err
+			}
+			v *= f
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }

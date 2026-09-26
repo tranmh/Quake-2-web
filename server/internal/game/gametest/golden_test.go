@@ -12,10 +12,30 @@ import (
 )
 
 // mustPass lists the scenarios that must match the oracle on every frame.
-// The other scenarios are run and their progress is logged (single-player
-// scenarios diverge once monsters, not ported yet, act).
+// The other scenarios are run and their progress is logged.
 var mustPass = map[string]bool{
-	"demo1_dm4": true,
+	"demo1_dm4":       true,
+	"demo1_coop2":     true,
+	"demo1_sp_idle":   true,
+	"demo1_sp_walk":   true,
+	"demo1_sp_random": true,
+	"demo2_sp_random": true,
+	"demo3_sp_random": true,
+	// synthetic monster scenarios (fixtures/scenarios/game/synth_*.json)
+	"synth_actor":     true,
+	"synth_boss2":     true,
+	"synth_boss3":     true,
+	"synth_brain":     true,
+	"synth_chick":     true,
+	"synth_flipper":   true,
+	"synth_float":     true,
+	"synth_gladiator": true,
+	"synth_hover":     true,
+	"synth_insane":    true,
+	"synth_jorg":      true,
+	"synth_medic":     true,
+	"synth_mutant":    true,
+	"synth_supertank": true,
 }
 
 // skipped scenarios (other game module).

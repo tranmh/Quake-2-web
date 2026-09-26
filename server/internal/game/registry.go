@@ -152,7 +152,9 @@ func defMMove(name string, firstframe, lastframe int32, frames []MFrame, endfunc
 	if _, dup := mmoves[name]; dup {
 		panic("game: duplicate mmove: " + name)
 	}
-	if int(lastframe-firstframe+1) != len(frames) {
+	// Some C tables have more entries than the move uses (m_berserk.c
+	// berserk_frames_walk); the extra entries are never reached.
+	if int(lastframe-firstframe+1) > len(frames) {
 		panic(fmt.Sprintf("game: mmove %s: %d frames for %d..%d", name, len(frames), firstframe, lastframe))
 	}
 	m := &MMove{Name: name, Firstframe: firstframe, Lastframe: lastframe, Frame: frames, Endfunc: endfunc}
