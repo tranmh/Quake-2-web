@@ -35,7 +35,7 @@ Or everything in containers: `docker compose -f deploy/docker-compose.dev.yml up
 (API/WebSocket on :8080, web on :3000, Postgres on :5433).
 
 Useful dev tools:
-- `web/apps/dev`: Vite renderer harness (`pnpm --filter dev dev`, then `?map=demo1`).
+- `web/apps/dev`: Vite renderer harness (`pnpm --filter q2-dev dev`, then `?map=demo1`).
 - `server/cmd/wsbridge`: WebSocket↔UDP relay so the browser client can play on the original C `q2ded`.
 - `oracle/build/bin/q2ded`: the original dedicated server, built headless for x86_64.
 
