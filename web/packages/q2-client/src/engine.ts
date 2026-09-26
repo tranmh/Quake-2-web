@@ -36,6 +36,11 @@ export interface ClientEngineOptions extends ClientOptions {
   args?: string[];
   /** Skip `exec default.cfg` (tests) */
   skipDefaultCfg?: boolean;
+  /**
+   * Called once the ClientContext exists and cvars/commands are initialised, before the renderer's
+   * init() (Qcommon_Init order). Hosts use it to bind refimport_t (cvars, commands, printing).
+   */
+  onContext?: (c: ClientContext) => void;
 }
 
 /** EngineCommands: everything the host can ask the engine to do. */
@@ -110,6 +115,7 @@ export async function createClientEngine(opts: ClientEngineOptions): Promise<Cli
   // init commands and vars (host_speeds, developer, ... Netchan_Init)
   Qcommon_InitCvars(c);
 
+  opts.onContext?.(c);
   c.sound.attach(c);
   c.fx.attach(c);
   c.cin.attach(c);

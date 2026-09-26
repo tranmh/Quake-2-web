@@ -117,9 +117,8 @@ export class GameSession {
       this.set({ phase: 'engine' });
       this.resizeCanvas();
 
-      // The renderer needs the engine's cvar/command systems (refimport_t), but the ClientContext only
-      // exists inside createClientEngine. Sound.attach(c) runs before re.init() (Qcommon_Init order), so
-      // the sound wrapper binds the context for the imports below.
+      // The renderer needs the engine's cvar/command systems (refimport_t); the ClientContext only
+      // exists inside createClientEngine, which hands it over through onContext before re.init().
       let ctx: ClientContext | null = null;
       const need = (): ClientContext => {
         if (!ctx) throw new Error('refimport used before the client context exists');
@@ -155,11 +154,6 @@ export class GameSession {
 
       const { sound: realSound, enabled } = await createSound(canvas);
       const sound: Sound = realSound ?? new NullSound();
-      const attach = sound.attach.bind(sound);
-      sound.attach = (c: ClientContext) => {
-        ctx = c;
-        attach(c);
-      };
       this.sound = sound;
       this.set({ soundEnabled: enabled });
 
@@ -167,6 +161,9 @@ export class GameSession {
       if (this.disposed) return;
 
       const engine = await createClientEngine({
+        onContext: (c) => {
+          ctx = c;
+        },
         refresh,
         sound,
         transport: createJoinTransportFactory(gameId, join, location.origin),
