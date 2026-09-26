@@ -1,0 +1,80 @@
+.editor {
+  display: grid;
+  gap: 16px;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border-hi);
+}
+.tab,
+.tabActive {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 12px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tabActive {
+  color: var(--accent);
+  border-color: var(--border-hi);
+  background: var(--panel-2);
+}
+.fields {
+  display: grid;
+  gap: 12px;
+  max-width: 620px;
+}
+.row {
+  display: grid;
+  grid-template-columns: 200px 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+.label {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+.row input[type='checkbox'] {
+  justify-self: start;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.keyButton {
+  font-family: var(--font-mono);
+  background: #0e0d0a;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 12px;
+  min-width: 160px;
+  text-align: left;
+  cursor: pointer;
+}
+.keyButton:hover {
+  border-color: var(--accent);
+}
+.capturing td {
+  background: rgba(208, 118, 31, 0.12);
+}
+.capturing .keyButton {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+@media (max-width: 600px) {
+  .row {
+    grid-template-columns: 1fr;
+  }
+}

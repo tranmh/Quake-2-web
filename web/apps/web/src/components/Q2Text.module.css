@@ -1,0 +1,24 @@
+.line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  vertical-align: middle;
+}
+.glyph {
+  display: inline-block;
+  image-rendering: pixelated;
+  background-repeat: no-repeat;
+}
+.fallback {
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+  text-transform: none;
+  color: var(--text);
+}
+.alt {
+  color: var(--accent-2);
+}
+.pic {
+  image-rendering: pixelated;
+  max-width: 100%;
+  height: auto;
+}

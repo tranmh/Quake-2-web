@@ -1,0 +1,33 @@
+{
+  "name": "web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "node scripts/build-worklet.mjs",
+    "predev": "node scripts/build-worklet.mjs",
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "typecheck": "next typegen && tsc -p tsconfig.json --noEmit",
+    "test": "echo 'e2e: pnpm --filter web e2e'",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "next": "^16.3.6",
+    "q2-client": "workspace:*",
+    "q2-ref": "workspace:*",
+    "q2-render-gl": "workspace:*",
+    "q2-shared": "workspace:*",
+    "q2-sound": "workspace:*",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "esbuild": "^0.27.0"
+  }
+}

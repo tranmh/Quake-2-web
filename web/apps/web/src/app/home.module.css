@@ -1,0 +1,17 @@
+.hero {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 32px;
+  align-items: center;
+  padding: 32px 0 40px;
+}
+.lead {
+  font-size: 17px;
+  max-width: 60ch;
+  color: var(--text);
+}
+@media (max-width: 720px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+}

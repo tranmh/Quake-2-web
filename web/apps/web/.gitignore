@@ -1,0 +1,7 @@
+.next/
+next-env.d.ts
+test-results/
+playwright-report/
+public/q2-sound-worklet.js
+*.tsbuildinfo
+.e2e/
