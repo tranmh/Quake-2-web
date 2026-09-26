@@ -272,20 +272,24 @@ func TestOldDeltaGetsFullFrame(t *testing.T) {
 func TestRateDrop(t *testing.T) {
 	h := newHarness(t, dm(), "map demo1")
 	c := h.client("10.1.1.4", fakeclient.Options{Userinfo: "\\name\\slow\\rate\\100"})
-	poll(c, 20, shared.UserCmd{Msec: 50})
+	// Suppression depends on how many frames elapse between polls, which varies with machine
+	// load: keep polling (bounded) until it shows up instead of a fixed number of polls.
 	var rate, supp int
-	h.do(func(s *Server) {
-		rate = s.SVS.Clients[0].Rate
-		supp = s.SVS.Clients[0].SurpressCount
-	})
+	sawSupp := false
+	for round := 0; round < 25 && !sawSupp && supp == 0; round++ {
+		poll(c, 20, shared.UserCmd{Msec: 50})
+		h.do(func(s *Server) {
+			rate = s.SVS.Clients[0].Rate
+			supp = s.SVS.Clients[0].SurpressCount
+		})
+		for i := range c.Frames {
+			if c.Frames[i].SurpressCount > 0 {
+				sawSupp = true
+			}
+		}
+	}
 	if rate != 100 {
 		t.Errorf("rate %d", rate)
-	}
-	sawSupp := false
-	for i := range c.Frames {
-		if c.Frames[i].SurpressCount > 0 {
-			sawSupp = true
-		}
 	}
 	if !sawSupp && supp == 0 {
 		t.Errorf("no rate suppression at rate 100")
