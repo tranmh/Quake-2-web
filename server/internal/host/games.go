@@ -191,6 +191,8 @@ func ModeSettings(spec api.GameSpec) (dedicated bool, cvars [][2]string, err err
 		set("deathmatch", "1")
 		set("coop", "0")
 		if spec.Mode == "ctf" {
+			// selects the ctf module, like loading ctf/game.so (game/g_main Init reads "game")
+			set("game", "ctf")
 			set("ctf", "1")
 		} else {
 			set("ctf", "0")

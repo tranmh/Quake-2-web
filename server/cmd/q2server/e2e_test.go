@@ -394,3 +394,32 @@ func TestE2EPostgres(t *testing.T) {
 	t.Run("sp", func(t *testing.T) { testSinglePlayerSaveLoad(t, dbtest.URL(t)) })
 	t.Run("dm", func(t *testing.T) { testDeathmatch(t, dbtest.URL(t)) })
 }
+
+// TestE2ECTF checks that a "ctf" game runs the CTF module (ctf/game.so equivalent):
+// the CTF item table is registered and the team menu / team command work.
+func TestE2ECTF(t *testing.T) {
+	e := newE2E(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	alice := e.signup("alice")
+	g := alice.createGame("/api/v1/games", map[string]any{"mode": "ctf", "map": "demo1"})
+	if g.Mode != "ctf" {
+		t.Fatalf("created %+v", g)
+	}
+	a := alice.connect(ctx, g.ID)
+	drive(ctx, t, a, 300*time.Millisecond, shared.UserCmd{Msec: 25})
+	var grapple bool
+	for i := q2const.CS_ITEMS; i < q2const.CS_ITEMS+q2const.MAX_ITEMS; i++ {
+		if a.ConfigStrings[i] == "Grapple" {
+			grapple = true
+		}
+	}
+	if !grapple {
+		t.Fatalf("CTF item table not active (no Grapple configstring)")
+	}
+	a.StringCmd("team red")
+	drive(ctx, t, a, 500*time.Millisecond, shared.UserCmd{Msec: 25})
+	if !strings.Contains(strings.ToLower(strings.Join(a.Prints, "")), "red team") {
+		t.Errorf("team red not acknowledged: %q", a.Prints)
+	}
+}
