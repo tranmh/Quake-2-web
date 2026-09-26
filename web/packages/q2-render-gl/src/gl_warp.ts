@@ -9,6 +9,18 @@ import { GL_QUADS, GL_TRIANGLE_FAN } from './qgl';
 
 export const SUBDIVIDE_SIZE = 64;
 
+/**
+ * Port: memory safety limits for SubdividePolygon on crafted maps. qbsp never emits warp faces larger
+ * than a few hundred units (a handful of 64 unit pieces each); C would recurse forever on coordinates
+ * beyond BoundPoly's +-9999 start values and cut huge faces into millions of polygons.
+ */
+export const MAX_WARP_POLYS = 1 << 18;
+const MAX_SUBDIVIDE_DEPTH = 64;
+
+export interface SubdivideBudget {
+  polys: number;
+}
+
 // C: gl_warp.c:36 BoundPoly
 function BoundPoly(numverts: number, verts: Float32Array, mins: Float32Array, maxs: Float32Array): void {
   mins[0] = mins[1] = mins[2] = 9999;
@@ -31,7 +43,10 @@ export function SubdividePolygon(
   numverts: number,
   verts: Float32Array,
   sysError: (m: string) => never,
+  budget: SubdivideBudget = { polys: 0 },
+  depth = 0,
 ): void {
+  if (depth > MAX_SUBDIVIDE_DEPTH) sysError('SubdividePolygon: bad polygon bounds'); // port
   const mins = new Float32Array(3);
   const maxs = new Float32Array(3);
   const front = new Float32Array(64 * 3);
@@ -88,12 +103,13 @@ export function SubdividePolygon(
       }
     }
 
-    SubdividePolygon(warpface, f, front, sysError);
-    SubdividePolygon(warpface, b, back, sysError);
+    SubdividePolygon(warpface, f, front, sysError, budget, depth + 1);
+    SubdividePolygon(warpface, b, back, sysError, budget, depth + 1);
     return;
   }
 
   // add a point in the center to help keep warp valid
+  if (++budget.polys > MAX_WARP_POLYS) sysError('SubdividePolygon: too many warp polygons'); // port
   const poly = new GLPoly(numverts + 2);
   poly.next = warpface.polys;
   warpface.polys = poly;
@@ -151,7 +167,9 @@ export function GL_SubdivideSurface(r: GLState, fa: MSurface): void {
     verts[numverts * 3 + 2] = lm.vertexes[vi * 3 + 2]!;
     numverts++;
   }
-  SubdividePolygon(fa, numverts, verts, (m) => r.ri.sysError(ERR_DROP, m));
+  const budget = { polys: r.warpPolys };
+  SubdividePolygon(fa, numverts, verts, (m) => r.ri.sysError(ERR_DROP, m), budget);
+  r.warpPolys = budget.polys;
 }
 
 // =========================================================

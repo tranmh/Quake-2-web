@@ -67,6 +67,8 @@ export class GameSession {
   private sound: Sound | null = null;
   private raf = 0;
   private disposed = false;
+  /** the frame loop was stopped for good (WebGL context lost) */
+  private disposedLoop = false;
   private readonly cleanup: (() => void)[] = [];
   private configTimer: ReturnType<typeof setTimeout> | null = null;
   private configDirty = false;
@@ -208,7 +210,13 @@ export class GameSession {
         },
       });
       if (this.disposed) {
-        engine.shutdown();
+        // dispose() ran while the engine initialized (re.init / S_Init happened after its cleanup)
+        try {
+          engine.shutdown();
+          refresh.shutdown();
+        } catch {
+          // ignore
+        }
         return;
       }
       this.engine = engine;
@@ -245,7 +253,7 @@ export class GameSession {
   // ------------------------------------------------------------------ frame loop
 
   private loop = (): void => {
-    if (this.disposed) return;
+    if (this.disposed || this.disposedLoop) return;
     this.raf = requestAnimationFrame(this.loop);
     const engine = this.engine;
     if (!engine) return;
@@ -300,6 +308,12 @@ export class GameSession {
     };
 
     const onKey = (down: boolean) => (e: KeyboardEvent) => {
+      if (!down) {
+        // keys.c turns every key up into its -command whatever key_dest is: a key released while the
+        // React menu is open (Esc / lost pointer lock) must still stop +forward, +attack, ...
+        if (engine.keyboardEvent(e.code, false, e.key) && !this.overlayOpen() && !typingInForm(e)) e.preventDefault();
+        return;
+      }
       if (this.overlayOpen() || typingInForm(e)) return;
       // leave browser shortcuts that the game does not use alone (reload, devtools, fullscreen)
       if (e.code === 'F5' || e.code === 'F11' || e.code === 'F12') return;
@@ -322,7 +336,7 @@ export class GameSession {
       engine.mouseButton(e.button, true);
     });
     this.listen(window, 'mouseup', (e: MouseEvent) => {
-      if (document.pointerLockElement !== canvas) return;
+      // also after the lock was lost while the button was held (key up events are always delivered)
       engine.mouseButton(e.button, false);
     });
     this.listen(canvas, 'contextmenu', (e: MouseEvent) => e.preventDefault());
@@ -362,6 +376,15 @@ export class GameSession {
     this.cleanup.push(() => ro.disconnect());
 
     this.listen(window, 'beforeunload', () => this.flushConfig());
+
+    // The renderer keeps no copy of its GPU objects: after a lost context nothing could be drawn again.
+    this.listen(canvas, 'webglcontextlost', (e: Event) => {
+      e.preventDefault();
+      cancelAnimationFrame(this.raf);
+      this.disposedLoop = true;
+      if (document.pointerLockElement) document.exitPointerLock();
+      this.set({ phase: 'error', fatal: 'The graphics context was lost (GPU reset or too many WebGL pages). Retry to reload the game.' });
+    });
   }
 
   async lockPointer(): Promise<void> {

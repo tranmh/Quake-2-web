@@ -5,6 +5,7 @@
 // log a resource error in the console on every page).
 import { create } from 'zustand';
 import { api, type User } from './api';
+import { clearLocalConfig } from './config';
 
 const HINT = 'q2.session';
 
@@ -71,6 +72,8 @@ export const useSession = create<SessionState>((set) => ({
       await api.logout();
     } finally {
       setHint(false);
+      // the local config.cfg mirror belongs to this account (shared computers)
+      clearLocalConfig();
       set({ user: null, loaded: true });
     }
   },

@@ -48,6 +48,8 @@ export function indexKey(path: string): string {
 }
 
 export function assetUrl(sha256: string): string {
+  // the hash comes from the server's JSON index: never let it turn into another path or a CSS url() break-out
+  if (!/^[0-9a-f]{64}$/.test(sha256)) throw new ApiError(0, 'asset', `bad asset hash ${JSON.stringify(sha256).slice(0, 80)}`);
   return `/assets/${sha256}`;
 }
 
@@ -218,5 +220,10 @@ export function picUrl(index: AssetIndex | null, name: string): string | null {
   if (!index) return null;
   const path = name.includes('/') ? name : `pics/${name}.pcx`;
   const e = index.files[indexKey(path)];
-  return e?.png ? assetUrl(e.png.sha256) : null;
+  if (!e?.png) return null;
+  try {
+    return assetUrl(e.png.sha256);
+  } catch {
+    return null;
+  }
 }

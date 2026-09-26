@@ -27,6 +27,8 @@ import { BatchWriter, writeOrigins, writeRaw, writeStart, writeStopAll, writeUpd
 
 // C: snd_dma.c
 export const MAX_SFX = MAX_SOUNDS * 2;
+/** port: upper bound of one resampled sound (16 MiB: minutes of 44 kHz 16 bit audio) */
+export const MAX_SFX_BYTES = 1 << 24;
 
 /** The DMA device as seen from the main thread (SNDDMA_*). */
 export interface SoundBackend {
@@ -328,6 +330,16 @@ export class MainSound implements Sound {
         if (info.error) Com_Printf(c, '%s\n', info.error);
         if (info.channels !== 1) {
           Com_Printf(c, '%s is a stereo sample\n', s.name);
+          s.failed = true;
+          return null;
+        }
+        // port: memory safety -- the resampled length comes straight from the header (a tiny file
+        // claiming a 1 Hz rate asks ResampleSfx for tens of millions of samples, C allocates and loops)
+        const stepscale = Math.fround(Math.fround(info.rate) / this.speed);
+        const outwidth = this.s_loadas8bit?.value ? 1 : info.width;
+        const outcount = Math.trunc(Math.fround(info.samples / stepscale));
+        if (!(stepscale > 0) || outcount * outwidth > MAX_SFX_BYTES) {
+          Com_Printf(c, '%s: bad sample rate or size\n', s.name);
           s.failed = true;
           return null;
         }

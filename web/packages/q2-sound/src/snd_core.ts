@@ -845,6 +845,9 @@ export class SoundCore {
               // channel just stopped
               ch.sfx = -1;
             }
+            // port: memory safety -- a loop point at / past the end of the sample (crafted WAV cue chunk)
+            // or a zero length autosound makes no progress: C spins here forever
+            if (ch.sfx >= 0 && ch.end <= ltime) ch.sfx = -1;
           }
         }
       }

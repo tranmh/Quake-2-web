@@ -12,6 +12,14 @@ export function readLocalConfig(): string | null {
   }
 }
 
+export function clearLocalConfig(): void {
+  try {
+    localStorage.removeItem(LS_KEY);
+  } catch {
+    // storage unavailable
+  }
+}
+
 export function writeLocalConfig(text: string): void {
   try {
     localStorage.setItem(LS_KEY, text);

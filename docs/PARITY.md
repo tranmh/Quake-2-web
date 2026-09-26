@@ -408,6 +408,12 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 - sv: PVS/PHS lookups for cluster -1 count as "not visible" (C reads out of bounds); configstring writes clamp at the array
   end; PF_*printf 1024-byte buffers truncate; clc_move checksum range bounded by buffer size.
 - sv: NET_Config, master heartbeats (inert), localtime, gamedir filesystem replaced by host, SaveStore, DemoCreate, FileSystem interfaces.
+- sv/cmodel (review 02, docs/review/02-go-engine.md; invalid/hostile input only): clc_move checksum start clamped too;
+  `configstrings`/`baselines` with a negative start begin at 0; `begin` is ignored unless sv.state == ss_game;
+  client stringcmd `$name` expansion only reads CVAR_SERVERINFO cvars (others expand to "", like unknown cvars);
+  client edict pointers re-pointed after ge->ReadGame; a Go runtime panic under HandlePacket/Frame/ExecuteText
+  shuts only that instance down (InternalError); maps whose node graph is not a forest (cycles, shared subtrees) are
+  rejected at load; leaf clusters < -1 count as not visible in CM_HeadnodeVisible.
 - q2-client (TS, Phase 3): downloads replaced by async asset loading (map checksum still verified vs CS_MAPCHECKSUM);
   async registration with generation guards; async `exec`; `seta/setu/sets/toggle` added; demos recorded in memory;
   pingservers unavailable, rcon over current connection only, no CD audio / VID_CheckChanges; menus delegated to React host;
@@ -434,3 +440,7 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   asm (`vol>>3`); `portableC8bit: true` reproduces the C. Sounds started before data loads play once loaded with the
   original start time; worklet resamples linearly if the browser refuses the s_khz rate; commands dropped before first gesture.
 - cl_cin: async file load (C synchronous); short read → ERR_DROP. cl_fx: out-of-range flash index reads 0.
+- Review 05 (renderer/sound, memory safety on crafted assets only): texinfo animation chains capped at texinfo count;
+  PVS decompression bounded (out-of-range cluster = all visible); MD2 glcmd counts validated (ERR_DROP); warp subdivision
+  capped (2^18 polys/model, depth 64); BSP node cycles/shared subtrees rejected; sound channels with invalid loop points
+  stopped; resampled sounds capped at 16 MiB. Valid assets unchanged (oracle tests bit-exact).

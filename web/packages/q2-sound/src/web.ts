@@ -85,6 +85,7 @@ export class WebAudioBackend implements SoundBackend {
       try {
         const url = this.o.workletUrl ?? new URL('./worklet.ts', import.meta.url);
         await ctx.audioWorklet.addModule(url);
+        if (this.ctx !== ctx) return; // shut down while the module loaded: do not build a node on a closed context
         const sab =
           (this.o.useSharedArrayBuffer ?? true) &&
           typeof SharedArrayBuffer !== 'undefined' &&

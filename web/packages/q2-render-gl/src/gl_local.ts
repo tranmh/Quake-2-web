@@ -328,6 +328,8 @@ export class GLState {
   readonly skyaxis = new Float32Array(3);
   readonly sky_images: Image[] = [];
   warpface: MSurface = null as unknown as MSurface;
+  /** port: SURF_WARP polygons created for the model being loaded (bounded, see GL_SubdivideSurface) */
+  warpPolys = 0;
   c_sky = 0;
   /** skymins[2][6] row-major */
   readonly skymins = new Float32Array(12);

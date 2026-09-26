@@ -48,6 +48,13 @@ function PaksManager() {
   const [drag, setDrag] = useState(false);
   const nextId = useRef(1);
   const fileInput = useRef<HTMLInputElement>(null);
+  // leaving the page stops uploads and job polling (no setState on an unmounted page, no endless polling)
+  const alive = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const ac = new AbortController();
+    alive.current = ac;
+    return () => ac.abort();
+  }, []);
 
   const reload = useCallback(async () => {
     try {
@@ -76,9 +83,11 @@ function PaksManager() {
 
   const upload = async (file: File) => {
     const id = nextId.current++;
+    const signal = alive.current?.signal;
+    if (!signal || signal.aborted) return;
     setUploads((l) => [{ id, name: file.name, size: file.size, loaded: 0, status: 'uploading' }, ...l]);
     try {
-      const r = await uploadPak(file, (p) => patch(id, { loaded: p.loaded }));
+      const r = await uploadPak(file, (p) => patch(id, { loaded: p.loaded }), signal);
       patch(id, { loaded: file.size });
       void reload();
       if (!r.job) {
@@ -88,6 +97,7 @@ function PaksManager() {
       patch(id, { status: 'ingesting', jobProgress: 0 });
       for (;;) {
         await new Promise((res) => setTimeout(res, 1000));
+        if (signal.aborted) return;
         const job = await api.getJob(r.job.id);
         patch(id, { jobProgress: job.progress });
         if (job.status === 'done') {
@@ -101,6 +111,7 @@ function PaksManager() {
       }
       void reload();
     } catch (e) {
+      if (signal.aborted) return;
       patch(id, { status: 'failed', message: errorMessage(e) });
     }
   };

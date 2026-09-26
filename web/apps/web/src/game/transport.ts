@@ -16,7 +16,15 @@ class TicketedTransport implements DatagramTransport {
     url.then(
       (u) => {
         if (this.closed) return;
-        const t = WebSocketTransport.connect(u);
+        let t: WebSocketTransport;
+        try {
+          t = WebSocketTransport.connect(u);
+        } catch (e) {
+          // e.g. SecurityError for ws:// from an https page: report it instead of "connecting" forever
+          this.closed = true;
+          this.onClose?.(`cannot open websocket: ${errorMessage(e)}`);
+          return;
+        }
         t.onMessage = (d) => this.onMessage?.(d);
         t.onClose = (r) => {
           if (this.closed) return;

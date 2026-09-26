@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start --port 3000",
     "typecheck": "next typegen && tsc -p tsconfig.json --noEmit",
-    "test": "echo 'e2e: pnpm --filter web e2e'",
+    "test": "vitest run",
     "e2e": "playwright test"
   },
   "dependencies": {

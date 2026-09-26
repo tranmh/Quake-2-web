@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
 import { api, errorMessage } from '@/lib/api';
+import { safeNextPath } from '@/lib/nav';
 import { useSession } from '@/lib/session';
 import { Q2Text } from './Q2Text';
 
@@ -15,7 +16,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const next = params.get('next') || '/servers';
+  const next = safeNextPath(params.get('next'));
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -25,7 +26,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
       const u =
         mode === 'login' ? await api.login(email, password) : await api.register(email, password, displayName || email.split('@')[0]!);
       setUser(u);
-      router.push(next.startsWith('/') ? next : '/servers');
+      router.push(next);
     } catch (err) {
       setError(errorMessage(err));
     } finally {

@@ -85,14 +85,22 @@ export function Mod_DecompressVis(r: GLState, inofs: number, model: Model): Uint
     return decompressed;
   }
   const vis = model.vis;
+  // port: memory safety -- C reads past the vis lump (and overruns the static row) for a truncated or
+  // malformed row; here the row ends at the lump end / buffer end and the rest stays invisible.
+  if (row > decompressed.length) row = decompressed.length;
   let inp = inofs;
   do {
+    if (inp >= vis.length) {
+      decompressed.fill(0, out, row);
+      break;
+    }
     if (vis[inp]) {
       decompressed[out++] = vis[inp++]!;
       continue;
     }
-    let c = vis[inp + 1]!;
+    let c = vis[inp + 1] ?? 0;
     inp += 2;
+    if (c > row - out) c = row - out;
     while (c) {
       decompressed[out++] = 0;
       c--;
@@ -104,6 +112,8 @@ export function Mod_DecompressVis(r: GLState, inofs: number, model: Model): Uint
 // C: gl_model.c:124 Mod_ClusterPVS
 export function Mod_ClusterPVS(r: GLState, cluster: number, model: Model): Uint8Array {
   if (cluster === -1 || !model.vis) return r.mod_novis;
+  // port: memory safety -- a leaf cluster beyond dvis_t.numclusters reads garbage offsets in C
+  if (cluster < 0 || cluster >= model.visNumclusters) return r.mod_novis;
   return Mod_DecompressVis(r, model.visBitofs[cluster * 2]!, model);
 }
 
@@ -271,7 +281,7 @@ function Mod_LoadTexinfo(r: GLState, bsp: BspFile): void {
     for (let j = 0; j < 8; j++) o.vecs[j] = t.vecs[i * 8 + j]!;
     o.flags = t.flags[i]!;
     const next = t.nexttexinfo[i]!;
-    o.next = next > 0 ? out[next]! : null;
+    o.next = next > 0 ? (out[next] ?? null) : null; // port: memory safety (C: no bounds check)
     const name = texinfoImageName(t.texture[i]!);
     const image = GL_FindImage(r, name, it_wall);
     if (!image) {
@@ -284,7 +294,9 @@ function Mod_LoadTexinfo(r: GLState, bsp: BspFile): void {
   for (let i = 0; i < count; i++) {
     const o = out[i]!;
     o.numframes = 1;
-    for (let step = o.next; step && step !== o; step = step.next) o.numframes++;
+    // port: a chain that cycles without returning to `o` loops forever in C; no real chain is longer
+    // than the texinfo count
+    for (let step = o.next; step && step !== o && o.numframes < count; step = step.next) o.numframes++;
   }
 }
 
@@ -340,6 +352,7 @@ function Mod_LoadFaces(r: GLState, bsp: BspFile): void {
   const out: MSurface[] = [];
   for (let i = 0; i < count; i++) out.push(new MSurface());
   m.surfaces = out;
+  r.warpPolys = 0;
   m.numsurfaces = count;
 
   r.currentmodel = m;
@@ -391,12 +404,19 @@ function Mod_LoadFaces(r: GLState, bsp: BspFile): void {
   GL_EndBuildingLightmaps(r);
 }
 
-// C: gl_model.c:638 Mod_SetParent
-function Mod_SetParent(node: MNode, parent: MNode | null): void {
+/** port: deepest node tree accepted (qbsp trees are a few dozen levels; a cycle recurses forever in C) */
+const MAX_NODE_DEPTH = 1024;
+
+// C: gl_model.c:638 Mod_SetParent. Port: memory safety -- a node reached twice (a cycle, or a shared
+// subtree that makes every recursive walk exponential) is rejected; C recurses forever / freezes.
+function Mod_SetParent(r: GLState, node: MNode, parent: MNode | null, seen: Set<MNode>, depth = 0): void {
+  if (depth > MAX_NODE_DEPTH) r.ri.sysError(ERR_DROP, 'Mod_SetParent: bad node tree');
   node.parent = parent;
   if (node.contents !== -1) return;
-  Mod_SetParent(node.children[0], node);
-  Mod_SetParent(node.children[1], node);
+  if (seen.has(node)) r.ri.sysError(ERR_DROP, 'Mod_SetParent: bad node tree');
+  seen.add(node);
+  Mod_SetParent(r, node.children[0], node, seen, depth + 1);
+  Mod_SetParent(r, node.children[1], node, seen, depth + 1);
 }
 
 // C: gl_model.c:652 Mod_LoadNodes
@@ -419,6 +439,8 @@ function Mod_LoadNodes(r: GLState, bsp: BspFile): void {
     o.plane = m.planes[p]!;
     o.firstsurface = n.firstface[i]!;
     o.numsurfaces = n.numfaces[i]!;
+    if (o.firstsurface + o.numsurfaces > m.numsurfaces)
+      r.ri.sysError(ERR_DROP, 'MOD_LoadBmodel: bad node surfaces'); // port: memory safety
     o.contents = -1; // differentiate from leafs
     for (let j = 0; j < 2; j++) {
       const c = n.children[i * 2 + j]!;
@@ -427,7 +449,7 @@ function Mod_LoadNodes(r: GLState, bsp: BspFile): void {
       o.children[j] = child;
     }
   }
-  if (out.length) Mod_SetParent(out[0]!, null); // sets nodes and leafs
+  if (out.length) Mod_SetParent(r, out[0]!, null, new Set()); // sets nodes and leafs
 }
 
 // C: gl_model.c:700 Mod_LoadLeafs
@@ -537,6 +559,15 @@ export function Mod_LoadBrushModel(r: GLState, mod: Model, buffer: Uint8Array): 
   // port: pack the polygons into the static vertex buffer
   GL_UploadWorldGeometry(r, mod);
 
+  // port: memory safety -- C overruns mod_inline[] / reads past the surface array
+  if (mod.numsubmodels > r.mod_inline.length)
+    r.ri.sysError(ERR_DROP, `Mod_LoadBrushModel: ${mod.name} has too many submodels`);
+  for (let i = 0; i < mod.numsubmodels; i++) {
+    const bm = mod.submodels[i]!;
+    if (bm.firstface < 0 || bm.numfaces < 0 || bm.firstface + bm.numfaces > mod.numsurfaces)
+      r.ri.sysError(ERR_DROP, `Inline model ${i} has bad faces`);
+  }
+
   // set up the submodels
   for (let i = 0; i < mod.numsubmodels; i++) {
     const bm = mod.submodels[i]!;
@@ -571,6 +602,7 @@ export function Mod_LoadAliasModel(r: GLState, mod: Model, buffer: Uint8Array): 
   } catch (e) {
     sysErr(r, e);
   }
+  validateGlCmds(r, md2.glcmds, mod.name);
   mod.type = mod_alias;
   mod.alias = {
     md2,
@@ -587,6 +619,22 @@ export function Mod_LoadAliasModel(r: GLState, mod: Model, buffer: Uint8Array): 
   mod.maxs[0] = 32;
   mod.maxs[1] = 32;
   mod.maxs[2] = 32;
+}
+
+/**
+ * Port: memory safety. GL_DrawAliasFrameLerp / GL_DrawAliasShadow walk the glcmd list trusting every
+ * strip / fan count; a count beyond the list makes C read past the model (and a count near 2^31 draws
+ * billions of vertices every frame). The list may end without the 0 terminator (the walk stops there).
+ */
+function validateGlCmds(r: GLState, glcmds: Int32Array, name: string): void {
+  let p = 0;
+  while (p < glcmds.length) {
+    const count = glcmds[p++]!;
+    if (!count) return;
+    const n = Math.abs(count);
+    if (n > (glcmds.length - p) / 3) r.ri.sysError(ERR_DROP, `Mod_LoadAliasModel: ${name} has a bad glcmd list`);
+    p += n * 3;
+  }
 }
 
 // ==============================================================================

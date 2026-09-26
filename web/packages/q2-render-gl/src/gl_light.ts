@@ -133,7 +133,7 @@ export function RecursiveLightPoint(
   if ((back < 0 ? 1 : 0) === side) return RecursiveLightPoint(r, node.children[side]!, start, end, depth + 1);
 
   const frac = fr(front / fr(front - back));
-  const mid = rlpMid[depth]!;
+  const mid = (rlpMid[depth] ??= new Float32Array(3)); // port: trees deeper than 1024 nodes
   mid[0] = fr(start[0]! + fr(fr(end[0]! - start[0]!) * frac));
   mid[1] = fr(start[1]! + fr(fr(end[1]! - start[1]!) * frac));
   mid[2] = fr(start[2]! + fr(fr(end[2]! - start[2]!) * frac));

@@ -27,6 +27,21 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(here, '../..'),
   turbopack: { root: path.join(here, '../..') },
   transpilePackages: ['q2-client', 'q2-ref', 'q2-render-gl', 'q2-shared', 'q2-sound', 'q2-formats', 'q2-protocol', 'q2-pmove'],
+  // The shell must not be framed (clickjacking of Delete / upload / pointer lock); no inline-script CSP
+  // because Next.js injects inline bootstrap scripts.
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     return [
       { source: '/api/:path*', destination: `${upstream}/api/:path*` },
