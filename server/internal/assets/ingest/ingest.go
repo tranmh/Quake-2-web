@@ -197,6 +197,18 @@ func Pak(ctx context.Context, store blob.Store, p *pak.Pak, name, pakSHA string,
 		workers = runtime.GOMAXPROCS(0)
 	}
 	files := p.List()
+	// Entries may alias the same bytes; bound the total work (and the memory
+	// held by the parallel workers) by the size of the pak itself.
+	// Memory-safety check for untrusted uploads (FS_LoadPackFile has none).
+	var covered int64
+	for _, f := range files {
+		if f.FileLen > 0 {
+			covered += int64(f.FileLen)
+		}
+	}
+	if covered > size {
+		return nil, fmt.Errorf("%s: directory entries cover %d bytes but the pak has %d (overlapping entries)", name, covered, size)
+	}
 	pm := &manifest.PakManifest{
 		Schema:   manifest.Schema,
 		Name:     name,
@@ -320,11 +332,19 @@ feed:
 // ingestEntry stores entry i and fills pm.Entries[i]. Only storage errors
 // are returned; parse errors are recorded in the entry.
 func ingestEntry(ctx context.Context, store blob.Store, p *pak.Pak, i int, table *img.Table,
-	skins map[string]bool, pm *manifest.PakManifest, col *collector) error {
+	skins map[string]bool, pm *manifest.PakManifest, col *collector) (err error) {
 	f := p.Files[i]
 	e := &pm.Entries[i]
 	e.Path = f.Name
 	e.Kind = KindOf(f.Name)
+	// a parser bug reached by a crafted entry must fail that entry, not
+	// crash the process from an ingest worker goroutine
+	defer func() {
+		if r := recover(); r != nil {
+			e.Error = fmt.Sprintf("internal error parsing %s: %v", f.Name, r)
+			e.PNG = nil
+		}
+	}()
 	raw, err := p.ReadEntry(i)
 	if err != nil {
 		e.Error = err.Error()

@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -34,7 +36,7 @@ type pakResponse struct {
 // for a new pak, 200 {pak} when the same content was ingested before.
 func (s *server) uploadPak(w http.ResponseWriter, r *http.Request) {
 	u, ok := requireUser(w, r)
-	if !ok {
+	if !ok || s.rejectBanned(w, r, u) {
 		return
 	}
 	ct, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -42,6 +44,12 @@ func (s *server) uploadPak(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be multipart/form-data")
 		return
 	}
+	if !s.beginUpload(u.ID) {
+		w.Header().Set("Retry-After", "10")
+		writeError(w, http.StatusTooManyRequests, "too_many_uploads", "another upload of yours is still in progress")
+		return
+	}
+	defer s.endUpload(u.ID)
 	max := s.Config.MaxUploadBytes
 	r.Body = http.MaxBytesReader(w, r.Body, max+1<<20) // multipart overhead
 	mr, err := r.MultipartReader()
@@ -95,6 +103,19 @@ func (s *server) uploadPak(w http.ResponseWriter, r *http.Request) {
 	pk.Close()
 
 	ctx := r.Context()
+	if !u.IsAdmin {
+		ok, err := s.withinQuota(ctx, u.ID, sha, size)
+		if err != nil {
+			s.internal(w, r, err)
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusForbidden, "quota_exceeded", fmt.Sprintf(
+				"upload quota exceeded (at most %d paks and %d bytes per account); ask an administrator",
+				s.Config.MaxUserPaks, s.Config.MaxUserStorageBytes))
+			return
+		}
+	}
 	p, created, err := s.Repo.CreatePak(ctx, db.Pak{SHA256: sha, Name: filename, Size: size})
 	if err != nil {
 		s.internal(w, r, err)
@@ -104,7 +125,8 @@ func (s *server) uploadPak(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	needIngest := created || p.Status == db.PakFailed
+	needIngest := created || p.Status == db.PakFailed ||
+		((p.Status == db.PakPending || p.Status == db.PakIngesting) && !s.Catalog.Busy(p.ID))
 	if !needIngest {
 		if _, err := s.Store.Stat(ctx, p.ManifestSHA256); p.Status == db.PakReady && err != nil {
 			needIngest = true
@@ -128,6 +150,63 @@ func (s *server) uploadPak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, pakResponse{Pak: p, Owned: true, Job: &job})
+}
+
+// maxConcurrentUploads bounds the uploads one account may stream at once
+// (each is spooled to disk before the quota can be checked).
+const maxConcurrentUploads = 2
+
+func (s *server) beginUpload(uid int64) bool {
+	s.uploadsMu.Lock()
+	defer s.uploadsMu.Unlock()
+	if s.uploads[uid] >= maxConcurrentUploads {
+		return false
+	}
+	s.uploads[uid]++
+	return true
+}
+
+func (s *server) endUpload(uid int64) {
+	s.uploadsMu.Lock()
+	defer s.uploadsMu.Unlock()
+	if s.uploads[uid]--; s.uploads[uid] <= 0 {
+		delete(s.uploads, uid)
+	}
+}
+
+// withinQuota reports whether uid may own one more pak of size bytes
+// (MaxUserPaks / MaxUserStorageBytes over the non-public paks the account
+// owns; re-uploading a pak it already owns is always fine).
+func (s *server) withinQuota(ctx context.Context, uid int64, sha string, size int64) (bool, error) {
+	if existing, err := s.Repo.PakBySHA(ctx, sha); err == nil {
+		if owned, err := s.Repo.PakOwned(ctx, existing.ID, uid); err != nil {
+			return false, err
+		} else if owned || existing.Public {
+			return true, nil
+		}
+	} else if !errors.Is(err, db.ErrNotFound) {
+		return false, err
+	}
+	paks, err := s.Repo.ListPaks(ctx, uid)
+	if err != nil {
+		return false, err
+	}
+	var count, bytes int64
+	for _, p := range paks {
+		if p.Public {
+			continue
+		}
+		// ListPaks returns public + owned paks: the rest are owned
+		count++
+		bytes += p.Size
+	}
+	if max := s.Config.MaxUserPaks; max > 0 && count+1 > max {
+		return false, nil
+	}
+	if max := s.Config.MaxUserStorageBytes; max > 0 && bytes+size > max {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *server) uploadError(w http.ResponseWriter, err error) {

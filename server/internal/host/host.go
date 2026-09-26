@@ -13,6 +13,8 @@ import (
 	"fmt"
 	stdnet "net"
 	"net/http"
+	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +29,14 @@ import (
 
 // ErrNoInstance is returned for an unknown instance id.
 var ErrNoInstance = errors.New("host: no such game instance")
+
+// Per-connection datagram rate limit (token bucket): a Quake 2 client sends
+// one packet per client frame (cl_maxfps), so these leave ample headroom
+// while stopping a single connection from flooding the shared inbox.
+const (
+	connRate  = 500 // datagrams per second
+	connBurst = 500
+)
 
 // ErrStopped is returned when the instance has ended.
 var ErrStopped = errors.New("host: instance stopped")
@@ -55,6 +65,10 @@ type Host struct {
 	OriginPatterns []string
 	// Logf receives host diagnostics (may be nil).
 	Logf func(format string, args ...any)
+	// RemoteIP, when set, returns the client IP of a WebSocket request
+	// (e.g. from X-Forwarded-For behind a trusted proxy); default: the
+	// host part of RemoteAddr.
+	RemoteIP func(r *http.Request) string
 
 	nextConn atomic.Int64
 }
@@ -407,33 +421,14 @@ func (i *Instance) run() {
 	wasInit := false
 
 	for {
-		var err error
-		select {
-		case <-i.stop:
-			s.Shutdown("Server was killed.\n")
+		quit, err := i.step(s, timer, elapsed)
+		if quit {
+			if err != nil {
+				i.errMu.Lock()
+				i.err = err
+				i.errMu.Unlock()
+			}
 			return
-		case p := <-i.inbox:
-			err = s.HandlePacket(elapsed(), p)
-		case fn := <-i.control:
-			fn(s)
-			i.updateStats(s)
-		case <-timer.C:
-			var sleep int
-			t0 := time.Now()
-			sleep, err = s.Frame(elapsed())
-			if obs := i.host.TickObserver; obs != nil && s.SVS.Initialized {
-				obs(time.Since(t0))
-			}
-			if sleep < 1 {
-				sleep = 1
-			}
-			timer.Reset(time.Duration(sleep) * time.Millisecond)
-			i.updateStats(s)
-		}
-		for len(i.pending) > 0 {
-			fn := i.pending[0]
-			i.pending = i.pending[1:]
-			fn(s)
 		}
 		if err != nil {
 			i.host.logf("instance %s: %v\n", i.id, err)
@@ -448,6 +443,51 @@ func (i *Instance) run() {
 			return
 		}
 	}
+}
+
+// step handles one event of the instance loop. A panic that is not a
+// Com_Error (those are recovered by sv itself) ends this instance only:
+// without the recover it would unwind the instance goroutine and take the
+// whole process (every game and the HTTP API) down.
+func (i *Instance) step(s *sv.Server, timer *time.Timer, elapsed func() int) (quit bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			i.host.logf("instance %s: panic: %v\n%s", i.id, r, debug.Stack())
+			func() {
+				defer func() { _ = recover() }()
+				s.Shutdown("Server crashed.\n")
+			}()
+			quit, err = true, fmt.Errorf("host: instance %s panicked: %v", i.id, r)
+		}
+	}()
+	select {
+	case <-i.stop:
+		s.Shutdown("Server was killed.\n")
+		return true, nil
+	case p := <-i.inbox:
+		err = s.HandlePacket(elapsed(), p)
+	case fn := <-i.control:
+		fn(s)
+		i.updateStats(s)
+	case <-timer.C:
+		var sleep int
+		t0 := time.Now()
+		sleep, err = s.Frame(elapsed())
+		if obs := i.host.TickObserver; obs != nil && s.SVS.Initialized {
+			obs(time.Since(t0))
+		}
+		if sleep < 1 {
+			sleep = 1
+		}
+		timer.Reset(time.Duration(sleep) * time.Millisecond)
+		i.updateStats(s)
+	}
+	for len(i.pending) > 0 {
+		fn := i.pending[0]
+		i.pending = i.pending[1:]
+		fn(s)
+	}
+	return false, err
 }
 
 func (i *Instance) updateStats(s *sv.Server) {
@@ -503,7 +543,7 @@ func (a *asyncSender) SendPacket(_ qnet.Addr, data []byte) error {
 
 // ServeConn relays datagrams from a single-peer connection into the instance
 // until the connection fails or ctx ends. base identifies the remote host
-// (NET_CompareBaseAdr); each connection gets a unique port number.
+// (NET_CompareBaseAdr); each connection gets a unique base and port number.
 func (i *Instance) ServeConn(ctx context.Context, conn qnet.Conn, base string) error {
 	return i.ServeConnAs(ctx, conn, base, nil)
 }
@@ -515,7 +555,18 @@ func (i *Instance) ServeConn(ctx context.Context, conn qnet.Conn, base string) e
 func (i *Instance) ServeConnAs(ctx context.Context, conn qnet.Conn, base string, p *Player) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	addr := qnet.Addr{Base: base, Port: int(i.host.nextConn.Add(1))}
+	n := int(i.host.nextConn.Add(1))
+	if !qnet.IsLocalAddress(qnet.Addr{Base: base}) {
+		// Every connection is its own "host" for NET_CompareBaseAdr: the
+		// server routes sequenced packets by base address + qport and
+		// reuses a slot on "connect" from the same base, so connections
+		// sharing a remote IP (all browsers behind the reverse proxy or one
+		// NAT) could otherwise inject commands into, or take over, each
+		// other's clients by guessing a 16-bit qport. The IP stays in
+		// front ("1.2.3.4#17") so the game's SV_FilterPacket still parses it.
+		base = base + "#" + strconv.Itoa(n)
+	}
+	addr := qnet.Addr{Base: base, Port: n}
 	i.connMu.Lock()
 	i.conns[addr] = p
 	i.connMu.Unlock()
@@ -528,11 +579,22 @@ func (i *Instance) ServeConnAs(ctx context.Context, conn qnet.Conn, base string,
 		case <-ctx.Done():
 		}
 	}()
+	tokens, last := float64(connBurst), time.Now()
 	for {
 		d, err := conn.Recv(ctx)
 		if err != nil {
 			return err
 		}
+		now := time.Now()
+		tokens += now.Sub(last).Seconds() * connRate
+		last = now
+		if tokens > connBurst {
+			tokens = connBurst
+		}
+		if tokens < 1 {
+			continue // over the rate: dropped, like an overflowing socket buffer
+		}
+		tokens--
 		i.Deliver(qnet.Packet{From: addr, Via: via, Data: d})
 	}
 }
@@ -621,6 +683,11 @@ func (h *Host) serveWS(w http.ResponseWriter, r *http.Request) {
 	base := r.RemoteAddr
 	if hst, _, err := stdnet.SplitHostPort(r.RemoteAddr); err == nil {
 		base = hst
+	}
+	if h.RemoteIP != nil {
+		if ip := h.RemoteIP(r); ip != "" {
+			base = ip
+		}
 	}
 	_ = inst.ServeConnAs(r.Context(), conn, base, player)
 	_ = conn.Close()

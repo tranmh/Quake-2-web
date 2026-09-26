@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"runtime"
 	"testing"
 
 	"quake2web/server/internal/assets/pak"
@@ -97,4 +98,23 @@ func FuzzDecode(f *testing.F) {
 			t.Fatal("size mismatch")
 		}
 	})
+}
+
+// A small RLE file must not make Decode allocate gigabytes: the old bound
+// (pixels <= 128*len(data)) let a 2 MiB entry claim 16384x16384 and
+// allocate 1 GiB of RGBA (65535x65535 from 34 MiB: 16 GiB), which, with
+// ingest workers running in parallel, OOM-kills the whole server.
+func TestRLEHugeDimensionsRejectedWithoutAllocation(t *testing.T) {
+	data := append(header(10, 24, 16384, 16384), make([]byte, 2200000)...)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := Decode(data)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("16384x16384 RLE image accepted")
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 256<<20 {
+		t.Fatalf("Decode allocated %d MiB for a %d KiB input", got>>20, len(data)>>10)
+	}
 }

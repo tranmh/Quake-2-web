@@ -157,3 +157,20 @@ func TestTickets(t *testing.T) {
 		t.Fatal(ts.Len())
 	}
 }
+
+// Password hashing is bounded: when every slot is busy a login waits and
+// gives up with its context instead of starting another argon2 run.
+func TestHashingSlotsBounded(t *testing.T) {
+	s := NewServiceWithParams(db.NewMemory(), time.Hour, fast)
+	if cap(s.hashSem) < 2 {
+		t.Fatalf("hash slots %d", cap(s.hashSem))
+	}
+	for i := 0; i < cap(s.hashSem); i++ {
+		s.hashSem <- struct{}{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, _, _, err := s.Login(ctx, "nobody@example.com", "password123", "", ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("login with all slots busy: %v", err)
+	}
+}

@@ -56,3 +56,21 @@ func FuzzParse(f *testing.F) {
 	f.Add(build(1, true, true))
 	f.Fuzz(func(t *testing.T, data []byte) { Parse(data) })
 }
+
+// Huge sound parameters must not overflow the int64 read position (which
+// then went negative and panicked on data[p:], crashing the ingest worker
+// and with it the whole server).
+func TestParseSoundSizeOverflow(t *testing.T) {
+	le := binary.LittleEndian
+	b := make([]byte, HeaderSize+HuffTableSize)
+	le.PutUint32(b[8:], 14<<27) // rate: 2^27 samples in frame 0
+	le.PutUint32(b[12:], 1<<30) // sample width
+	le.PutUint32(b[16:], 1<<6)  // channels: 2^27*2^30*2^6 = 2^63
+	b = le.AppendUint32(b, 0)   // command
+	b = le.AppendUint32(b, 1)   // compressed size
+	b = append(b, 0)            // compressed data
+	b = append(b, make([]byte, 16)...)
+	if _, err := Parse(b); !errors.Is(err, ErrBad) {
+		t.Fatalf("err = %v, want ErrBad", err)
+	}
+}

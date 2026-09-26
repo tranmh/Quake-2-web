@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -41,6 +42,24 @@ type Service struct {
 	// dummy is a hash verified for unknown emails so that login timing does
 	// not reveal whether an account exists.
 	dummy string
+	// hashSem bounds concurrent argon2 computations (19 MiB each by
+	// default): the per-IP login limiter does not stop many source
+	// addresses (an IPv6 prefix, a botnet) from exhausting memory.
+	hashSem chan struct{}
+}
+
+// hashing runs fn while holding a password hashing slot.
+func (s *Service) hashing(ctx context.Context, fn func()) error {
+	if s.hashSem != nil {
+		select {
+		case s.hashSem <- struct{}{}:
+			defer func() { <-s.hashSem }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	fn()
+	return nil
 }
 
 // NewService returns a Service with default argon2 parameters.
@@ -51,7 +70,11 @@ func NewService(repo db.Repo, ttl time.Duration) *Service {
 // NewServiceWithParams allows cheaper parameters (tests).
 func NewServiceWithParams(repo db.Repo, ttl time.Duration, p Params) *Service {
 	dummy, _ := HashPassword("not a password", p)
-	return &Service{Repo: repo, TTL: ttl, Params: p, Now: time.Now, dummy: dummy}
+	slots := runtime.GOMAXPROCS(0)
+	if slots < 2 {
+		slots = 2
+	}
+	return &Service{Repo: repo, TTL: ttl, Params: p, Now: time.Now, dummy: dummy, hashSem: make(chan struct{}, slots)}
 }
 
 // TokenHash is the session id stored for a cookie token.
@@ -100,7 +123,10 @@ func (s *Service) Register(ctx context.Context, email, password, displayName str
 			return db.User{}, &ValidationError{"displayName", "must not contain control characters"}
 		}
 	}
-	hash, err := HashPassword(password, s.Params)
+	var hash string
+	if herr := s.hashing(ctx, func() { hash, err = HashPassword(password, s.Params) }); herr != nil {
+		return db.User{}, herr
+	}
 	if err != nil {
 		return db.User{}, err
 	}
@@ -116,13 +142,19 @@ func (s *Service) Register(ctx context.Context, email, password, displayName str
 func (s *Service) Login(ctx context.Context, email, password, userAgent, ip string) (string, db.Session, db.User, error) {
 	u, err := s.Repo.UserByEmail(ctx, strings.TrimSpace(email))
 	if errors.Is(err, db.ErrNotFound) {
-		VerifyPassword(s.dummy, password) //nolint:errcheck // timing equalization
+		// timing equalization
+		if herr := s.hashing(ctx, func() { VerifyPassword(s.dummy, password) }); herr != nil { //nolint:errcheck
+			return "", db.Session{}, db.User{}, herr
+		}
 		return "", db.Session{}, db.User{}, ErrInvalidCredentials
 	}
 	if err != nil {
 		return "", db.Session{}, db.User{}, err
 	}
-	ok, err := VerifyPassword(u.PasswordHash, password)
+	var ok bool
+	if herr := s.hashing(ctx, func() { ok, err = VerifyPassword(u.PasswordHash, password) }); herr != nil {
+		return "", db.Session{}, db.User{}, herr
+	}
 	if err != nil {
 		return "", db.Session{}, db.User{}, fmt.Errorf("auth: user %d: %w", u.ID, err)
 	}

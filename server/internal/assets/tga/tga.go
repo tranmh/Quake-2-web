@@ -43,7 +43,15 @@ var (
 	ErrDepth = errors.New("LoadTGA: Only 32 or 24 bit images supported (no colormaps)")
 	// ErrShort is returned where C would read past the end of the buffer.
 	ErrShort = errors.New("tga: truncated")
+	// ErrTooLarge is returned for images wider or taller than MaxDimension.
+	ErrTooLarge = errors.New("tga: image too large")
 )
+
+// MaxDimension bounds width and height (memory-safety deviation for
+// untrusted uploads: C LoadTGA has no limit, but a crafted RLE header could
+// otherwise make a few MiB of input allocate gigabytes; ref_gl resamples
+// every upload to at most 256x256 anyway).
+const MaxDimension = 4096
 
 // Decode parses a Targa file.
 // C: ref_gl/gl_image.c:539 LoadTGA
@@ -73,6 +81,9 @@ func Decode(data []byte) (*Image, error) {
 		return nil, ErrDepth
 	}
 	columns, rows := int(h.Width), int(h.Height)
+	if columns > MaxDimension || rows > MaxDimension { // memory-safety (not in C)
+		return nil, ErrTooLarge
+	}
 	// memory-safety (not in C): refuse sizes the data cannot possibly cover
 	// before allocating (an RLE packet yields at most 128 pixels)
 	if n := columns * rows; (h.ImageType == 2 && n*int(h.PixelSize/8) > len(data)) || n > 128*len(data) {

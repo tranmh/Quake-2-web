@@ -50,6 +50,8 @@ type Catalog struct {
 	baseCtx  context.Context
 	cancel   context.CancelFunc
 	inflight map[int64]bool
+	// active counts the queued or running jobs per pak id.
+	active map[int64]int
 }
 
 // CachedIndex is a merged, serialized pakset index.
@@ -86,7 +88,7 @@ func NewCatalog(repo db.Repo, store blob.Store, log *slog.Logger, workers int, u
 	c := &Catalog{
 		repo: repo, store: store, log: log, uploadDir: uploadDir,
 		mans: map[string]*manifest.PakManifest{}, indexes: map[string]*CachedIndex{},
-		queue: make(chan ingestReq, 64), baseCtx: ctx, cancel: cancel, inflight: map[int64]bool{},
+		queue: make(chan ingestReq, 64), baseCtx: ctx, cancel: cancel, inflight: map[int64]bool{}, active: map[int64]int{},
 	}
 	for i := 0; i < workers; i++ {
 		c.wg.Add(1)
@@ -158,14 +160,33 @@ func (c *Catalog) Enqueue(ctx context.Context, p db.Pak, path string, userID int
 	}
 	select {
 	case c.queue <- ingestReq{pak: p, path: path, jobID: job.ID}:
+		c.active[p.ID]++
 	default:
 		c.repo.UpdateJob(ctx, job.ID, db.JobFailed, 0, "ingest queue full") //nolint:errcheck
+		// not "pending" forever: a later upload of the same bytes retries
+		c.repo.SetPakStatus(ctx, p.ID, db.PakFailed, "ingest queue full") //nolint:errcheck
 		return job, errors.New("ingest queue full")
 	}
 	return job, nil
 }
 
+// Busy reports whether an ingest job of the pak is queued or running in
+// this process. A pak row that is "pending" or "ingesting" without being
+// busy was left behind by an interrupted ingest (e.g. a restart).
+func (c *Catalog) Busy(pakID int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.active[pakID] > 0
+}
+
 func (c *Catalog) runJob(ctx context.Context, req ingestReq) {
+	defer func() {
+		c.mu.Lock()
+		if c.active[req.pak.ID]--; c.active[req.pak.ID] <= 0 {
+			delete(c.active, req.pak.ID)
+		}
+		c.mu.Unlock()
+	}()
 	c.mu.Lock()
 	if c.inflight[req.pak.ID] {
 		c.mu.Unlock()
@@ -289,7 +310,7 @@ func (c *Catalog) IngestPak(ctx context.Context, p db.Pak, path string, jobID in
 	}
 	c.setPalette(res.Palette)
 	c.mu.Lock()
-	c.mans[res.ManifestSHA] = res.Manifest
+	c.cacheManifest(res.ManifestSHA, res.Manifest)
 	c.mu.Unlock()
 	c.invalidate()
 	log.Info("ingest done", "files", res.Manifest.NumFiles, "blobs", len(res.Blobs), "maps", len(res.Maps),
@@ -339,6 +360,21 @@ func (c *Catalog) EnsureDemo(ctx context.Context, path string) (db.Pakset, error
 	return ps, nil
 }
 
+// Cache bounds: every uploaded pak and every pakset would otherwise keep
+// its manifest / merged index (up to megabytes each) in memory forever.
+const (
+	maxCachedManifests = 256
+	maxCachedIndexes   = 256
+)
+
+// cacheManifest stores a parsed manifest (c.mu held).
+func (c *Catalog) cacheManifest(sha string, m *manifest.PakManifest) {
+	if len(c.mans) >= maxCachedManifests {
+		c.mans = map[string]*manifest.PakManifest{}
+	}
+	c.mans[sha] = m
+}
+
 func (c *Catalog) loadManifest(ctx context.Context, sha string) (*manifest.PakManifest, error) {
 	c.mu.Lock()
 	m := c.mans[sha]
@@ -356,7 +392,7 @@ func (c *Catalog) loadManifest(ctx context.Context, sha string) (*manifest.PakMa
 		return nil, fmt.Errorf("manifest %s: %w", sha, err)
 	}
 	c.mu.Lock()
-	c.mans[sha] = m
+	c.cacheManifest(sha, m)
 	c.mu.Unlock()
 	return m, nil
 }
@@ -404,6 +440,9 @@ func (c *Catalog) Index(ctx context.Context, ps db.Pakset) (*CachedIndex, error)
 	sum := sha256.Sum256(buf.Bytes())
 	ci = &CachedIndex{key: key.String(), Index: idx, JSON: buf.Bytes(), ETag: `"` + hex.EncodeToString(sum[:]) + `"`}
 	c.mu.Lock()
+	if len(c.indexes) >= maxCachedIndexes {
+		c.indexes = map[string]*CachedIndex{}
+	}
 	c.indexes[ps.ID] = ci
 	c.mu.Unlock()
 	return ci, nil

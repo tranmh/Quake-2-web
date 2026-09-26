@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -65,6 +66,10 @@ var ErrGameNotFound = errors.New("game not found")
 // ErrGameFull is returned by GameHost.Join when no slot is free.
 var ErrGameFull = errors.New("game full")
 
+// ErrGameLimit is returned by GameHost.Create when the owner (or the
+// server) already runs the maximum number of games; the API answers 429.
+var ErrGameLimit = errors.New("too many games")
+
 // ErrGameInvalid is wrapped by GameHost.Create errors caused by the spec
 // (unknown mode, forbidden cvar, ...); the API answers 400 with the message.
 var ErrGameInvalid = errors.New("invalid game settings")
@@ -109,6 +114,9 @@ type Deps struct {
 type server struct {
 	Deps
 	metrics *httpMetrics
+
+	uploadsMu sync.Mutex
+	uploads   map[int64]int // in-flight uploads per user
 }
 
 // NewRouter returns the HTTP handler for every API route:
@@ -134,7 +142,7 @@ func NewRouter(d Deps) http.Handler {
 	if d.LoginLimiterEmail == nil {
 		d.LoginLimiterEmail = auth.NewLimiter(10, 10*time.Minute)
 	}
-	s := &server{Deps: d, metrics: newHTTPMetrics(d.Metrics)}
+	s := &server{Deps: d, metrics: newHTTPMetrics(d.Metrics), uploads: map[int64]int{}}
 	mux := http.NewServeMux()
 	h := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, s.route(pattern, fn)) }
 

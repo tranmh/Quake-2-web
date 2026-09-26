@@ -184,6 +184,22 @@ func newStack(ctx context.Context, cfg config.Config, log *slog.Logger, opt stac
 	h.RequireTickets = !opt.InsecureWS
 	h.Logf = func(format string, args ...any) { log.Warn(strings.TrimRight(fmt.Sprintf(format, args...), "\n")) }
 	h.OriginPatterns = originPatterns(cfg.CORSOrigins)
+	if cfg.TrustProxy {
+		// the proxy's own address would make every player the same IP for
+		// the game's IP filters (addip/filterban); use the last X-Forwarded-For hop
+		h.RemoteIP = func(r *http.Request) string {
+			xff := r.Header.Get("X-Forwarded-For")
+			if xff == "" {
+				return ""
+			}
+			parts := strings.Split(xff, ",")
+			ip := strings.TrimSpace(parts[len(parts)-1])
+			if net.ParseIP(ip) == nil {
+				return ""
+			}
+			return ip
+		}
+	}
 
 	repo := app.Repo
 	games := host.NewGames(host.GamesConfig{

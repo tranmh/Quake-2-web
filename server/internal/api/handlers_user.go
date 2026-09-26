@@ -172,6 +172,8 @@ func (s *server) hostError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "game not found")
 	case errors.Is(err, ErrGameFull):
 		writeError(w, http.StatusConflict, "game_full", "game is full")
+	case errors.Is(err, ErrGameLimit):
+		writeError(w, http.StatusTooManyRequests, "too_many_games", err.Error())
 	case errors.Is(err, ErrGameInvalid):
 		writeError(w, http.StatusBadRequest, "invalid_game", err.Error())
 	default:
@@ -192,8 +194,27 @@ func (s *server) createGame(w http.ResponseWriter, r *http.Request) {
 	s.startGame(w, r, u, spec)
 }
 
+// rejectBanned writes 403 and returns true when the user (or the request's
+// IP) is banned. Sessions created before a ban stay valid, so actions that
+// consume server resources check it themselves.
+func (s *server) rejectBanned(w http.ResponseWriter, r *http.Request, u db.User) bool {
+	ban, err := s.Repo.ActiveBan(r.Context(), u.ID, s.clientIP(r), time.Now())
+	if err != nil {
+		s.internal(w, r, err)
+		return true
+	}
+	if ban != nil {
+		writeError(w, http.StatusForbidden, "banned", "account banned")
+		return true
+	}
+	return false
+}
+
 // startGame validates spec, starts it on the host and registers it.
 func (s *server) startGame(w http.ResponseWriter, r *http.Request, u db.User, spec GameSpec) {
+	if s.rejectBanned(w, r, u) {
+		return
+	}
 	spec.OwnerID = u.ID
 	if spec.Mode == "" {
 		spec.Mode = "sp"
@@ -481,12 +502,16 @@ func (s *server) readyz(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	out := map[string]string{"db": "ok", "blobs": "ok"}
 	status := http.StatusOK
+	// details go to the log only: this endpoint is public and errors name
+	// internal hosts, users and paths
 	if err := s.Repo.Ping(ctx); err != nil {
-		out["db"] = err.Error()
+		s.Log.Error("readyz: database", "err", err)
+		out["db"] = "error"
 		status = http.StatusServiceUnavailable
 	}
 	if err := s.Store.Check(ctx); err != nil {
-		out["blobs"] = err.Error()
+		s.Log.Error("readyz: blob store", "err", err)
+		out["blobs"] = "error"
 		status = http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, out)

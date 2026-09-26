@@ -203,7 +203,7 @@ func (s *server) allowedOrigin(r *http.Request, origin string) bool {
 		return false
 	}
 	for _, o := range s.Config.CORSOrigins {
-		if o == "*" || strings.EqualFold(o, origin) {
+		if strings.EqualFold(o, origin) {
 			return true
 		}
 	}

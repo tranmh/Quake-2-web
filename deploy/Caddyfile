@@ -57,6 +57,20 @@
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
+		# no framing (clickjacking of account actions); "?" keeps a CSP the
+		# upstream already set (e.g. the sandbox CSP of /assets/*)
+		X-Frame-Options DENY
+		?Content-Security-Policy "frame-ancestors 'none'"
 		-Server
 	}
+
+	# Access logging is off (no "log" directive). If you enable it, drop the
+	# one-time join ticket from logged WebSocket URLs:
+	#   log {
+	#       format filter {
+	#           request>uri query {
+	#               delete ticket
+	#           }
+	#       }
+	#   }
 }

@@ -26,3 +26,11 @@ func TestDefaultsAndOverrides(t *testing.T) {
 		t.Fatal("bad values accepted")
 	}
 }
+
+// "*" would reflect every Origin with credentials and disable the CSRF
+// origin check (api.allowedOrigin): refuse it.
+func TestWildcardCORSOriginRejected(t *testing.T) {
+	if _, err := FromMap(map[string]string{"Q2_CORS_ORIGINS": "http://localhost:3000,*"}); err == nil {
+		t.Fatal("wildcard CORS origin accepted")
+	}
+}

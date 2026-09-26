@@ -79,7 +79,14 @@ func Parse(data []byte) (*Header, error) {
 		start := frame * int64(h.Rate) / 14
 		end := (frame + 1) * int64(h.Rate) / 14
 		count := end - start
-		p += count * int64(h.SampWidth) * int64(h.Channels)
+		// memory-safety (not in C): the product can overflow int64 and
+		// move p backwards (negative), so bound it before adding
+		if per := int64(h.SampWidth) * int64(h.Channels); per > 0 && count > 0 {
+			if p > n || count > (n-p)/per {
+				return h, fmt.Errorf("%w: frame %d truncated", ErrBad, frame)
+			}
+			p += count * per
+		}
 		if p > n {
 			return h, fmt.Errorf("%w: frame %d truncated", ErrBad, frame)
 		}

@@ -34,6 +34,12 @@ func RealGame(rng *crand.Rand) sv.GameFactory {
 	return func(gi game.Import) game.Export { return game.New(gi, rng) }
 }
 
+// Default instance limits (GamesConfig.MaxGamesPerOwner / MaxGames).
+const (
+	DefaultMaxGamesPerOwner = 3
+	DefaultMaxGames         = 64
+)
+
 // GamesConfig configures Games.
 type GamesConfig struct {
 	// Host runs the instances (default New()).
@@ -70,6 +76,12 @@ type GamesConfig struct {
 	// Log receives diagnostics; the servers' console output is logged at
 	// debug level.
 	Log *slog.Logger
+	// MaxGamesPerOwner bounds the running games of one account (default
+	// DefaultMaxGamesPerOwner; negative: unlimited). MaxGames bounds all
+	// account-owned games together (default DefaultMaxGames; negative:
+	// unlimited). Games without an owner (the server's own) are exempt.
+	MaxGamesPerOwner int
+	MaxGames         int
 }
 
 // Games is the api.GameHost of the game server: it turns GameSpecs into
@@ -82,6 +94,8 @@ type Games struct {
 
 	mu    sync.Mutex
 	games map[string]*gameMeta
+	// starting counts the games being created per owner (reserved slots).
+	starting map[int64]int
 
 	stopReap chan struct{}
 	reapDone chan struct{}
@@ -124,10 +138,16 @@ func NewGames(cfg GamesConfig) *Games {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	if cfg.MaxGamesPerOwner == 0 {
+		cfg.MaxGamesPerOwner = DefaultMaxGamesPerOwner
+	}
+	if cfg.MaxGames == 0 {
+		cfg.MaxGames = DefaultMaxGames
+	}
 	if cfg.Tickets != nil && cfg.Host.Tickets == nil {
 		cfg.Host.Tickets = cfg.Tickets
 	}
-	g := &Games{cfg: cfg, host: cfg.Host, games: map[string]*gameMeta{},
+	g := &Games{cfg: cfg, host: cfg.Host, games: map[string]*gameMeta{}, starting: map[int64]int{},
 		stopReap: make(chan struct{}), reapDone: make(chan struct{})}
 	go g.reaper()
 	return g
@@ -239,6 +259,13 @@ func (g *Games) CreateWithID(ctx context.Context, id string, spec api.GameSpec) 
 	if g.cfg.Indexes == nil || g.cfg.Blobs == nil {
 		return "", errors.New("host: no pakset resolver configured")
 	}
+	if spec.OwnerID != 0 {
+		release, err := g.reserve(spec.OwnerID)
+		if err != nil {
+			return "", err
+		}
+		defer release()
+	}
 	idx, err := g.cfg.Indexes(ctx, spec.Pakset)
 	if err != nil {
 		return "", fmt.Errorf("pakset %s: %w", spec.Pakset, err)
@@ -268,7 +295,7 @@ func (g *Games) CreateWithID(ctx context.Context, id string, spec api.GameSpec) 
 		Server: sv.Config{
 			FS:        NewIndexFS(idx, g.cfg.Blobs),
 			Game:      g.cfg.Game(rng),
-			Maps:      g.cfg.Maps,
+			Maps:      g.mapCacheFor(spec),
 			Saves:     saves,
 			Rand:      rng,
 			Dedicated: dedicated,
@@ -324,6 +351,18 @@ func (g *Games) CreateWithID(ctx context.Context, id string, spec api.GameSpec) 
 	return id, nil
 }
 
+// mapCacheFor returns the map cache an instance of spec may use: the
+// shared cache only for the system demo pakset. sv.MapCache keys by name,
+// size and a non-cryptographic FNV-1a hash, so a crafted map in a user
+// pakset could otherwise collide with, and replace, a public map for every
+// other game (and each distinct map would stay cached forever).
+func (g *Games) mapCacheFor(spec api.GameSpec) *sv.MapCache {
+	if spec.Pakset == api.DemoPaksetID {
+		return g.cfg.Maps
+	}
+	return nil
+}
+
 // autosave writes the "autosave" slot (instance goroutine).
 func (g *Games) autosave(m *gameMeta, s *sv.Server) {
 	if !s.InGame() {
@@ -352,6 +391,10 @@ func (g *Games) clientCommand(m *gameMeta, inst *Instance, s *sv.Server, cl *sv.
 		slot := s.Cmd.Argv(1)
 		if s.Cmd.Argc() != 2 || !api.ValidSlot(slot) || slot == "current" {
 			s.ClientPrintf(cl, q2const.PRINT_HIGH, "usage: %s <slot> (letters, digits, - and _)\n", cmd)
+			return true
+		}
+		if cmd == "save" && !g.saveSlotAvailable(m, slot) {
+			s.ClientPrintf(cl, q2const.PRINT_HIGH, "Too many save slots (%d); overwrite or delete one first.\n", MaxSaveSlots)
 			return true
 		}
 		// the server's own console commands have the same names
@@ -390,10 +433,85 @@ func (g *Games) clientCommand(m *gameMeta, inst *Instance, s *sv.Server, cl *sv.
 	return false
 }
 
+// reserve takes a game slot of owner for the duration of a Create
+// (MaxGamesPerOwner / MaxGames); the returned func releases the
+// reservation (the running game then counts itself).
+func (g *Games) reserve(owner int64) (func(), error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	mine, total := g.starting[owner], 0
+	for _, n := range g.starting {
+		total += n
+	}
+	for _, m := range g.games {
+		if m.spec.OwnerID == 0 || m.ended() {
+			continue
+		}
+		total++
+		if m.spec.OwnerID == owner {
+			mine++
+		}
+	}
+	if g.cfg.MaxGamesPerOwner > 0 && mine >= g.cfg.MaxGamesPerOwner {
+		return nil, fmt.Errorf("%w: you already run %d games; stop one first", api.ErrGameLimit, mine)
+	}
+	if g.cfg.MaxGames > 0 && total >= g.cfg.MaxGames {
+		return nil, fmt.Errorf("%w: the server runs its maximum of %d games", api.ErrGameLimit, total)
+	}
+	g.starting[owner]++
+	return func() {
+		g.mu.Lock()
+		if g.starting[owner]--; g.starting[owner] <= 0 {
+			delete(g.starting, owner)
+		}
+		g.mu.Unlock()
+	}, nil
+}
+
+// ended reports whether the instance goroutine has finished (the games map
+// entry is removed shortly after, by a background goroutine).
+func (m *gameMeta) ended() bool {
+	select {
+	case <-m.inst.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// MaxSaveSlots bounds the named save slots of one account (the autosave
+// slot does not count): each is a database row of up to a few MiB.
+const MaxSaveSlots = 32
+
+// saveSlotAvailable reports whether the owner of m may write slot: it
+// exists already, or the account has fewer than MaxSaveSlots slots.
+func (g *Games) saveSlotAvailable(m *gameMeta, slot string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	list, err := g.cfg.Saves.List(ctx, m.spec.OwnerID)
+	if err != nil {
+		return true // the save itself will report the database error
+	}
+	n := 0
+	for _, si := range list {
+		if si.Slot == slot {
+			return true
+		}
+		if si.Slot != AutosaveSlot {
+			n++
+		}
+	}
+	return n < MaxSaveSlots
+}
+
+// meta returns a running game (nil for unknown or ended ones).
 func (g *Games) meta(id string) *gameMeta {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.games[id]
+	if m := g.games[id]; m != nil && !m.ended() {
+		return m
+	}
+	return nil
 }
 
 func (g *Games) info(m *gameMeta) api.GameInfo {
@@ -415,7 +533,9 @@ func (g *Games) List(context.Context) ([]api.GameInfo, error) {
 	g.mu.Lock()
 	all := make([]*gameMeta, 0, len(g.games))
 	for _, m := range g.games {
-		all = append(all, m)
+		if !m.ended() {
+			all = append(all, m)
+		}
 	}
 	g.mu.Unlock()
 	out := make([]api.GameInfo, 0, len(all))

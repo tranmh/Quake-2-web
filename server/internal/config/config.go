@@ -26,6 +26,11 @@ type Config struct {
 	DemoPak string
 	// MaxUploadBytes caps pak uploads (Q2_MAX_UPLOAD_BYTES, default 1 GiB).
 	MaxUploadBytes int64
+	// MaxUserPaks and MaxUserStorageBytes bound the non-public paks one
+	// account may own (Q2_MAX_USER_PAKS, default 50; Q2_USER_QUOTA_BYTES,
+	// default 4 GiB). Administrators are exempt.
+	MaxUserPaks         int64
+	MaxUserStorageBytes int64
 	// CookieSecure sets the Secure flag on the session cookie
 	// (Q2_COOKIE_SECURE, default true).
 	CookieSecure bool
@@ -53,17 +58,19 @@ type Config struct {
 // Default returns the defaults.
 func Default() Config {
 	return Config{
-		HTTPAddr:       ":8080",
-		BlobDir:        "./data/blobs",
-		DemoPak:        "assets/demo/baseq2/pak0.pak",
-		MaxUploadBytes: 1 << 30,
-		CookieSecure:   true,
-		SessionTTL:     30 * 24 * time.Hour,
-		CORSOrigins:    []string{"http://localhost:3000"},
-		LogLevel:       "info",
-		LogFormat:      "json",
-		IngestWorkers:  1,
-		MigrateOnStart: true,
+		HTTPAddr:            ":8080",
+		BlobDir:             "./data/blobs",
+		DemoPak:             "assets/demo/baseq2/pak0.pak",
+		MaxUploadBytes:      1 << 30,
+		MaxUserPaks:         50,
+		MaxUserStorageBytes: 4 << 30,
+		CookieSecure:        true,
+		SessionTTL:          30 * 24 * time.Hour,
+		CORSOrigins:         []string{"http://localhost:3000"},
+		LogLevel:            "info",
+		LogFormat:           "json",
+		IngestWorkers:       1,
+		MigrateOnStart:      true,
 	}
 }
 
@@ -113,6 +120,8 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		c.DemoPak = ""
 	}
 	integer("Q2_MAX_UPLOAD_BYTES", &c.MaxUploadBytes)
+	integer("Q2_MAX_USER_PAKS", &c.MaxUserPaks)
+	integer("Q2_USER_QUOTA_BYTES", &c.MaxUserStorageBytes)
 	boolean("Q2_COOKIE_SECURE", &c.CookieSecure)
 	if v, ok := lookup("Q2_SESSION_TTL"); ok && strings.TrimSpace(v) != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(v))
@@ -126,6 +135,12 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		c.CORSOrigins = nil
 		for _, o := range strings.Split(v, ",") {
 			if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
+				if strings.Contains(o, "*") {
+					// credentials are allowed for these origins and they pass
+					// the CSRF check: a wildcard would open both to any site
+					errs = append(errs, "Q2_CORS_ORIGINS: wildcards are not allowed (list explicit origins)")
+					continue
+				}
 				c.CORSOrigins = append(c.CORSOrigins, o)
 			}
 		}
