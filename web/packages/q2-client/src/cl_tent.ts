@@ -1,6 +1,7 @@
 // Port of client/cl_tent.c -- client side temporary entities (explosions, beams, lasers, sustains and
 // the svc_temp_entity parser). All globals live in TEntState (fx.tent).
 import {
+  MAX_EDICTS,
   AngleVectors,
   ATTN_NONE,
   ATTN_NORM,
@@ -998,6 +999,9 @@ export function CL_ParseTEnt(fx: FxState, msg: SizeBuf): void {
 
     case TE_LIGHTNING:
       ent = CL_ParseLightning(fx, msg, t.cl_mod_lightning);
+      // the sound follows entity `ent` (a signed short from the server); C drops later, in
+      // CL_GetEntitySoundOrigin, for numbers outside cl_entities -- drop before queueing the sound
+      if (ent < 0 || ent >= MAX_EDICTS) Com_Error(c, ERR_DROP, 'CL_ParseTEnt: bad lightning entity %i', ent);
       snd.startSound(null, ent, CHAN_WEAPON, t.cl_sfx_lightning, 1, ATTN_NORM, 0);
       break;
 

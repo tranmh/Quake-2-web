@@ -328,6 +328,53 @@ export class CollisionModel {
     for (const cm of this.cmodels) {
       if (cm.headnode >= count || -1 - cm.headnode >= this.numleafs) throw new CMError('Bad model headnode');
     }
+    this.checkNodeCycles();
+  }
+
+  /**
+   * Memory/liveness safety for hostile maps (not in C): the node graph reachable from any model headnode
+   * must be a forest: a cycle makes CM_PointLeafnum_r / CM_BoxLeafnums_r loop forever (freezing the tab) and
+   * CM_RecursiveHullCheck recurse until the stack overflows; shared subtrees make traces exponential.
+   * BSP compilers always emit one tree per model (same check as the Go server, review 02 ENG-02/03).
+   */
+  private checkNodeCycles(): void {
+    const n = this.numnodes;
+    const children = this.nodeChildren;
+    // shared subtrees (a node with two parents) make CM_RecursiveHullCheck, which descends both sides of
+    // a split, take 2^depth steps on a chain of them -- an effectively endless trace
+    const parents = new Uint8Array(n);
+    for (let i = 0; i < n * 2; i++) {
+      const child = children[i]!;
+      if (child < 0) continue;
+      if (parents[child]) throw new CMError('Map node has more than one parent');
+      parents[child] = 1;
+    }
+    const state = new Uint8Array(n); // 0 = unvisited, 1 = on the DFS path, 2 = done
+    const stack = new Int32Array(n);
+    const side = new Uint8Array(n);
+    for (const cm of this.cmodels) {
+      const root = cm.headnode;
+      if (root < 0 || state[root] === 2) continue;
+      let sp = 0;
+      stack[sp++] = root;
+      state[root] = 1;
+      side[root] = 0;
+      while (sp) {
+        const node = stack[sp - 1]!;
+        if (side[node] === 2) {
+          state[node] = 2;
+          sp--;
+          continue;
+        }
+        const child = children[node * 2 + side[node]!]!;
+        side[node] = side[node]! + 1;
+        if (child < 0 || state[child] === 2) continue;
+        if (state[child] === 1) throw new CMError('Map node graph has a cycle');
+        state[child] = 1;
+        side[child] = 0;
+        stack[sp++] = child;
+      }
+    }
   }
 
   // C: cmodel.c:442 CMod_LoadAreas

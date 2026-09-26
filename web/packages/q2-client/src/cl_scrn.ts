@@ -127,7 +127,15 @@ export function CL_AddNetgraph(c: ClientContext): void {
   // if using the debuggraph for something else, don't add the net lines
   if (cv.scr_debuggraph.value || cv.scr_timegraph.value) return;
 
-  for (let i = 0; i < cls.netchan.dropped; i++) SCR_DebugGraph(c, 30, 0x40);
+  // `dropped` comes from the server's sequence number and can be ~2^31: the C loop takes seconds, this
+  // one minutes (a frozen tab). Only the last 1024 samples survive in the ring, so skip the others: the
+  // resulting graph and `current` are identical.
+  let dropped = cls.netchan.dropped;
+  if (dropped > c.scr.values.length) {
+    c.scr.current += dropped - c.scr.values.length;
+    dropped = c.scr.values.length;
+  }
+  for (let i = 0; i < dropped; i++) SCR_DebugGraph(c, 30, 0x40);
 
   for (let i = 0; i < cl.surpressCount; i++) SCR_DebugGraph(c, 30, 0xdf);
 

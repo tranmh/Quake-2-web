@@ -96,13 +96,15 @@ export function parseMd2(data: ArrayBuffer | Uint8Array, name = 'md2'): Md2Model
   if (h.num_frames <= 0) throw new FormatError(`model ${name} has no frames`);
   if (h.num_skins < 0 || h.num_glcmds < 0) throw new FormatError(`${name}: negative count`);
 
-  const st = new Int16Array(h.num_st * 2);
+  // bounds are checked before allocating: the counts are attacker-controlled (a user-uploaded pak) and an
+  // unchecked `new Int16Array(num_st * 2)` would reserve gigabytes before the read fails
   r.check(h.ofs_st, h.num_st * 4);
+  r.check(h.ofs_tris, h.num_tris * 12);
+  const st = new Int16Array(h.num_st * 2);
   for (let i = 0; i < h.num_st * 2; i++) st[i] = r.i16(h.ofs_st + i * 2);
 
   const trisXyz = new Int16Array(h.num_tris * 3);
   const trisSt = new Int16Array(h.num_tris * 3);
-  r.check(h.ofs_tris, h.num_tris * 12);
   for (let i = 0; i < h.num_tris; i++) {
     for (let j = 0; j < 3; j++) {
       trisXyz[i * 3 + j] = r.i16(h.ofs_tris + i * 12 + j * 2);
@@ -110,6 +112,12 @@ export function parseMd2(data: ArrayBuffer | Uint8Array, name = 'md2'): Md2Model
     }
   }
 
+  // Frames must not overlap (framesize >= daliasframe_t + verts; every file written by the tools has it
+  // exactly) and must all lie inside the file -- checked up front so that a crafted num_frames with a
+  // zero framesize cannot create billions of frame objects (memory safety, not checked by the C code).
+  const minFrame = 40 + h.num_xyz * 4;
+  if (h.framesize < minFrame) throw new FormatError(`model ${name} has a bad frame size`);
+  r.check(h.ofs_frames, h.num_frames * h.framesize);
   const frames: Md2Frame[] = [];
   for (let i = 0; i < h.num_frames; i++) {
     const o = h.ofs_frames + i * h.framesize;

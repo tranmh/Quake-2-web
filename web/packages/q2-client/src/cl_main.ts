@@ -147,11 +147,14 @@ export class MainState {
 export function CL_WriteDemoMessage(c: ClientContext): void {
   const cls = c.cls;
   if (!cls.demofile) return;
-  // the first eight bytes are just packet sequencing stuff
-  const len = c.net_message.cursize - 8;
+  // the first eight bytes are just packet sequencing stuff (a played-back demo message has no netchan
+  // header here: CL_ReadDemoPackets bypasses the netchan, unlike the C server-side demo playback)
+  const hdr = c.main.demoplaying ? 0 : 8;
+  const len = c.net_message.cursize - hdr;
+  if (len < 0) return;
   const out = new Uint8Array(4 + len);
   new DataView(out.buffer).setInt32(0, len, true);
-  out.set(c.net_message.data.subarray(8, 8 + len), 4);
+  out.set(c.net_message.data.subarray(hdr, hdr + len), 4);
   cls.demofile.push(out);
 }
 
@@ -362,6 +365,9 @@ export function CL_Drop(c: ClientContext): void {
   if (cls.disable_servercount !== -1) SCR_EndLoadingPlaque(c); // get rid of loading plaque
 }
 
+/** Datagrams kept between two frames (excess ones are dropped, like a full UDP receive buffer). */
+export const MAX_QUEUED_PACKETS = 1024;
+
 /** NET_StringToAdr + socket: make sure a transport to `address` exists. Returns false on a bad address. */
 function NET_OpenTransport(c: ClientContext, address: string): boolean {
   if (!address) return false;
@@ -376,7 +382,9 @@ function NET_OpenTransport(c: ClientContext, address: string): boolean {
   c.transport = t;
   c.main.transportAddress = address;
   t.onMessage = (data) => {
-    if (c.transport === t) c.main.packets.push(data);
+    // bounded like a socket receive buffer: requestAnimationFrame stops in background tabs, and a
+    // flooding server must not grow the queue until the tab runs out of memory
+    if (c.transport === t && c.main.packets.length < MAX_QUEUED_PACKETS) c.main.packets.push(data);
   };
   t.onClose = (reason) => {
     if (c.transport !== t) return;
@@ -787,6 +795,8 @@ function CL_ReadDemoPackets(c: ClientContext): void {
   // a synchronous load in the original: hold the stream while the asynchronous precache runs
   if (m.precaching) {
     cls.netchan.last_received = c.curtime;
+    // hold the demo clock too, so the messages due meanwhile are not all parsed in one frame afterwards
+    m.demonexttime = cls.realtime;
     return;
   }
   while (m.demoplaying && m.demonexttime <= cls.realtime) {
@@ -895,9 +905,12 @@ export async function CM_LoadMap(c: ClientContext, name: string): Promise<number
     c.cm = new CollisionWorld(c.cmModel);
     return 0;
   }
+  const gen = c.clearGeneration;
   const data = await c.loadFile(name);
   if (!data) Com_Error(c, 1 /* ERR_DROP */, "Couldn't load %s", name);
   const model = CollisionModel.load(name, data);
+  // a newer level may have loaded its map while this fetch was pending (asynchronous only here): keep it
+  if (c.clearGeneration !== gen) return model.checksum >>> 0;
   c.cmModel = model;
   c.cm = new CollisionWorld(model);
   return model.checksum >>> 0;

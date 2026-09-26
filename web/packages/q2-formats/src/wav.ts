@@ -167,6 +167,9 @@ export function GetWavinfo(name: string, data: ArrayBuffer | Uint8Array): WavInf
   return info;
 }
 
+/** Upper bound on resampled sound length (25 minutes at 22 kHz; memory-safety cap, not in the original). */
+export const MAX_SFX_SAMPLES = 1 << 25;
+
 // C: client/snd_mem.c:33 ResampleSfx
 // `sc` holds length/loopstart as read from the file; it is updated in place and its data filled.
 // stepscale is a float ((float)inrate / dma.speed); outcount/loopstart are float divisions truncated to int;
@@ -191,6 +194,22 @@ export function ResampleSfx(
     if (o < 0 || o >= data.length) throw new FormatError('ResampleSfx: sample data out of bounds');
     return data[o]!;
   };
+  // Memory safety (hostile paks): reject sizes before allocating. A rate <= 0 makes stepscale 0/negative
+  // (C: float division by zero, then an undefined (int) conversion); a loop marker or a tiny rate can
+  // claim far more output than the file's sample data can produce; and the last source sample the loop
+  // will read must lie inside the data (the original would fail on that read after allocating).
+  const inSamples = inwidth > 0 ? Math.floor(data.length / inwidth) : 0;
+  if (!(stepscale > 0) || !Number.isFinite(outcount)) throw new FormatError('ResampleSfx: bad sample rate');
+  if (outcount > MAX_SFX_SAMPLES || outcount > inSamples / stepscale + 1)
+    throw new FormatError('ResampleSfx: sample count exceeds the sample data');
+  if (outcount > 0) {
+    const fast = stepscale === 1 && inwidth === 1 && sc.width === 1;
+    const lastSrc = fast
+      ? outcount - 1
+      : Math.floor(((outcount - 1) * Math.trunc(Math.fround(stepscale * 256))) / 256);
+    if ((lastSrc + 1) * (fast ? 1 : inwidth) > data.length)
+      throw new FormatError('ResampleSfx: sample data out of bounds');
+  }
   const out: Int8Array | Int16Array =
     sc.width === 2 ? new Int16Array(Math.max(0, outcount)) : new Int8Array(Math.max(0, outcount));
   if (stepscale === 1 && inwidth === 1 && sc.width === 1) {

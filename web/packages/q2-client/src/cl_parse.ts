@@ -152,6 +152,9 @@ export function CL_ParseDownload(c: ClientContext): void {
     Com_Printf(c, 'Server does not have this file.\n');
     return;
   }
+  // A negative size moves readcount backwards (C: `net_message.readcount += size`), so the same
+  // svc_download is parsed again and again: an endless loop on a hostile message. Drop instead.
+  if (size < 0) Com_Error(c, ERR_DROP, 'CL_ParseDownload: bad size %i', size);
   msg.readcount += size;
   Com_Printf(c, 'Ignoring download data (downloads are not supported).\n');
 }
@@ -222,6 +225,9 @@ export function CL_ParseServerData(c: ClientContext): void {
 // C: cl_parse.c:359 CL_ParseBaseline
 export function CL_ParseBaseline(c: ClientContext): void {
   const eb = CL_ParseEntityBits(c);
+  // C indexes cl_entities without a check (memory corruption); drop like CL_ParsePacketEntities
+  if (eb.number < 0 || eb.number >= MAX_EDICTS)
+    Com_Error(c, ERR_DROP, 'CL_ParseBaseline: bad number:%i', eb.number);
   const es = c.cl_entities[eb.number]!.baseline;
   CL_ParseDelta(c, nullstate, es, eb.number, eb.bits);
 }
@@ -400,13 +406,25 @@ export function CL_StoreConfigString(c: ClientContext, i: number, s: string): vo
 
 // C: cl_parse.c:519 CL_ParseConfigString
 export function CL_ParseConfigString(c: ClientContext): void {
-  const cl = c.cl;
   const msg = c.net_message;
 
   const i = MSG_ReadShort(msg);
   if (i < 0 || i >= MAX_CONFIGSTRINGS) Com_Error(c, ERR_DROP, 'configstring > MAX_CONFIGSTRINGS');
   const s = MSG_ReadString(msg);
   CL_StoreConfigString(c, i, s);
+  CL_ConfigStringChanged(c, i, s);
+}
+
+/** The "do something apropriate" part of CL_ParseConfigString (also replayed by CL_PrepRefresh). */
+export function CL_ConfigStringChanged(c: ClientContext, i: number, s: string): void {
+  const cl = c.cl;
+  // registrations that the asynchronous prep may already have passed: redo them once it is done
+  if (
+    !cl.refresh_prepped &&
+    (c.main.precaching || c.view.prepping) &&
+    ((i >= CS_MODELS && i < CS_LIGHTS) || (i >= CS_PLAYERSKINS && i < CS_PLAYERSKINS + MAX_CLIENTS))
+  )
+    cl.dirty_configstrings.add(i);
 
   // do something apropriate
   if (i >= CS_LIGHTS && i < CS_LIGHTS + MAX_LIGHTSTYLES) c.fx.setLightstyle(i - CS_LIGHTS);
@@ -476,7 +494,9 @@ export function CL_ParseStartSoundPacket(c: ClientContext): void {
     // entity reletive
     channel = MSG_ReadShort(msg);
     ent = channel >> 3;
-    if (ent > MAX_EDICTS) Com_Error(c, ERR_DROP, 'CL_ParseStartSoundPacket: ent = %i', ent);
+    // C checks only `ent > MAX_EDICTS`: ent == MAX_EDICTS and negative numbers (a signed short) index
+    // outside cl_entities later; a queued sound on such an entity would fail every frame
+    if (ent < 0 || ent >= MAX_EDICTS) Com_Error(c, ERR_DROP, 'CL_ParseStartSoundPacket: ent = %i', ent);
     channel &= 7;
   } else {
     ent = 0;
@@ -573,7 +593,8 @@ export function CL_ParseServerMessage(c: ClientContext): void {
       case svc_stufftext: {
         const s = MSG_ReadString(msg);
         Com_DPrintf(c, 'stufftext: %s\n', s);
-        c.cmd.cbufAddText(s);
+        // executed restricted: no bindings / archived cvars / rcon from a server (cmd.ts)
+        c.cmd.cbufAddText(s, true);
         break;
       }
 

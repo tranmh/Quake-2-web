@@ -84,7 +84,8 @@ describe('keys.c', () => {
     out.length = 0;
     c.cmd.executeString('bind nokey foo');
     expect(out).toEqual(['"nokey" isn\'t a valid key\n']);
-    expect(Key_WriteBindings(c)).toBe('bind ; "say hi"\nbind w "+forward"\nbind MOUSE1 "+attack"\n');
+    // (deviation: C writes `bind ; "say hi"`, which does not parse back -- docs/review/04-ts-engine.md)
+    expect(Key_WriteBindings(c)).toBe('bind SEMICOLON "say hi"\nbind w "+forward"\nbind MOUSE1 "+attack"\n');
     out.length = 0;
     c.cmd.executeString('bindlist');
     expect(out).toEqual(['; "say hi"\n', 'w "+forward"\n', 'MOUSE1 "+attack"\n']);

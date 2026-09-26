@@ -59,9 +59,17 @@ export function decodeTga(data: ArrayBuffer | Uint8Array, name = 'tga'): TgaImag
   }
   const columns = header.width;
   const rows = header.height;
-  const rgba = new Uint8Array(columns * rows * 4);
   p += header.id_length;
   const bpp32 = header.pixel_size === 32;
+  // Reject files too short for the pixel count before allocating (memory safety: an 18-byte file may
+  // claim 65535x65535 pixels). Such files would throw "truncated" below anyway. Uncompressed data needs
+  // bpp bytes per pixel; an RLE packet covers at most 128 pixels and costs at least 1 + bpp bytes.
+  const bytesPerPixel = bpp32 ? 4 : 3;
+  const pixels = columns * rows;
+  const minBytes =
+    header.image_type === 2 ? pixels * bytesPerPixel : Math.ceil(pixels / 128) * (1 + bytesPerPixel);
+  if (b.length - p < minBytes) throw new FormatError(`${name}: truncated tga`);
+  const rgba = new Uint8Array(pixels * 4);
 
   if (header.image_type === 2) {
     for (let row = rows - 1; row >= 0; row--) {

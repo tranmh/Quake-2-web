@@ -149,8 +149,10 @@ export function Con_Dump_f(c: ClientContext): string | null {
     }
     let s = '';
     for (let x = 0; x < end; x++) {
-      if (!buffer[x]) break;
-      s += String.fromCharCode(buffer[x]! & 0x7f);
+      // C masks every byte with 0x7f first; a 0x80 byte then ends the fprintf'd string
+      const ch = buffer[x]! & 0x7f;
+      if (!ch) break;
+      s += String.fromCharCode(ch);
     }
     out += s + '\n';
   }

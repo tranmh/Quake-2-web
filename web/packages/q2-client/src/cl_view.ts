@@ -32,7 +32,7 @@ import {
 } from 'q2-ref';
 import { ca_active, Com_Error, Com_Printf, Sys_Milliseconds, type ClientContext } from './client';
 import { CL_AddEntities } from './cl_ents';
-import { CL_LoadClientinfo } from './cl_parse';
+import { CL_ConfigStringChanged, CL_LoadClientinfo } from './cl_parse';
 import { SCR_AddDirtyPoint, SCR_TouchPics, SCR_UpdateScreen } from './cl_scrn';
 import { Con_ClearNotify } from './console';
 import { RegisterModel, RegisterPic } from './regcache';
@@ -74,6 +74,8 @@ export class ViewState {
 
   /** in-flight CL_PrepRefresh */
   prepping: Promise<void> | null = null;
+  /** c.clearGeneration the in-flight prep belongs to */
+  prepping_generation = -1;
 
   /** identity ordinals standing in for pointer values in entitycmpfnc */
   readonly handleIds = new Map<object, number>();
@@ -260,12 +262,22 @@ function scanFloats3(s: string, out: Float32Array): void {
 // the in-flight promise. If the client state is cleared while loading (disconnect / new map), the
 // sequence is abandoned without setting refresh_prepped.
 export function CL_PrepRefresh(c: ClientContext): Promise<void> {
-  if (c.view.prepping) return c.view.prepping;
-  if (!c.cl.configstrings[CS_MODELS + 1]![0]) return Promise.resolve(); // no map loaded
-  const p = prepRefresh(c).finally(() => {
+  // an in-flight prep of a previous level (cleared state) only returns early once it resumes: chain a
+  // fresh prep after it instead of handing it out (the caller would send "begin" with nothing prepped)
+  if (c.view.prepping && c.view.prepping_generation === c.clearGeneration) return c.view.prepping;
+  const previous = c.view.prepping;
+  const gen = c.clearGeneration;
+  const start = (): Promise<void> => {
+    if (c.clearGeneration !== gen) return Promise.resolve();
+    if (!c.cl.configstrings[CS_MODELS + 1]![0]) return Promise.resolve(); // no map loaded
+    return prepRefresh(c);
+  };
+  if (!previous && !c.cl.configstrings[CS_MODELS + 1]![0]) return Promise.resolve(); // no map loaded
+  const p = (previous ? previous.catch(() => {}).then(start) : start()).finally(() => {
     if (c.view.prepping === p) c.view.prepping = null;
   });
   c.view.prepping = p;
+  c.view.prepping_generation = gen;
   return p;
 }
 
@@ -291,6 +303,7 @@ async function prepRefresh(c: ClientContext): Promise<void> {
   await c.re.beginRegistration(mapname);
   if (stale()) return;
   c.regcache.clear();
+  v.handleIds.clear(); // (sort ordinals of the previous level's handles; would pin them forever)
   Com_Printf(c, BLANK_LINE);
 
   // precache status bar pics
@@ -384,6 +397,10 @@ async function prepRefresh(c: ClientContext): Promise<void> {
   SCR_UpdateScreen(c);
   cl.refresh_prepped = true;
   cl.force_refdef = true; // make sure we have a valid refdef
+
+  // configstrings that arrived while the asynchronous precache/prep ran (see dirty_configstrings)
+  for (const i of cl.dirty_configstrings) CL_ConfigStringChanged(c, i, cl.configstrings[i]!);
+  cl.dirty_configstrings.clear();
 
   // start the cd track: CDAudio_Play (atoi(cl.configstrings[CS_CDTRACK]), true) -- no CD audio (PARITY)
   loading('done', 1);

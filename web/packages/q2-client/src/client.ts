@@ -264,6 +264,12 @@ export class ClientState {
   readonly image_precache: (ImageHandle | null)[] = new Array<ImageHandle | null>(MAX_IMAGES).fill(null);
 
   readonly clientinfo: ClientInfo[] = Array.from({ length: MAX_CLIENTS }, () => new ClientInfo());
+  /**
+   * Configstrings changed while the asynchronous precache / CL_PrepRefresh was running (C prepares the
+   * refresh synchronously, so no message is parsed meanwhile); their side effects are applied once the
+   * refresh is prepped.
+   */
+  readonly dirty_configstrings = new Set<number>();
   readonly baseclientinfo = new ClientInfo();
 
   /** memset(&cl, 0, sizeof(cl)) */
@@ -320,6 +326,7 @@ export class ClientState {
     this.image_precache.fill(null);
     for (const ci of this.clientinfo) ci.clear();
     this.baseclientinfo.clear();
+    this.dirty_configstrings.clear();
   }
 }
 

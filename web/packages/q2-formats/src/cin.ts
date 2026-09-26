@@ -82,7 +82,12 @@ export class Huff1Tables {
     if (input.length < 4) throw new FormatError('cin: compressed block too small');
     let count = (input[0]! + (input[1]! << 8) + (input[2]! << 16) + (input[3]! << 24)) | 0;
     if (count < 0 || count > 0x4000000) throw new FormatError('cin: bad decompressed size');
-    const out = new Uint8Array(count);
+    // Memory safety (hostile files): every output symbol costs at least one input bit, except with a
+    // degenerate table whose root is a leaf, which emits without consuming input. The C decoder then runs
+    // on through stack garbage; here decoding stops once the input is overread by more than the one byte
+    // the C code tolerates silently, which bounds the output by the input size. Valid frames are unchanged.
+    const maxOut = 8 * Math.max(0, input.length - 2);
+    const out = new Uint8Array(Math.min(count, maxOut));
     let o = 0;
     let ip = 4;
     const nodes = this.hnodes1;
@@ -90,6 +95,7 @@ export class Huff1Tables {
     let hbase = -512;
     let nodenum = this.numhnodes1[0]!;
     outer: while (count) {
+      if (ip > input.length + 1) break; // overread (see above)
       let inbyte = ip < input.length ? input[ip]! : 0;
       ip++;
       for (let bit = 0; bit < 8; bit++) {

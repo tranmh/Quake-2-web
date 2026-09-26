@@ -418,6 +418,17 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   async registration with generation guards; async `exec`; `seta/setu/sets/toggle` added; demos recorded in memory;
   pingservers unavailable, rcon over current connection only, no CD audio / VID_CheckChanges; menus delegated to React host;
   ProtocolError/CMError → ERR_DROP; V_RenderView entity sort groups by model then skin (C qsort order is implementation-defined).
+- q2-client / q2-formats / q2-pmove (TS, review 04, docs/review/04-ts-engine.md): `svc_stufftext` text (and aliases /
+  exec files it defines or runs) executes restricted: `bind unbind unbindall seta rcon screenshot` are refused, as are
+  writes to CVAR_ARCHIVE cvars and to `rcon_password`, and `$rcon_password` expands to "" (bindings and archived cvars
+  are saved to the account immediately and replayed at every start). Saved config text: key ';' written as SEMICOLON,
+  key '"' not written, '"' inside a binding/cvar value written as `'`, archived cvars with quote/';'/space in the name
+  skipped. Hostile/invalid input only: negative svc_download size, svc_sound entity < 0 or == MAX_EDICTS, TE_LIGHTNING
+  entity out of range, spawnbaseline number out of range and more than MAX_PARSE_ENTITIES entities in one frame raise
+  ERR_DROP; netgraph drop marks beyond the 1024-entry ring are skipped (same graph); receive queue capped at 1024
+  datagrams; maps whose node graph is not a forest (cycle / shared subtree) are rejected; MD2 frames must not overlap/overrun, TGA/WAV sizes are
+  checked against the data before allocating (resampled sounds capped at 2^25 samples), the CIN Huffman decoder stops
+  one byte past its block.
 - game (Go, Phase 4): save format stores all edicts below num_edicts (incl. freed-slot freetimes), restores linkcount,
   and saves precache indices / player trail / static animation counters so save→load→continue equals an uninterrupted run;
   coop `item->drop = NULL` global mutation kept per game instance; `writeip` keeps filters in memory (no file);

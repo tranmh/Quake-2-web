@@ -35,7 +35,23 @@ interface CmdFunction {
 interface CmdAlias {
   name: string;
   value: string;
+  /** defined by server-originated text: its expansion stays restricted */
+  restricted: boolean;
 }
+
+/**
+ * Commands a server may not run through svc_stufftext (browser deviation, docs/review/04-ts-engine.md).
+ * The original executed stuffed text like console input. In the browser client the key bindings and
+ * archived cvars are saved to the player's account as soon as they change, so a hostile server could
+ * otherwise plant bindings/settings that persist across sessions (and, via the saved config, run commands
+ * at every start), send the rcon password of another server back to itself, or spam file downloads.
+ */
+// `screenshot` (registered by the renderer) hands a PNG download to the browser each time.
+const SERVER_BLOCKED_COMMANDS = new Set(['bind', 'unbind', 'unbindall', 'seta', 'rcon', 'screenshot']);
+/** cvar-setting commands whose target (argv 1) is checked with protectedFromServer */
+const SERVER_CVAR_COMMANDS = new Set(['set', 'setu', 'sets', 'toggle']);
+/** never readable ($macro) or writable from server text */
+const SECRET_CVAR = 'rcon_password';
 
 /** Signed-char test `c <= ' '` of the original (bytes >= 128 are negative chars). */
 function isSpaceChar(c: number): boolean {
@@ -46,6 +62,15 @@ export class CmdSystem implements CmdArgs {
   // command buffer (C: cmd_text / cmd_text_buf / defer_text_buf)
   private cmd_text = '';
   private defer_text = '';
+  /**
+   * Origin of every character of cmd_text / defer_text: '1' = server text (svc_stufftext, or text an
+   * alias/exec inserted while running server text), '0' = local. A line containing any server character
+   * runs restricted.
+   */
+  private cmd_origin = '';
+  private defer_origin = '';
+  /** the command being executed came from the server (see SERVER_BLOCKED_COMMANDS) */
+  private executingRestricted = false;
   /** C: cmd_wait */
   cmd_wait = false;
   /** C: alias_count -- for detecting runaway loops */
@@ -102,8 +127,9 @@ export class CmdSystem implements CmdArgs {
     return this.cmd_text;
   }
 
-  // C: cmd.c:87 Cbuf_AddText -- adds command text at the end of the buffer
-  cbufAddText(text: string): void {
+  // C: cmd.c:87 Cbuf_AddText -- adds command text at the end of the buffer.
+  // `fromServer`: svc_stufftext text, executed restricted (see SERVER_BLOCKED_COMMANDS).
+  cbufAddText(text: string, fromServer = false): void {
     text = cstr(text);
     const l = text.length;
     if (this.cmd_text.length + l >= CMD_TEXT_SIZE) {
@@ -111,32 +137,47 @@ export class CmdSystem implements CmdArgs {
       return;
     }
     this.cmd_text += text;
+    this.cmd_origin += (fromServer ? '1' : '0').repeat(l);
   }
 
   // C: cmd.c:110 Cbuf_InsertText -- adds command text immediately after the current command
-  cbufInsertText(text: string): void {
+  cbufInsertText(text: string, fromServer = false): void {
     // copy off any commands still remaining in the exec buffer
     const temp = this.cmd_text;
+    const tempOrigin = this.cmd_origin;
     this.cmd_text = '';
+    this.cmd_origin = '';
     // add the entire text of the file
-    this.cbufAddText(text);
+    this.cbufAddText(text, fromServer);
     // add the copied off data
     if (temp.length) {
       // SZ_Write on a buffer without allowoverflow: Com_Error(ERR_FATAL) in C; clamp instead.
       this.cmd_text = (this.cmd_text + temp).slice(0, CMD_TEXT_SIZE);
+      this.cmd_origin = (this.cmd_origin + tempOrigin).slice(0, CMD_TEXT_SIZE);
     }
+  }
+
+  /** Inserts text with per-character origins (defer buffer round trip). */
+  private insertWithOrigin(text: string, origin: string): void {
+    const temp = this.cmd_text;
+    const tempOrigin = this.cmd_origin;
+    this.cmd_text = (text + temp).slice(0, CMD_TEXT_SIZE);
+    this.cmd_origin = (origin + tempOrigin).slice(0, CMD_TEXT_SIZE);
   }
 
   // C: cmd.c:143 Cbuf_CopyToDefer
   cbufCopyToDefer(): void {
     this.defer_text = this.cmd_text;
+    this.defer_origin = this.cmd_origin;
     this.cmd_text = '';
+    this.cmd_origin = '';
   }
 
   // C: cmd.c:155 Cbuf_InsertFromDefer
   cbufInsertFromDefer(): void {
-    this.cbufInsertText(this.defer_text);
+    this.insertWithOrigin(this.defer_text, this.defer_origin);
     this.defer_text = '';
+    this.defer_origin = '';
   }
 
   // C: cmd.c:167 Cbuf_ExecuteText
@@ -175,15 +216,21 @@ export class CmdSystem implements CmdArgs {
 
       // char line[1024]: the C memcpy would overflow; truncated here
       const line = text.slice(0, Math.min(i, 1023));
+      const fromServer = this.cmd_origin.slice(0, i + 1).includes('1');
 
       // delete the text from the command buffer and move remaining commands down
       // this is necessary because commands (exec, alias) can insert data at the
       // beginning of the text buffer
-      if (i === text.length) this.cmd_text = '';
-      else this.cmd_text = text.slice(i + 1);
+      if (i === text.length) {
+        this.cmd_text = '';
+        this.cmd_origin = '';
+      } else {
+        this.cmd_text = text.slice(i + 1);
+        this.cmd_origin = this.cmd_origin.slice(i + 1);
+      }
 
       // execute the command line
-      this.executeString(line);
+      this.executeString(line, fromServer);
 
       if (this.cmd_wait) {
         // skip out while text still remains in buffer, leaving it for next frame
@@ -244,13 +291,14 @@ export class CmdSystem implements CmdArgs {
       return;
     }
     const name = this.argv(1);
+    const fromServer = this.executingRestricted; // the file runs with the rights of the exec line
     this.pendingExec++;
     const done = (text: string | null): void => {
       if (text === null) this.print(sprintf("couldn't exec %s\n", name));
       else {
         this.print(sprintf('execing %s\n', name));
         // the file doesn't have a trailing 0, so we need to copy it off
-        this.cbufInsertText(text);
+        this.cbufInsertText(text, fromServer);
       }
       this.pendingExec--;
       this.cbufExecute();
@@ -284,9 +332,10 @@ export class CmdSystem implements CmdArgs {
     // if the alias already exists, reuse it
     let a = this.aliases.find((x) => x.name === s);
     if (!a) {
-      a = { name: s, value: '' };
+      a = { name: s, value: '', restricted: false };
       this.aliases.unshift(a);
     }
+    a.restricted = this.executingRestricted;
 
     // copy the rest of the command line
     let cmd = ''; // start out with a null string
@@ -320,8 +369,8 @@ export class CmdSystem implements CmdArgs {
     return this.cmd_args;
   }
 
-  // C: cmd.c:524 Cmd_MacroExpandString
-  macroExpandString(text: string): string | null {
+  // C: cmd.c:524 Cmd_MacroExpandString (`fromServer`: $rcon_password expands to "")
+  macroExpandString(text: string, fromServer = false): string | null {
     let inquote = false;
     let scan = text;
     let len = scan.length;
@@ -340,7 +389,7 @@ export class CmdSystem implements CmdArgs {
       let token = COM_Parse(cur);
       if (cur.pos < 0) continue;
 
-      token = this.cvars.variableString(token);
+      token = fromServer && token === SECRET_CVAR ? '' : this.cvars.variableString(token);
 
       const j = token.length;
       len += j;
@@ -367,7 +416,7 @@ export class CmdSystem implements CmdArgs {
   }
 
   // C: cmd.c:593 Cmd_TokenizeString -- $Cvars will be expanded unless they are in a quoted token
-  tokenizeString(input: string, macroExpand: boolean): void {
+  tokenizeString(input: string, macroExpand: boolean, fromServer = false): void {
     // clear the args from the last string
     this.cmd_argc = 0;
     this.cmd_argv.length = 0;
@@ -375,7 +424,7 @@ export class CmdSystem implements CmdArgs {
 
     // macro expand the text
     let text: string | null = cstr(input);
-    if (macroExpand) text = this.macroExpandString(text);
+    if (macroExpand) text = this.macroExpandString(text, fromServer);
     if (text === null) return;
 
     const cur: ParseCursor = { data: text, pos: 0 };
@@ -460,9 +509,31 @@ export class CmdSystem implements CmdArgs {
     return null;
   }
 
-  // C: cmd.c:772 Cmd_ExecuteString -- a complete command line has been parsed, so try to execute it
-  executeString(text: string): void {
-    this.tokenizeString(text, true);
+  /** True if server text must not write cvar `name` (archived = saved to the account, or the secret). */
+  private protectedFromServer(name: string): boolean {
+    if (name === SECRET_CVAR) return true;
+    const v = this.cvars.find(name);
+    return !!v && (v.flags & CVAR_ARCHIVE) !== 0;
+  }
+
+  private refuseFromServer(): void {
+    this.print(sprintf('Ignored server command "%s" (not allowed from a server)\n', this.cmd_argv[0]!));
+  }
+
+  // C: cmd.c:772 Cmd_ExecuteString -- a complete command line has been parsed, so try to execute it.
+  // `fromServer`: the line came from svc_stufftext (see SERVER_BLOCKED_COMMANDS).
+  executeString(text: string, fromServer = false): void {
+    const prev = this.executingRestricted;
+    this.executingRestricted = fromServer;
+    try {
+      this.executeLine(text, fromServer);
+    } finally {
+      this.executingRestricted = prev;
+    }
+  }
+
+  private executeLine(text: string, fromServer: boolean): void {
+    this.tokenizeString(text, true, fromServer);
 
     // execute the command line
     if (!this.argc()) return; // no tokens
@@ -470,9 +541,19 @@ export class CmdSystem implements CmdArgs {
     // check functions
     for (const cmd of this.functions) {
       if (!Q_strcasecmp(this.cmd_argv[0]!, cmd.name)) {
+        if (fromServer) {
+          const n = cmd.name.toLowerCase();
+          if (
+            SERVER_BLOCKED_COMMANDS.has(n) ||
+            (SERVER_CVAR_COMMANDS.has(n) && this.protectedFromServer(this.argv(1)))
+          ) {
+            this.refuseFromServer();
+            return;
+          }
+        }
         if (!cmd.fn) {
           // forward to server command
-          this.executeString(sprintf('cmd %s', text));
+          this.executeString(sprintf('cmd %s', text), fromServer);
         } else cmd.fn();
         return;
       }
@@ -485,12 +566,16 @@ export class CmdSystem implements CmdArgs {
           this.print('ALIAS_LOOP_COUNT\n');
           return;
         }
-        this.cbufInsertText(a.value);
+        this.cbufInsertText(a.value, fromServer || a.restricted);
         return;
       }
     }
 
     // check cvars
+    if (fromServer && this.argc() > 1 && this.protectedFromServer(this.cmd_argv[0]!)) {
+      this.refuseFromServer();
+      return;
+    }
     if (this.cvars.command(this)) return;
 
     // send it as a server command if we are connected

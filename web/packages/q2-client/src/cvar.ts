@@ -322,10 +322,15 @@ export class CvarSystem {
   }
 
   // C: cvar.c:432 Cvar_WriteVariables -- returns the text C appends to config.cfg
+  // The text is saved to the player's account and executed at every start (deviation from C for
+  // values/names that would not parse back): a '"' in a value is replaced by '\'' (C: FIXME, the rest of
+  // the line would run as commands) and variables whose name contains a quote, ';' or whitespace are not
+  // written.
   writeVariables(): string {
     let out = '';
     for (const v of this.list()) {
-      if (v.flags & CVAR_ARCHIVE) out += sprintf('set %s "%s"\n', v.name, v.string).slice(0, 1023);
+      if (!(v.flags & CVAR_ARCHIVE) || /[\x00-\x20";]/.test(v.name)) continue;
+      out += sprintf('set %s "%s"\n', v.name, v.string.replace(/"/g, "'")).slice(0, 1023);
     }
     return out;
   }

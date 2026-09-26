@@ -160,6 +160,10 @@ export function CL_DeltaEntity(
   const cl = c.cl;
   const ent = c.cl_entities[newnum]!;
 
+  // A frame holds each entity number at most once (< MAX_EDICTS == MAX_PARSE_ENTITIES entries). A server
+  // repeating numbers out of order makes every delta frame larger than its base, so num_entities -- and
+  // the per-frame work -- would grow without bound (the ring then also overwrites its own base).
+  if (frame.num_entities >= MAX_PARSE_ENTITIES) Com_Error(c, ERR_DROP, 'CL_DeltaEntity: too many entities');
   const state = c.cl_parse_entities[cl.parse_entities & (MAX_PARSE_ENTITIES - 1)]!;
   cl.parse_entities++;
   frame.num_entities++;

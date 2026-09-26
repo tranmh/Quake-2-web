@@ -363,7 +363,9 @@ export function Key_Console(c: ClientContext, key: number): void {
       }
 
       let i = cbd.length;
-      if (i + k.key_linepos >= MAXCMDLINE) i = MAXCMDLINE - k.key_linepos;
+      // (C: `MAXCMDLINE - key_linepos`, which overflows the line by one byte and leaves key_linepos at
+      // MAXCMDLINE, past the stored text; keep the terminating NUL inside the line)
+      if (i + k.key_linepos >= MAXCMDLINE) i = MAXCMDLINE - 1 - k.key_linepos;
 
       if (i > 0) {
         cbd = cbd.slice(0, i);
@@ -603,11 +605,19 @@ export function Key_Bind_f(c: ClientContext): void {
 }
 
 // C: keys.c:614 Key_WriteBindings -- returns the "bind key value" lines written to config.cfg
+// The text is saved to the player's account and executed at every start, so it must parse back to the
+// same bindings (deviation from C, which writes both of these verbatim):
+// - key ';' is written as its keyname SEMICOLON (C wrote `bind ; "..."`, which splits into two commands
+//   when executed and runs the bound text at startup); key '"' has no name and cannot be written;
+// - a '"' inside the binding would close the quoted value early and let the rest of the line run as
+//   commands (C: FIXME), so it is replaced by '\''.
 export function Key_WriteBindings(c: ClientContext): string {
   let out = '';
   for (let i = 0; i < 256; i++) {
     const kb = c.keys.keybindings[i];
-    if (kb) out += sprintf('bind %s "%s"\n', Key_KeynumToString(i), kb);
+    if (!kb || i === 34) continue;
+    const name = i === 59 ? 'SEMICOLON' : Key_KeynumToString(i);
+    out += sprintf('bind %s "%s"\n', name, kb.replace(/"/g, "'"));
   }
   return out;
 }
