@@ -47,7 +47,8 @@ export class CoreHost {
         // an exception escaping AudioWorkletProcessor.process() kills the processor for good (silence
         // until reload): drop the rest of this batch and keep mixing
         this.errors++;
-        if (this.errors <= 8) this.core.dprint(`q2-sound: batch failed: ${e instanceof Error ? e.message : String(e)}\n`);
+        if (this.errors <= 8)
+          this.core.dprint(`q2-sound: batch failed: ${e instanceof Error ? e.message : String(e)}\n`);
       }
     }
   }

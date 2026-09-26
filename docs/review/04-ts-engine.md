@@ -435,3 +435,13 @@ engine.frame runs Cbuf_Execute. A server can stuff it, since cl_maxfps is not ar
 - All pass. This includes the golden bit-exact tests and the q2ded integration test (oracle binary present).
 - `Q2_FUZZ_ITER=5000` for `fuzz.test.ts` is also clean.
 - The q2-sound (20) and q2-render-gl (34) suites were also run against the changed q2-formats and still pass.
+
+## Follow-up by coordinator: OOS-1 (high, q2-sound) — fixed
+
+- `web/packages/q2-sound/src/snd_dma.ts` `emitStart`/`stopAllSounds`: out-of-range entity numbers were added to
+  `dynEnts`, so `CL_GetEntitySoundOrigin` threw `DropError: bad ent` on every later `S_Update`; `stopAllSounds`
+  never cleared the set.
+- Tests: `test/robustness.test.ts` "a sound on an out-of-range entity does not make every later S_Update throw",
+  "stopAllSounds forgets dynamically sourced entities".
+- Red: `AssertionError: expected [Function] to not throw an error but 'DropError: CL_GetEntitySoundOrigin: bad ent' was thrown`;
+  `AssertionError: expected 1 to be +0`. Green: 22/22 q2-sound tests pass.

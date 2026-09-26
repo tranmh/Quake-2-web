@@ -42,7 +42,15 @@ function guarded(core: SoundCore, fn: () => void): void {
 }
 
 function sfx(length: number, loopstart: number): CoreSfx {
-  return { length, loopstart, speed: 11025, width: 2, stereo: 0, data: new Int16Array(Math.max(0, length)).fill(1000), name: 'x' };
+  return {
+    length,
+    loopstart,
+    speed: 11025,
+    width: 2,
+    stereo: 0,
+    data: new Int16Array(Math.max(0, length)).fill(1000),
+    name: 'x',
+  };
 }
 
 describe('mixer vs malformed loop points', () => {
@@ -181,5 +189,28 @@ describe('S_LoadSound vs crafted WAV headers', () => {
     const s = sound.S_FindName('ok.wav', true)!;
     const sc = await sound.S_LoadSound(s);
     expect(sc?.length).toBe(2000);
+  });
+});
+
+describe('dynamically sourced sounds vs bad entity numbers (review 04 OOS-1)', () => {
+  const v = () => new Float32Array(3);
+  it('a sound on an out-of-range entity does not make every later S_Update throw', async () => {
+    const sound = mainSound({ 'sound/ok.wav': wav(11025, 2000) });
+    const h = sound.registerSound('ok.wav');
+    await sound.S_LoadSound(sound.S_FindName('ok.wav', true)!);
+    sound.startSound(null, 1024, CHAN_VOICE, h, 1, ATTN_NORM, 0);
+    sound.startSound(null, -1, CHAN_VOICE, h, 1, ATTN_NORM, 0);
+    await Promise.resolve();
+    expect(() => sound.update(v(), v(), v(), v())).not.toThrow();
+  });
+
+  it('stopAllSounds forgets dynamically sourced entities', async () => {
+    const sound = mainSound({ 'sound/ok.wav': wav(11025, 2000) });
+    const h = sound.registerSound('ok.wav');
+    await sound.S_LoadSound(sound.S_FindName('ok.wav', true)!);
+    sound.startSound(null, 5, CHAN_VOICE, h, 1, ATTN_NORM, 0);
+    await Promise.resolve();
+    sound.stopAllSounds();
+    expect((sound as unknown as { dynEnts: Set<number> }).dynEnts.size).toBe(0);
   });
 });

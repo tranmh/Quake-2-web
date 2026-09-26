@@ -483,7 +483,9 @@ export class MainSound implements Sound {
     timeofs: number,
     servertime: number,
   ): void {
-    if (!origin) this.dynEnts.add(entnum);
+    // CL_GetEntitySoundOrigin drops on entity numbers outside cl_entities: only track valid ones
+    // (review 04 OOS-1; C would read out of bounds)
+    if (!origin && entnum >= 0 && entnum < MAX_EDICTS) this.dynEnts.add(entnum);
     writeStart(this.w, origin, entnum, entchannel, s.index, fvol, attenuation, timeofs, servertime);
   }
 
@@ -503,6 +505,7 @@ export class MainSound implements Sound {
   stopAllSounds(): void {
     if (!this.sound_started) return;
     this.stopGen++;
+    this.dynEnts.clear(); // every channel stops, so no entity origins are needed any more
     writeStopAll(this.w);
   }
 
