@@ -546,6 +546,25 @@ func runAPISuite(t *testing.T, e *env) {
 		if gs, _ := e.deps.Repo.ListGames(ctx, true); len(gs) != 1 {
 			t.Fatalf("active registry: %+v", gs)
 		}
+
+		// start from a save
+		bundle := db.EncodeBundle(map[string][]byte{"server.ssv": []byte(`{}`), "game.ssv": []byte("g"),
+			SaveOriginFile: []byte(`{"pakset":"demo","mode":"sp"}`)})
+		if err := e.deps.Repo.PutSave(ctx, u.ID, "s1", bundle, db.SaveMeta{Comment: "c", MapCmd: "*demo2$start", Mode: "sp"}); err != nil {
+			t.Fatal(err)
+		}
+		expect(t, anon.do("POST", "/api/v1/games/from-save", map[string]string{"slot": "s1"}), 401)
+		expect(t, alice.do("POST", "/api/v1/games/from-save", map[string]string{"slot": "../x"}), 400)
+		expect(t, alice.do("POST", "/api/v1/games/from-save", map[string]string{"slot": "nope"}), 404)
+		expect(t, bob.do("POST", "/api/v1/games/from-save", map[string]string{"slot": "s1"}), 404)
+		expect(t, alice.do("POST", "/api/v1/games", map[string]any{"mode": "dm", "map": "demo1", "loadSlot": "s1"}), 400)
+		expect(t, alice.do("POST", "/api/v1/games", map[string]any{"mode": "sp", "map": "demo1", "loadSlot": "nope"}), 404)
+		fs := decode[struct {
+			Game GameInfo `json:"game"`
+		}](t, alice.do("POST", "/api/v1/games/from-save", map[string]string{"slot": "s1"})).Game
+		if fs.Mode != "sp" || fs.Map != "demo2" || fs.Pakset != "demo" || fs.OwnerID != u.ID {
+			t.Fatalf("from-save: %+v", fs)
+		}
 	}
 
 	// login rate limit (per email)
@@ -557,6 +576,14 @@ func runAPISuite(t *testing.T, e *env) {
 		t.Fatalf("rate limit: %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+func TestMapFromMapCmd(t *testing.T) {
+	for in, want := range map[string]string{"demo1": "demo1", "*base2$spawn": "base2", "intro.cin+base1": "base1", "victory.pcx": ""} {
+		if got := MapFromMapCmd(in); got != want {
+			t.Errorf("MapFromMapCmd(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 func TestAPIMemory(t *testing.T) {

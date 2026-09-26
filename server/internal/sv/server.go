@@ -273,6 +273,14 @@ type Config struct {
 	Dedicated bool
 	// Cvars are "+set name value" early commands applied at init.
 	Cvars [][2]string
+	// Userinfo, when set, may rewrite a client's userinfo string when it
+	// connects and whenever it sends a new one (the host uses it to force
+	// the account display name). addr is the client's address. Not in C.
+	Userinfo func(addr qnet.Addr, userinfo string) string
+	// ClientCommand, when set, is offered every client string command
+	// before the engine's own table (s.Cmd holds the tokenized command);
+	// returning true swallows it. Not in C.
+	ClientCommand func(cl *Client) bool
 }
 
 // Server is one game instance.
@@ -486,3 +494,13 @@ func (s *Server) recoverError(errp *error) {
 		s.killed = true
 	}
 }
+
+// Spawned reports whether the client is fully in game (cs_spawned).
+func (cl *Client) Spawned() bool { return cl.State == cs_spawned }
+
+// InUse reports whether the slot holds a connecting or spawned client
+// (cs_connected or cs_spawned).
+func (cl *Client) InUse() bool { return cl.State >= cs_connected }
+
+// InGame reports whether a level is running (sv.state == ss_game).
+func (s *Server) InGame() bool { return s.SVS.Initialized && s.SV.State == ss_game }

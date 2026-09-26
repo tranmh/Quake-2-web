@@ -160,6 +160,10 @@ func (s *Server) svcDirectConnect() {
 		userinfo = userinfo[:q2const.MAX_INFO_STRING-1]
 	}
 
+	if s.cfg.Userinfo != nil {
+		userinfo = s.cfg.Userinfo(s.netFrom, userinfo)
+	}
+
 	// force the IP key/value pair so the game can filter based on ip
 	var warn string
 	userinfo, warn = shared.Info_SetValueForKey(userinfo, "ip", s.netFrom.String())

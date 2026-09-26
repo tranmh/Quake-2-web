@@ -19,7 +19,9 @@ import (
 
 	"github.com/coder/websocket"
 
+	"quake2web/server/internal/auth"
 	qnet "quake2web/server/internal/net"
+	"quake2web/server/internal/qcommon/shared"
 	"quake2web/server/internal/sv"
 )
 
@@ -36,8 +38,15 @@ type Host struct {
 	tickets   map[string]ticket
 
 	// RequireTickets makes the WebSocket endpoint demand a valid join ticket
-	// (?ticket=...). When false any client may connect (development).
+	// (?ticket=...). When false a client without a ticket may connect
+	// anonymously (development); a ticket that is given must still be valid.
 	RequireTickets bool
+	// Tickets, when set, redeems the account join tickets issued by the API
+	// (auth.TicketService); the redeemed account becomes the connection's
+	// Player. Without it the host's own IssueTicket tickets are used.
+	Tickets auth.TicketService
+	// TickObserver, when set, receives the duration of every server frame.
+	TickObserver func(time.Duration)
 	// TicketTTL is how long an issued ticket stays valid (default 30 s).
 	TicketTTL time.Duration
 	// OriginPatterns are the extra Origin host patterns accepted by the
@@ -66,15 +75,42 @@ func (h *Host) logf(format string, args ...any) {
 	}
 }
 
+// Player is the account behind a connection (from its join ticket).
+type Player struct {
+	UserID int64
+	Name   string
+}
+
 // InstanceConfig describes a new game instance.
 type InstanceConfig struct {
 	ID string
-	// Server is the configuration of the instance's server.
+	// Server is the configuration of the instance's server. Its Userinfo
+	// and ClientCommand hooks are wrapped by the host.
 	Server sv.Config
 	// Commands are console commands executed at start (e.g. "map demo1").
 	Commands []string
 	// InboxSize bounds queued datagrams (default 1024); more are dropped.
 	InboxSize int
+	// ClientCommand, when set, is offered each client string command
+	// (s.Cmd holds it) together with the connection's player (p is nil for
+	// anonymous connections); returning true swallows the command. It runs
+	// in the instance goroutine.
+	ClientCommand func(inst *Instance, s *sv.Server, cl *sv.Client, p *Player) bool
+	// BeforeDrop, when set, runs in the instance goroutine when the
+	// transport of an in-game client closed, just before the host drops it.
+	BeforeDrop func(inst *Instance, s *sv.Server, cl *sv.Client, p *Player)
+	// ConnClosed, when set, runs (outside the instance goroutine) after a
+	// connection has ended and its client was dropped.
+	ConnClosed func(inst *Instance, p *Player)
+}
+
+// Stats is a snapshot of an instance, refreshed every server frame.
+type Stats struct {
+	Map        string
+	Players    int
+	MaxClients int
+	// LastActive is the last time a client was connected (zero: never).
+	LastActive time.Time
 }
 
 // Instance is one running game.
@@ -87,9 +123,80 @@ type Instance struct {
 	stop    chan struct{}
 	done    chan struct{}
 	once    sync.Once
+	cfg     InstanceConfig
+
+	// pending are closures queued with Defer (instance goroutine only).
+	pending []func(*sv.Server)
+
+	connMu sync.Mutex
+	conns  map[qnet.Addr]*Player
+
+	stats atomic.Pointer[Stats]
 
 	errMu sync.Mutex
 	err   error
+}
+
+// Stats returns the latest snapshot of the instance.
+func (i *Instance) Stats() Stats {
+	if st := i.stats.Load(); st != nil {
+		return *st
+	}
+	return Stats{}
+}
+
+// Player returns the player of the connection with the given address.
+func (i *Instance) Player(addr qnet.Addr) *Player {
+	i.connMu.Lock()
+	defer i.connMu.Unlock()
+	return i.conns[addr]
+}
+
+// Defer queues fn to run in the instance goroutine after the current event
+// (packet, control closure or frame) has been handled. It must only be
+// called from inside the instance goroutine (hooks, Do closures).
+func (i *Instance) Defer(fn func(*sv.Server)) { i.pending = append(i.pending, fn) }
+
+// SanitizeName makes an account display name usable as a Quake 2 player
+// name: no userinfo/command separators or control characters, at most 31
+// bytes.
+func SanitizeName(n string) string {
+	b := make([]byte, 0, len(n))
+	for _, c := range []byte(n) {
+		if c < 32 || c >= 127 || c == '\\' || c == '"' || c == ';' {
+			continue
+		}
+		b = append(b, c)
+	}
+	if len(b) > 31 {
+		b = b[:31]
+	}
+	if len(b) == 0 {
+		return "player"
+	}
+	return string(b)
+}
+
+func (i *Instance) installHooks(cfg *sv.Config) {
+	prevUI := cfg.Userinfo
+	cfg.Userinfo = func(addr qnet.Addr, ui string) string {
+		if p := i.Player(addr); p != nil {
+			if nu, warn := shared.Info_SetValueForKey(ui, "name", SanitizeName(p.Name)); warn == "" {
+				ui = nu
+			}
+		}
+		if prevUI != nil {
+			ui = prevUI(addr, ui)
+		}
+		return ui
+	}
+	prevCmd := cfg.ClientCommand
+	cfg.ClientCommand = func(cl *sv.Client) bool {
+		if i.cfg.ClientCommand != nil && i.cfg.ClientCommand(i, i.srv, cl, i.Player(cl.Netchan.RemoteAddress)) {
+			return true
+		}
+		return prevCmd != nil && prevCmd(cl)
+	}
 }
 
 // ID returns the instance id.
@@ -117,11 +224,15 @@ func (h *Host) Create(cfg InstanceConfig) (*Instance, error) {
 		control: make(chan func(*sv.Server)),
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
+		cfg:     cfg,
+		conns:   map[qnet.Addr]*Player{},
 	}
 	h.instances[cfg.ID] = inst
 	h.mu.Unlock()
 
-	inst.srv = sv.New(cfg.Server)
+	scfg := cfg.Server
+	inst.installHooks(&scfg)
+	inst.srv = sv.New(scfg)
 	go inst.run()
 
 	for _, c := range cfg.Commands {
@@ -305,13 +416,24 @@ func (i *Instance) run() {
 			err = s.HandlePacket(elapsed(), p)
 		case fn := <-i.control:
 			fn(s)
+			i.updateStats(s)
 		case <-timer.C:
 			var sleep int
+			t0 := time.Now()
 			sleep, err = s.Frame(elapsed())
+			if obs := i.host.TickObserver; obs != nil && s.SVS.Initialized {
+				obs(time.Since(t0))
+			}
 			if sleep < 1 {
 				sleep = 1
 			}
 			timer.Reset(time.Duration(sleep) * time.Millisecond)
+			i.updateStats(s)
+		}
+		for len(i.pending) > 0 {
+			fn := i.pending[0]
+			i.pending = i.pending[1:]
+			fn(s)
 		}
 		if err != nil {
 			i.host.logf("instance %s: %v\n", i.id, err)
@@ -325,6 +447,26 @@ func (i *Instance) run() {
 			i.errMu.Unlock()
 			return
 		}
+	}
+}
+
+func (i *Instance) updateStats(s *sv.Server) {
+	old := i.stats.Load()
+	st := Stats{Map: s.SV.Name, MaxClients: len(s.SVS.Clients)}
+	if old != nil {
+		st.LastActive = old.LastActive
+	}
+	for k := range s.SVS.Clients {
+		if s.SVS.Clients[k].InUse() {
+			st.Players++
+		}
+	}
+	if st.Players > 0 {
+		st.LastActive = time.Now()
+	}
+	if old == nil || old.Map != st.Map || old.Players != st.Players || old.MaxClients != st.MaxClients ||
+		(st.Players > 0 && st.LastActive.Sub(old.LastActive) > time.Second) {
+		i.stats.Store(&st)
 	}
 }
 
@@ -363,9 +505,21 @@ func (a *asyncSender) SendPacket(_ qnet.Addr, data []byte) error {
 // until the connection fails or ctx ends. base identifies the remote host
 // (NET_CompareBaseAdr); each connection gets a unique port number.
 func (i *Instance) ServeConn(ctx context.Context, conn qnet.Conn, base string) error {
+	return i.ServeConnAs(ctx, conn, base, nil)
+}
+
+// ServeConnAs is ServeConn for an authenticated player (nil: anonymous).
+// The player's display name overrides the userinfo name. When the
+// connection ends its client, if still connected, is dropped at once
+// (BeforeDrop runs first) instead of waiting for the netchan timeout.
+func (i *Instance) ServeConnAs(ctx context.Context, conn qnet.Conn, base string, p *Player) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	addr := qnet.Addr{Base: base, Port: int(i.host.nextConn.Add(1))}
+	i.connMu.Lock()
+	i.conns[addr] = p
+	i.connMu.Unlock()
+	defer i.connClosed(addr, p)
 	via := newAsyncSender(conn, ctx.Done())
 	go func() {
 		select {
@@ -380,6 +534,28 @@ func (i *Instance) ServeConn(ctx context.Context, conn qnet.Conn, base string) e
 			return err
 		}
 		i.Deliver(qnet.Packet{From: addr, Via: via, Data: d})
+	}
+}
+
+func (i *Instance) connClosed(addr qnet.Addr, p *Player) {
+	_ = i.Do(func(s *sv.Server) {
+		for k := range s.SVS.Clients {
+			cl := &s.SVS.Clients[k]
+			if !cl.InUse() || cl.Netchan.RemoteAddress != addr {
+				continue
+			}
+			if i.cfg.BeforeDrop != nil {
+				i.cfg.BeforeDrop(i, s, cl, p)
+			}
+			s.DropClient(cl)
+		}
+		i.updateStats(s)
+	})
+	i.connMu.Lock()
+	delete(i.conns, addr)
+	i.connMu.Unlock()
+	if i.cfg.ConnClosed != nil {
+		i.cfg.ConnClosed(i, p)
 	}
 }
 
@@ -420,8 +596,22 @@ func (h *Host) serveWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such game", http.StatusNotFound)
 		return
 	}
-	if h.RequireTickets && !h.redeemTicket(r.URL.Query().Get("ticket"), id) {
-		http.Error(w, "invalid ticket", http.StatusForbidden)
+	var player *Player
+	switch tk := r.URL.Query().Get("ticket"); {
+	case tk != "" && h.Tickets != nil:
+		t, err := h.Tickets.Redeem(tk, id)
+		if err != nil {
+			http.Error(w, "invalid ticket", http.StatusForbidden)
+			return
+		}
+		player = &Player{UserID: t.UserID, Name: t.DisplayName}
+	case tk != "":
+		if !h.redeemTicket(tk, id) {
+			http.Error(w, "invalid ticket", http.StatusForbidden)
+			return
+		}
+	case h.RequireTickets:
+		http.Error(w, "ticket required", http.StatusForbidden)
 		return
 	}
 	conn, err := qnet.AcceptWS(w, r, &websocket.AcceptOptions{OriginPatterns: h.OriginPatterns})
@@ -432,6 +622,6 @@ func (h *Host) serveWS(w http.ResponseWriter, r *http.Request) {
 	if hst, _, err := stdnet.SplitHostPort(r.RemoteAddr); err == nil {
 		base = hst
 	}
-	_ = inst.ServeConn(r.Context(), conn, base)
+	_ = inst.ServeConnAs(r.Context(), conn, base, player)
 	_ = conn.Close()
 }

@@ -172,6 +172,8 @@ func (s *server) hostError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "game not found")
 	case errors.Is(err, ErrGameFull):
 		writeError(w, http.StatusConflict, "game_full", "game is full")
+	case errors.Is(err, ErrGameInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_game", err.Error())
 	default:
 		s.internal(w, r, err)
 	}
@@ -187,6 +189,11 @@ func (s *server) createGame(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &spec) {
 		return
 	}
+	s.startGame(w, r, u, spec)
+}
+
+// startGame validates spec, starts it on the host and registers it.
+func (s *server) startGame(w http.ResponseWriter, r *http.Request, u db.User, spec GameSpec) {
 	spec.OwnerID = u.ID
 	if spec.Mode == "" {
 		spec.Mode = "sp"
@@ -221,9 +228,22 @@ func (s *server) createGame(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if spec.LoadSlot != "" && !ValidSlot(spec.LoadSlot) {
-		writeFieldError(w, "loadSlot", "invalid save slot")
-		return
+	if spec.LoadSlot != "" {
+		if !ValidSlot(spec.LoadSlot) {
+			writeFieldError(w, "loadSlot", "invalid save slot")
+			return
+		}
+		if spec.Mode != "sp" && spec.Mode != "coop" {
+			writeFieldError(w, "loadSlot", "only single player and coop games can start from a save")
+			return
+		}
+		if _, _, err := s.Repo.GetSave(r.Context(), u.ID, spec.LoadSlot); errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "save not found")
+			return
+		} else if err != nil {
+			s.internal(w, r, err)
+			return
+		}
 	}
 	// the pakset must exist, be visible and contain the map
 	_, ci, ok := s.paksetIndexFor(w, r, spec.Pakset)
@@ -253,6 +273,91 @@ func (s *server) createGame(w http.ResponseWriter, r *http.Request) {
 			Public: spec.Public, MaxPlayers: spec.MaxPlayers, StartedAt: time.Now()}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"game": info})
+}
+
+// SaveOriginFile is the file of a save bundle recording the pakset and
+// mode of the game that wrote it (written by internal/host).
+const SaveOriginFile = "q2web.json"
+
+// FromSaveRequest is POST /api/v1/games/from-save.
+type FromSaveRequest struct {
+	Slot   string `json:"slot"`
+	Name   string `json:"name,omitempty"`
+	Public bool   `json:"public,omitempty"`
+	// MaxPlayers applies to coop saves.
+	MaxPlayers int `json:"maxPlayers,omitempty"`
+	// Pakset overrides the pakset recorded in the save.
+	Pakset string `json:"pakset,omitempty"`
+}
+
+// MapFromMapCmd extracts the map name of a server mapcmd
+// ("*base2$spawn", "intro.cin+base1") or "" when there is none.
+func MapFromMapCmd(mc string) string {
+	if i := strings.LastIndexByte(mc, '+'); i >= 0 {
+		mc = mc[i+1:]
+	}
+	mc = strings.TrimPrefix(mc, "*")
+	if i := strings.IndexByte(mc, '$'); i >= 0 {
+		mc = mc[:i]
+	}
+	if strings.Contains(mc, ".") {
+		return ""
+	}
+	return mc
+}
+
+// POST /api/v1/games/from-save {slot} → 201 {game:GameInfo}: starts a
+// single player (or coop) game of the caller from one of their saves.
+func (s *server) createGameFromSave(w http.ResponseWriter, r *http.Request) {
+	u, ok := requireUser(w, r)
+	if !ok || !s.requireHost(w) {
+		return
+	}
+	var in FromSaveRequest
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if !ValidSlot(in.Slot) {
+		writeFieldError(w, "slot", "invalid save slot")
+		return
+	}
+	blob, info, err := s.Repo.GetSave(r.Context(), u.ID, in.Slot)
+	if errors.Is(err, db.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "save not found")
+		return
+	}
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	spec := GameSpec{Name: in.Name, Mode: info.Mode, Map: MapFromMapCmd(info.MapCmd), Pakset: in.Pakset,
+		Public: in.Public, MaxPlayers: in.MaxPlayers, LoadSlot: in.Slot}
+	if files, err := db.DecodeBundle(blob); err == nil {
+		var origin struct {
+			Pakset string `json:"pakset"`
+			Mode   string `json:"mode"`
+		}
+		if b, ok := files[SaveOriginFile]; ok && json.Unmarshal(b, &origin) == nil {
+			if spec.Pakset == "" {
+				spec.Pakset = origin.Pakset
+			}
+			if origin.Mode != "" {
+				spec.Mode = origin.Mode
+			}
+		}
+		if _, ok := files["server.ssv"]; !ok {
+			writeError(w, http.StatusConflict, "bad_save", "save is incomplete")
+			return
+		}
+	}
+	if spec.Mode == "" {
+		spec.Mode = "sp"
+	}
+	if spec.Map == "" {
+		writeError(w, http.StatusConflict, "bad_save", "save has no map")
+		return
+	}
+	s.startGame(w, r, u, spec)
 }
 
 func visibleGame(g GameInfo, uid int64, admin bool) bool {

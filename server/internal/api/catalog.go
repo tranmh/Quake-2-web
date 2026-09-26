@@ -409,6 +409,20 @@ func (c *Catalog) Index(ctx context.Context, ps db.Pakset) (*CachedIndex, error)
 	return ci, nil
 }
 
+// PaksetIndex returns the merged asset index of the pakset with the given
+// id (the game host resolves instance data through it).
+func (c *Catalog) PaksetIndex(ctx context.Context, id string) (*manifest.Index, error) {
+	ps, err := c.repo.PaksetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	ci, err := c.Index(ctx, ps)
+	if err != nil {
+		return nil, err
+	}
+	return ci.Index, nil
+}
+
 // SpoolUpload streams r into a temp file under the upload dir while hashing
 // it; at most max bytes are accepted.
 func (c *Catalog) SpoolUpload(r io.Reader, max int64) (path, sha string, size int64, err error) {

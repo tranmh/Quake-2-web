@@ -65,6 +65,10 @@ var ErrGameNotFound = errors.New("game not found")
 // ErrGameFull is returned by GameHost.Join when no slot is free.
 var ErrGameFull = errors.New("game full")
 
+// ErrGameInvalid is wrapped by GameHost.Create errors caused by the spec
+// (unknown mode, forbidden cvar, ...); the API answers 400 with the message.
+var ErrGameInvalid = errors.New("invalid game settings")
+
 // GameHost is implemented by the game server's instance manager
 // (internal/host). The API only validates input, checks ownership and
 // persists the registry row; everything else is the host's business.
@@ -115,7 +119,7 @@ type server struct {
 //	/api/v1/paksets[/{id}[/index]]
 //	/api/v1/maps /api/v1/maps/{name}/manifest
 //	/api/v1/saves[/{slot}[/data]] /api/v1/settings
-//	/api/v1/games[/{id}[/join]]
+//	/api/v1/games[/{id}[/join]] /api/v1/games/from-save
 //	/assets/{sha256}
 func NewRouter(d Deps) http.Handler {
 	if d.Log == nil {
@@ -169,6 +173,7 @@ func NewRouter(d Deps) http.Handler {
 	h("PUT /api/v1/settings", s.putSettings)
 
 	h("POST /api/v1/games", s.createGame)
+	h("POST /api/v1/games/from-save", s.createGameFromSave)
 	h("GET /api/v1/games", s.listGames)
 	h("GET /api/v1/games/{id}", s.getGame)
 	h("POST /api/v1/games/{id}/join", s.joinGame)

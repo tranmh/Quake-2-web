@@ -320,6 +320,10 @@ func (s *Server) executeUserCommand(str string) {
 	s.Cmd.TokenizeString(str, true)
 	s.player = s.client.Edict
 
+	if s.cfg.ClientCommand != nil && s.cfg.ClientCommand(s.client) {
+		return
+	}
+
 	for i := range ucmds {
 		if s.Cmd.Argv(0) == ucmds[i].name {
 			ucmds[i].fn(s)
@@ -390,6 +394,9 @@ func (s *Server) executeClientMessage(cl *Client) {
 			ui := nm.MSG_ReadString()
 			if len(ui) > q2const.MAX_INFO_STRING-1 {
 				ui = ui[:q2const.MAX_INFO_STRING-1]
+			}
+			if s.cfg.Userinfo != nil {
+				ui = s.cfg.Userinfo(cl.Netchan.RemoteAddress, ui)
 			}
 			cl.Userinfo = ui
 			s.UserinfoChanged(cl)
