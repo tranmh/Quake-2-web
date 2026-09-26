@@ -113,11 +113,17 @@ func (s *Server) configstrings_f() {
 	}
 
 	start := int(shared.Atoi(s.Cmd.Argv(2)))
+	// C indexes configstrings[start] for a negative start (reads before the
+	// array); memory-safety fix: start at 0. (Skipping the negative slots one
+	// by one let "configstrings N -2147483648" spin 2^31 iterations.)
+	if start < 0 {
+		start = 0
+	}
 
 	// write a packet full of data
 	m := &cl.Netchan.Message
 	for m.CurSize < q2const.MAX_MSGLEN/2 && start < q2const.MAX_CONFIGSTRINGS {
-		if start >= 0 && !s.SV.ConfigStrings.Empty(start) {
+		if !s.SV.ConfigStrings.Empty(start) {
 			m.MSG_WriteByte(q2const.Svc_configstring)
 			m.MSG_WriteShort(int32(start))
 			m.MSG_WriteString(s.SV.ConfigStrings.Get(start))
@@ -153,18 +159,21 @@ func (s *Server) baselines_f() {
 	}
 
 	start := int(shared.Atoi(s.Cmd.Argv(2)))
+	// C indexes baselines[start] for a negative start; memory-safety fix:
+	// start at 0 (see configstrings_f).
+	if start < 0 {
+		start = 0
+	}
 
 	var nullstate shared.EntityState
 
 	// write a packet full of data
 	m := &cl.Netchan.Message
 	for m.CurSize < q2const.MAX_MSGLEN/2 && start < q2const.MAX_EDICTS {
-		if start >= 0 {
-			base := &s.SV.Baselines[start]
-			if base.ModelIndex != 0 || base.Sound != 0 || base.Effects != 0 {
-				m.MSG_WriteByte(q2const.Svc_spawnbaseline)
-				m.MSG_WriteDeltaEntity(&nullstate, base, true, true)
-			}
+		base := &s.SV.Baselines[start]
+		if base.ModelIndex != 0 || base.Sound != 0 || base.Effects != 0 {
+			m.MSG_WriteByte(q2const.Svc_spawnbaseline)
+			m.MSG_WriteDeltaEntity(&nullstate, base, true, true)
 		}
 		start++
 	}
@@ -187,6 +196,15 @@ func (s *Server) begin_f() {
 	if int(shared.Atoi(s.Cmd.Argv(1))) != s.SVS.SpawnCount {
 		s.Printf("SV_Begin_f from different level\n")
 		s.new_f()
+		return
+	}
+
+	// Robustness fix (not in C): only a game server has a player to spawn.
+	// On a cinematic / pic / demo server C calls ge->ClientBegin on the empty
+	// map and the game aborts the whole server (ERR_DROP "Couldn't find spawn
+	// point"); real clients never send begin there.
+	if s.SV.State != ss_game {
+		s.DPrintf("SV_Begin_f on a non-game server from %s\n", s.client.Name)
 		return
 	}
 
@@ -317,7 +335,12 @@ var ucmds = [...]ucmd{
 
 // executeUserCommand. C: server/sv_user.c:462 SV_ExecuteUserCommand
 func (s *Server) executeUserCommand(str string) {
+	// Security fix (not in C): client text is macro expanded, so
+	// "say $rcon_password" disclosed any server cvar. Only public
+	// (CVAR_SERVERINFO) cvars may be named; others expand to "".
+	s.Cmd.MacroAllow = s.publicCvar
 	s.Cmd.TokenizeString(str, true)
+	s.Cmd.MacroAllow = nil
 	s.player = s.client.Edict
 
 	if s.cfg.ClientCommand != nil && s.cfg.ClientCommand(s.client) {
@@ -343,6 +366,13 @@ USER CMD EXECUTION
 
 ===========================================================================
 */
+
+// publicCvar reports whether a client may expand $name: only cvars already
+// published in the serverinfo string.
+func (s *Server) publicCvar(name string) bool {
+	v := s.Cvars.FindVar(name)
+	return v != nil && v.Flags&q2const.CVAR_SERVERINFO != 0
+}
 
 // clientThink. C: server/sv_user.c:495 SV_ClientThink
 func (s *Server) clientThink(cl *Client, cmd *shared.UserCmd) {
@@ -432,12 +462,18 @@ func (s *Server) executeClientMessage(cl *Client) {
 			// C reads stale net_message bytes when the usercmds ran past the
 			// end of the packet; the buffer is reused the same way here, only
 			// bounded by its size (memory-safety)
+			// (a clc_move in the last byte of a full MAX_MSGLEN datagram puts
+			// the start past the clamped end as well: clamp both)
 			end := nm.ReadCount
 			if end > len(nm.Data) {
 				end = len(nm.Data)
 			}
+			begin := checksumIndex + 1
+			if begin > end {
+				begin = end
+			}
 			calculatedChecksum := int(crc.COM_BlockSequenceCRCByte(
-				nm.Data[checksumIndex+1:end],
+				nm.Data[begin:end],
 				int32(cl.Netchan.IncomingSequence)))
 
 			if calculatedChecksum != checksum {

@@ -448,6 +448,9 @@ func (m *Map) validate() error {
 			return fmt.Errorf("node %d: bad children %v", i, n.children)
 		}
 	}
+	if err := m.checkNodeCycles(); err != nil {
+		return err
+	}
 	for i := 0; i < m.numleafs; i++ {
 		l := &m.leafs[i]
 		if int(l.firstleafbrush)+int(l.numleafbrushes) > m.numleafbrs {
@@ -481,6 +484,68 @@ func (m *Map) validate() error {
 		if p.PortalNum < 0 || p.PortalNum >= q2const.MAX_MAP_AREAPORTALS ||
 			p.OtherArea < 0 || p.OtherArea >= q2const.MAX_MAP_AREAS {
 			return fmt.Errorf("areaportal %d: bad portal/area %d/%d", i, p.PortalNum, p.OtherArea)
+		}
+	}
+	return nil
+}
+
+// checkNodeCycles rejects node graphs that are not a forest: a child that
+// leads back to one of its ancestors (a cycle) or a node with two parents (a
+// shared subtree). On a cycle the tree walks (CM_PointLeafnum_r loops,
+// CM_RecursiveHullCheck, CM_BoxLeafnums_r, CM_HeadnodeVisible recurse) never
+// terminate: an endless loop or a fatal, unrecoverable Go stack overflow. A
+// chain of shared subtrees makes the walks that visit both children take 2^N
+// steps. Memory-safety fix for user-supplied maps; compiled BSPs are trees
+// (every node has exactly one parent, the model headnodes none) and pass.
+func (m *Map) checkNodeCycles() error {
+	const (
+		unvisited = iota
+		onStack
+		done
+	)
+	parents := make([]uint8, m.numnodes)
+	for i := 0; i < m.numnodes; i++ {
+		for _, c := range m.nodes[i].children {
+			if c < 0 {
+				continue
+			}
+			if parents[c] != 0 {
+				return fmt.Errorf("node %d: node %d has more than one parent", i, c)
+			}
+			parents[c] = 1
+		}
+	}
+	state := make([]uint8, m.numnodes)
+	type frame struct {
+		node int32
+		next int // next child to visit (0, 1, 2 = finished)
+	}
+	var stack []frame
+	for root := 0; root < m.numnodes; root++ {
+		if state[root] != unvisited {
+			continue
+		}
+		state[root] = onStack
+		stack = append(stack[:0], frame{node: int32(root)})
+		for len(stack) > 0 {
+			top := &stack[len(stack)-1]
+			if top.next == 2 {
+				state[top.node] = done
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			c := m.nodes[top.node].children[top.next]
+			top.next++
+			if c < 0 {
+				continue // leaf
+			}
+			switch state[c] {
+			case onStack:
+				return fmt.Errorf("node %d: child %d forms a cycle", top.node, c)
+			case unvisited:
+				state[c] = onStack
+				stack = append(stack, frame{node: c})
+			}
 		}
 	}
 	return nil
@@ -1543,7 +1608,9 @@ func (s *State) HeadnodeVisible(nodenum int32, visbits []byte) bool {
 		if cluster == -1 {
 			return false
 		}
-		if int(cluster>>3) < len(visbits) && visbits[cluster>>3]&(1<<(cluster&7)) != 0 {
+		// memory-safety fix: other negative clusters (malformed map) would
+		// index before visbits in C; not visible
+		if cluster >= 0 && int(cluster>>3) < len(visbits) && visbits[cluster>>3]&(1<<(cluster&7)) != 0 {
 			return true
 		}
 		return false

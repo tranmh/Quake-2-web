@@ -8,6 +8,7 @@ package sv
 import (
 	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -281,6 +282,13 @@ type Config struct {
 	// before the engine's own table (s.Cmd holds the tokenized command);
 	// returning true swallows it. Not in C.
 	ClientCommand func(cl *Client) bool
+	// DropClientOnPanic contains a Go runtime panic raised while executing
+	// one client's message by dropping only that client (HandlePacket then
+	// returns an *InternalError with ClientDropped and the level keeps
+	// running). When false (the default) any runtime panic ends the whole
+	// instance, since game state touched by the panicking code may be
+	// inconsistent. Not in C.
+	DropClientOnPanic bool
 }
 
 // Server is one game instance.
@@ -330,6 +338,9 @@ type Server struct {
 
 	// Shutdown is set once the server has been killed (killserver, ERR_DROP).
 	killed bool
+
+	// packetErr is the contained InternalError of the packet being handled.
+	packetErr error
 }
 
 // New creates an instance with the engine cvars and operator commands
@@ -477,7 +488,19 @@ func (s *Server) recoverError(errp *error) {
 	}
 	ce, ok := r.(shared.ComError)
 	if !ok {
-		panic(r)
+		// A Go runtime panic (a bug, possibly triggered by a remote peer)
+		// has no C counterpart. Re-panicking would unwind the instance
+		// goroutine and kill every game in the process: end this instance
+		// like ERR_FATAL instead. Not in C.
+		ie := &InternalError{Value: r, Stack: debug.Stack()}
+		*errp = ie
+		s.Printf("********************\nINTERNAL ERROR: %v\n%s********************\n", r, ie.Stack)
+		func() {
+			defer func() { _ = recover() }() // the state may be inconsistent
+			s.svShutdown("Server fatal crashed: internal error\n", false)
+		}()
+		s.killed = true
+		return
 	}
 	*errp = ce
 	switch ce.Code {
@@ -494,6 +517,19 @@ func (s *Server) recoverError(errp *error) {
 		s.killed = true
 	}
 }
+
+// InternalError is returned by HandlePacket, Frame and ExecuteText when a Go
+// runtime panic (not a Com_Error) was recovered. If it happened while
+// executing one client's message, only that client was dropped
+// (ClientDropped) and the instance keeps running; otherwise the instance has
+// been shut down (Killed).
+type InternalError struct {
+	Value         any
+	Stack         []byte
+	ClientDropped bool
+}
+
+func (e *InternalError) Error() string { return fmt.Sprintf("sv: internal error: %v", e.Value) }
 
 // Spawned reports whether the client is fully in game (cs_spawned).
 func (cl *Client) Spawned() bool { return cl.State == cs_spawned }

@@ -54,6 +54,10 @@ type Cmd struct {
 	// ForwardToServer is Cmd_ForwardToServer. nil uses the dedicated server
 	// version from null/cl_null.c (prints "Unknown command").
 	ForwardToServer func()
+	// MacroAllow, when set, restricts $name expansion to the cvars it
+	// accepts; any other name expands to "" (like an unknown cvar). The
+	// server sets it while tokenizing client commands. Not in C.
+	MacroAllow func(name string) bool
 
 	text      []byte // cmd_text (cursize = len)
 	deferText []byte // defer_text_buf (C string)
@@ -541,7 +545,11 @@ func (c *Cmd) macroExpand(text string) (mem, bool) {
 			continue
 		}
 
-		token = c.cvarString(token)
+		if c.MacroAllow != nil && !c.MacroAllow(token) {
+			token = ""
+		} else {
+			token = c.cvarString(token)
+		}
 
 		j := len(token)
 		length += j

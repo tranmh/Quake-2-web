@@ -406,6 +406,13 @@ func (s *Server) readServerFile() {
 	if err != nil {
 		shared.Error(q2const.ERR_DROP, "Couldn't read game: %v", err)
 	}
+
+	// ReadGame reallocates the edicts: SV_InitGame's client->edict pointers
+	// would dangle (C: freed memory; a later "save" dereferenced a stale
+	// edict without a client). Memory-safety fix.
+	for i := range s.SVS.Clients {
+		s.SVS.Clients[i].Edict = s.edictNum(i + 1)
+	}
 }
 
 // demoMap_f puts the server in demo mode on a specific map/cinematic.

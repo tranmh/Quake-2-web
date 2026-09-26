@@ -3,6 +3,7 @@ package sv
 import (
 	"encoding/binary"
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	qnet "quake2web/server/internal/net"
@@ -461,11 +462,41 @@ func (s *Server) readPacket(p qnet.Packet) {
 			// this is a valid, sequenced packet, so process it
 			if cl.State != cs_zombie {
 				cl.LastMessage = s.SVS.RealTime // don't timeout
-				s.executeClientMessage(cl)
+				s.executeClientMessageContained(cl)
 			}
 		}
 		break
 	}
+}
+
+// executeClientMessageContained runs SV_ExecuteClientMessage for cl. With
+// Config.DropClientOnPanic, a Go runtime panic while executing that client's
+// message (a bug reachable from its packet) drops only that client and is
+// reported through HandlePacket's error; Com_Error keeps its engine
+// semantics. Otherwise, or if dropping the client panics as well,
+// recoverError ends the instance. Not in C.
+func (s *Server) executeClientMessageContained(cl *Client) {
+	if !s.cfg.DropClientOnPanic {
+		s.executeClientMessage(cl)
+		return
+	}
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		if _, ok := r.(shared.ComError); ok {
+			panic(r)
+		}
+		ie := &InternalError{Value: r, Stack: debug.Stack(), ClientDropped: true}
+		s.Printf("********************\nINTERNAL ERROR executing a message from %s (%s): %v\n%s********************\n",
+			cl.Name, cl.Netchan.RemoteAddress, r, ie.Stack)
+		if cl.State != cs_free && cl.State != cs_zombie {
+			s.DropClient(cl)
+		}
+		s.packetErr = ie
+	}()
+	s.executeClientMessage(cl)
 }
 
 // checkTimeouts drops clients that sent nothing for timeout->value seconds;
@@ -612,8 +643,10 @@ func (s *Server) HandlePacket(msec int, p qnet.Packet) (err error) {
 		return nil
 	}
 	s.SVS.RealTime += msec
+	s.packetErr = nil
 	s.readPacket(p)
-	return nil
+	err, s.packetErr = s.packetErr, nil
+	return err
 }
 
 // HEARTBEAT_SECONDS. C: server/sv_main.c:828

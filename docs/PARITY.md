@@ -413,7 +413,8 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   client stringcmd `$name` expansion only reads CVAR_SERVERINFO cvars (others expand to "", like unknown cvars);
   client edict pointers re-pointed after ge->ReadGame; a Go runtime panic under HandlePacket/Frame/ExecuteText
   shuts only that instance down (InternalError); maps whose node graph is not a forest (cycles, shared subtrees) are
-  rejected at load; leaf clusters < -1 count as not visible in CM_HeadnodeVisible.
+  rejected at load; leaf clusters < -1 count as not visible in CM_HeadnodeVisible; opt-in `DropClientOnPanic` drops
+  only the client whose message panicked; the shared map cache is keyed by SHA-256 and LRU-bounded.
 - q2-client (TS, Phase 3): downloads replaced by async asset loading (map checksum still verified vs CS_MAPCHECKSUM);
   async registration with generation guards; async `exec`; `seta/setu/sets/toggle` added; demos recorded in memory;
   pingservers unavailable, rcon over current connection only, no CD audio / VID_CheckChanges; menus delegated to React host;

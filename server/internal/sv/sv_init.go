@@ -1,8 +1,9 @@
 package sv
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
-	"hash/fnv"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,17 +15,31 @@ import (
 )
 
 // MapCache shares immutable collision maps between instances. It is safe for
-// concurrent use.
+// concurrent use. Entries are keyed by the map name and the SHA-256 of its
+// bytes (a non-cryptographic hash would let a crafted map collide with, and
+// replace, another pakset's map), and at most Max maps are kept (least
+// recently used evicted).
 type MapCache struct {
+	// Max bounds the number of cached maps (<= 0: DefaultMapCacheEntries).
+	Max int
+
 	mu   sync.Mutex
-	maps map[string]*cmodel.Map
+	maps map[string]*mapCacheEntry
+	tick uint64
 }
 
+type mapCacheEntry struct {
+	m    *cmodel.Map
+	used uint64
+}
+
+// DefaultMapCacheEntries bounds a MapCache whose Max is not set.
+const DefaultMapCacheEntries = 16
+
 // NewMapCache returns an empty cache.
-func NewMapCache() *MapCache { return &MapCache{maps: map[string]*cmodel.Map{}} }
+func NewMapCache() *MapCache { return &MapCache{maps: map[string]*mapCacheEntry{}} }
 
 // Load returns the map name loaded through fs, from the cache if possible.
-// The key is the name plus the file checksum so different paks don't collide.
 func (c *MapCache) Load(fs FileSystem, name string) (*cmodel.Map, error) {
 	raw, err := fs.ReadFile(name)
 	if err != nil {
@@ -33,22 +48,40 @@ func (c *MapCache) Load(fs FileSystem, name string) (*cmodel.Map, error) {
 	if c == nil {
 		return cmodel.LoadMapBytes(name, raw)
 	}
-	h := fnv.New64a()
-	_, _ = h.Write(raw)
-	key := fmt.Sprintf("%s#%d#%x", name, len(raw), h.Sum64())
+	sum := sha256.Sum256(raw)
+	key := name + "#" + hex.EncodeToString(sum[:])
 	c.mu.Lock()
-	m := c.maps[key]
-	c.mu.Unlock()
-	if m != nil {
-		return m, nil
+	if e := c.maps[key]; e != nil {
+		c.tick++
+		e.used = c.tick
+		c.mu.Unlock()
+		return e.m, nil
 	}
-	m, err = cmodel.LoadMapBytes(name, raw)
+	c.mu.Unlock()
+	m, err := cmodel.LoadMapBytes(name, raw)
 	if err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
-	c.maps[key] = m
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	if c.maps == nil {
+		c.maps = map[string]*mapCacheEntry{}
+	}
+	max := c.Max
+	if max <= 0 {
+		max = DefaultMapCacheEntries
+	}
+	for len(c.maps) >= max {
+		oldest, oldestUsed := "", ^uint64(0)
+		for k, e := range c.maps {
+			if e.used < oldestUsed {
+				oldest, oldestUsed = k, e.used
+			}
+		}
+		delete(c.maps, oldest)
+	}
+	c.tick++
+	c.maps[key] = &mapCacheEntry{m: m, used: c.tick}
 	return m, nil
 }
 
