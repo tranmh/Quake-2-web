@@ -208,7 +208,8 @@ func (g *Game) SV_FlyMove(ent *Edict, time float32, mask int32) int32 {
 			ClipVelocity(original_velocity, planes[i], &new_velocity, 1)
 
 			for j = 0; j < numplanes; j++ {
-				if (j != i) && shared.VectorCompare(planes[i], planes[j]) == 0 {
+				// the ctf fork (older base) has no VectorCompare test
+				if (j != i) && (g.ctfmod || shared.VectorCompare(planes[i], planes[j]) == 0) {
 					if shared.DotProduct(new_velocity, planes[j]) < 0 {
 						break // not ok
 					}
@@ -773,7 +774,7 @@ func (g *Game) SV_Physics_Step(ent *Edict) {
 
 		g.gi.LinkEntity(ent)
 		g.G_TouchTriggers(ent)
-		if !ent.InUse {
+		if !g.ctfmod && !ent.InUse { // no inuse check in the ctf fork's older base
 			return
 		}
 

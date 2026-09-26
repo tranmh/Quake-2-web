@@ -270,6 +270,7 @@ const (
 	IT_STAY_COOP = 8
 	IT_KEY       = 16
 	IT_POWERUP   = 32
+	IT_TECH      = 64 // ctf/g_local.h:224 (ZOID)
 )
 
 // gitem_t->weapmodel for weapons indicates model index
@@ -286,6 +287,7 @@ const (
 	WEAP_HYPERBLASTER    = 9
 	WEAP_RAILGUN         = 10
 	WEAP_BFG             = 11
+	WEAP_GRAPPLE         = 12 // ctf/g_local.h:239
 )
 
 // GItem is C gitem_t. The item table (itemlist, g_items.go) is immutable
@@ -358,6 +360,7 @@ type LevelLocals struct {
 	LevelName string // the descriptive name (Outer Base, etc)
 	Mapname   string // the server name (base1, etc)
 	Nextmap   string // go here when fraglimit is hit
+	Forcemap  string // go here (ctf/g_local.h:316, ctf module only)
 
 	// intermission state
 	Intermissiontime   float32 // time the intermission was started
@@ -538,6 +541,7 @@ const (
 	MOD_TRIGGER_HURT   = 31
 	MOD_HIT            = 32
 	MOD_TARGET_BLASTER = 33
+	MOD_GRAPPLE        = 34 // ctf/g_local.h:509
 	MOD_FRIENDLY_FIRE  = 0x8000000
 )
 
@@ -659,6 +663,22 @@ type ClientRespawn struct {
 	CmdAngles   Vec3             // angles sent over in the last command
 
 	Spectator bool // client is a spectator
+
+	// ctf module only (ctf/g_local.h:874, //ZOID). The ctf fork keeps
+	// game_helpchanged/helpchanged here instead of in client_persistant_t.
+	CtfTeam               int32 // CTF team
+	CtfState              int32
+	CtfLasthurtcarrier    float32
+	CtfLastreturnedflag   float32
+	CtfFlagsince          float32
+	CtfLastfraggedcarrier float32
+	IdState               bool
+	Voted                 bool // for elections
+	Ready                 bool
+	Admin                 bool
+	Ghost                 *Ghost `save:"-"` // for ghost codes (points into ctfgame.ghosts)
+	GameHelpchanged       int32
+	Helpchanged           int32
 }
 
 // CPlane / CSurface as used by touch functions.

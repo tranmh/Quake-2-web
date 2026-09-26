@@ -176,7 +176,11 @@ func (g *Game) CheckPowerArmor(ent *Edict, point, normal Vec3, damage, dflags in
 		pa_te_type = TE_SCREEN_SPARKS
 		damage = damage / 3
 	} else {
-		damagePerCell = 2
+		if g.ctfmod {
+			damagePerCell = 1 // power armor is weaker in CTF
+		} else {
+			damagePerCell = 2
+		}
 		pa_te_type = TE_SHIELD_SPARKS
 		damage = (2 * damage) / 3
 	}
@@ -268,7 +272,9 @@ func (g *Game) M_ReactToDamage(targ, attacker *Edict) {
 
 	// if attacker is a client, get mad at them because he's good and we're not
 	if attacker.Client != nil {
-		targ.Monsterinfo.Aiflags &^= AI_SOUND_TARGET
+		if !g.ctfmod { // not in the ctf fork's older base
+			targ.Monsterinfo.Aiflags &^= AI_SOUND_TARGET
+		}
 
 		// this can only happen in coop (both new and old enemies are clients)
 		// only switch if can't see the current enemy
@@ -301,6 +307,14 @@ func (g *Game) M_ReactToDamage(targ, attacker *Edict) {
 		if targ.Monsterinfo.Aiflags&AI_DUCKED == 0 {
 			g.FoundTarget(targ)
 		}
+	} else if g.ctfmod {
+		// C: ctf/g_combat.c:349 (older base)
+		// otherwise get mad at whoever they are mad at (help our buddy)
+		if targ.Enemy != nil && targ.Enemy.Client != nil {
+			targ.Oldenemy = targ.Enemy
+		}
+		targ.Enemy = attacker.Enemy
+		g.FoundTarget(targ)
 	} else if attacker.Enemy == targ {
 		// if they *meant* to shoot us, then shoot back
 		if targ.Enemy != nil && targ.Enemy.Client != nil {
@@ -324,6 +338,15 @@ func (g *Game) M_ReactToDamage(targ, attacker *Edict) {
 
 // C: game/g_combat.c:370 CheckTeamDamage
 func (g *Game) CheckTeamDamage(targ, attacker *Edict) bool {
+	//ZOID
+	if g.ctfOn() && targ.Client != nil && attacker.Client != nil {
+		if targ.Client.Resp.CtfTeam == attacker.Client.Resp.CtfTeam &&
+			targ != attacker {
+			return true
+		}
+	}
+	//ZOID
+
 	//FIXME make the next line real and uncomment this block
 	// if ((ability to damage a teammate == OFF) && (targ's team == attacker's team))
 	return false
@@ -388,6 +411,13 @@ func (g *Game) T_Damage(targ, inflictor, attacker *Edict, dir *Vec3, point, norm
 		damage *= 2
 	}
 
+	//ZOID
+	//strength tech
+	if g.ctfmod {
+		damage = g.CTFApplyStrength(attacker, damage)
+	}
+	//ZOID
+
 	if targ.Flags&FL_NO_KNOCKBACK != 0 {
 		knockback = 0
 	}
@@ -434,19 +464,42 @@ func (g *Game) T_Damage(targ, inflictor, attacker *Edict, dir *Vec3, point, norm
 		save = damage
 	}
 
-	psave = g.CheckPowerArmor(targ, point, normal, take, dflags)
-	take -= psave
+	//ZOID
+	//team armor protect
+	if g.ctfOn() && targ.Client != nil && attacker.Client != nil &&
+		targ.Client.Resp.CtfTeam == attacker.Client.Resp.CtfTeam &&
+		targ != attacker && int32(g.dmflags.Value)&DF_ARMOR_PROTECT != 0 {
+		psave = 0
+		asave = 0
+	} else {
+		//ZOID
+		psave = g.CheckPowerArmor(targ, point, normal, take, dflags)
+		take -= psave
 
-	asave = g.CheckArmor(targ, point, normal, take, te_sparks, dflags)
-	take -= asave
+		asave = g.CheckArmor(targ, point, normal, take, te_sparks, dflags)
+		take -= asave
+	}
 
 	//treat cheat/powerup savings the same as armor
 	asave += save
+
+	//ZOID
+	//resistance tech
+	if g.ctfmod {
+		take = g.CTFApplyResistance(targ, take)
+	}
+	//ZOID
 
 	// team damage avoidance
 	if dflags&DAMAGE_NO_PROTECTION == 0 && g.CheckTeamDamage(targ, attacker) {
 		return
 	}
+
+	//ZOID
+	if g.ctfmod {
+		g.CTFCheckHurtCarrier(targ, attacker)
+	}
+	//ZOID
 
 	// do the damage
 	if take != 0 {
@@ -456,7 +509,9 @@ func (g *Game) T_Damage(targ, inflictor, attacker *Edict, dir *Vec3, point, norm
 			g.SpawnDamage(te_sparks, point, normal, take)
 		}
 
-		targ.Health = targ.Health - take
+		if !g.CTFMatchSetup() {
+			targ.Health = targ.Health - take
+		}
 
 		if targ.Health <= 0 {
 			if targ.SVFlags&SVF_MONSTER != 0 || client != nil {
@@ -477,7 +532,7 @@ func (g *Game) T_Damage(targ, inflictor, attacker *Edict, dir *Vec3, point, norm
 			}
 		}
 	} else if client != nil {
-		if targ.Flags&FL_GODMODE == 0 && take != 0 {
+		if targ.Flags&FL_GODMODE == 0 && take != 0 && !g.CTFMatchSetup() {
 			targ.Pain.fn(g, targ, attacker, float32(knockback), take)
 		}
 	} else if take != 0 {

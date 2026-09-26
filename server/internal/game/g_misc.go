@@ -329,7 +329,7 @@ func (g *Game) ThrowClientHead(self *Edict, damage int32) {
 	if self.Client != nil { // bodies in the queue don't have a client anymore
 		self.Client.AnimPriority = ANIM_DEATH
 		self.Client.AnimEnd = self.S.Frame
-	} else {
+	} else if !g.ctfmod { // not in the ctf fork's older base
 		self.Think = nil
 		self.Nextthink = 0
 	}
@@ -376,6 +376,29 @@ func (g *Game) ThrowDebris(self *Edict, modelname string, speed float32, origin 
 
 // C: game/g_misc.c:314 BecomeExplosion1
 func (g *Game) BecomeExplosion1(self *Edict) {
+	//ZOID
+	if g.ctfmod {
+		//flags are important
+		if self.Classname == "item_flag_team1" {
+			g.CTFResetFlag(CTF_TEAM1) // this will free self!
+			g.bprintf(PRINT_HIGH, "The %s flag has returned!\n",
+				CTFTeamName(CTF_TEAM1))
+			return
+		}
+		if self.Classname == "item_flag_team2" {
+			g.CTFResetFlag(CTF_TEAM2) // this will free self!
+			g.bprintf(PRINT_HIGH, "The %s flag has returned!\n",
+				CTFTeamName(CTF_TEAM1))
+			return
+		}
+		// techs are important too
+		if self.Item != nil && self.Item.Flags&IT_TECH != 0 {
+			g.CTFRespawnTech(self) // this frees self!
+			return
+		}
+	}
+	//ZOID
+
 	g.gi.WriteByteC(svc_temp_entity)
 	g.gi.WriteByteC(TE_EXPLOSION1)
 	g.gi.WritePosition(&self.S.Origin)
@@ -432,7 +455,9 @@ func (g *Game) path_corner_touch(self, other *Edict, plane *CPlane, surf *CSurfa
 		v[2] -= other.Mins[2]
 		other.S.Origin = v
 		next = g.G_PickTarget(next.Target)
-		other.S.Event = EV_OTHER_TELEPORT
+		if !g.ctfmod { // not in the ctf fork's older base
+			other.S.Event = EV_OTHER_TELEPORT
+		}
 	}
 
 	other.Movetarget = next
@@ -544,6 +569,14 @@ Just for the debugging level.  Don't use
 func (g *Game) TH_viewthing(ent *Edict) {
 	ent.S.Frame = (ent.S.Frame + 1) % 7
 	ent.Nextthink = float32(float64(g.level.Time) + FRAMETIME)
+
+	// C: ctf/g_misc.c:516 (static int robotron[4] is never filled in)
+	if g.ctfmod && ent.Spawnflags != 0 {
+		if ent.S.Frame == 0 {
+			ent.Spawnflags = (ent.Spawnflags+1)%4 + 1
+			ent.S.ModelIndex = 0 // robotron[ent->spawnflags - 1]
+		}
+	}
 }
 
 // C: game/g_misc.c:499 SP_viewthing
@@ -1758,6 +1791,12 @@ func (g *Game) teleporter_touch(self, other *Edict, plane *CPlane, surf *CSurfac
 		g.gi.Dprintf("Couldn't find destination\n")
 		return
 	}
+
+	//ZOID
+	if g.ctfmod {
+		g.CTFPlayerResetGrapple(other)
+	}
+	//ZOID
 
 	// unlink to make sure it can't possibly interfere with KillBox
 	g.gi.UnlinkEntity(other)

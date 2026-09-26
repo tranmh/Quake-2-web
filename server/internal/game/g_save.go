@@ -189,10 +189,10 @@ func (c *saveCtx) dec(j any, v reflect.Value) error {
 		}
 		if m, ok := j.(map[string]any); ok {
 			n, err := jsonInt(m["index"])
-			if err != nil || n < 0 || int(n) >= len(itemlist) {
+			if err != nil || n < 0 || int(n) >= len(c.g.itemlist) {
 				return fmt.Errorf("save: bad item index %v", m["index"])
 			}
-			v.Set(reflect.ValueOf(&itemlist[n]))
+			v.Set(reflect.ValueOf(&c.g.itemlist[n]))
 			return nil
 		}
 		s, ok := j.(string)
@@ -481,6 +481,10 @@ var (
 		"ipfilters", "numipfilters",
 		// rebuilt by SpawnItem during SpawnEntities (C mutates the item table)
 		"itemDropCleared",
+		// ctf module: cvars, module identity (chosen at Init) and the
+		// g_ctf.c globals (ctfgame, menus), which the ctf fork's savegames
+		// do not store either
+		"capturelimit", "instantweap", "ctfmod", "moduleForced", "itemlist", "ctfg",
 	}
 )
 

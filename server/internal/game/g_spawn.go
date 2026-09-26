@@ -137,6 +137,7 @@ func init() {
 		{"turret_base", (*Game).SP_turret_base},
 		{"turret_driver", (*Game).SP_turret_driver},
 	}
+	buildCTFTables() // needs itemlist (g_items.go init) and spawns
 }
 
 // field_t: one entry of the fields[] table.
@@ -326,7 +327,7 @@ func (g *Game) ED_CallSpawn(ent *Edict) {
 
 	// check item spawn functions
 	for i := 0; i < int(g.game.NumItems); i++ {
-		item := &itemlist[i]
+		item := &g.itemlist[i]
 		if item.Classname == "" {
 			continue
 		}
@@ -334,6 +335,19 @@ func (g *Game) ED_CallSpawn(ent *Edict) {
 			g.SpawnItem(ent, item)
 			return
 		}
+	}
+
+	// the ctf module has its own spawns[] (ctf/g_spawn.c:146: CTF spawns
+	// added, the monster code "#if 0"-ed out)
+	if g.ctfmod {
+		for _, s := range ctfSpawns {
+			if s.name == ent.Classname { // found it
+				s.spawn(g, ent)
+				return
+			}
+		}
+		g.dprintf("%s doesn't have a spawn function\n", ent.Classname)
+		return
 	}
 
 	// check normal spawn functions
@@ -620,6 +634,12 @@ func (g *Game) SpawnEntities(mapname, entities, spawnpoint string) {
 	g.G_FindTeams()
 
 	g.PlayerTrail_Init()
+
+	//ZOID
+	if g.ctfmod {
+		g.CTFSpawn()
+	}
+	//ZOID
 }
 
 // spawnStrncpy emulates strncpy(dst, src, size-1) into a zeroed char[size].
@@ -851,7 +871,23 @@ func (g *Game) SP_worldspawn(ent *Edict) {
 
 	// status bar program
 	if g.deathmatch.Value != 0 {
-		g.gi.Configstring(CS_STATUSBAR, dm_statusbar)
+		//ZOID
+		if g.ctfmod && g.ctfg.ctf.Value != 0 {
+			g.gi.Configstring(CS_STATUSBAR, ctf_statusbar)
+			//precaches
+			g.gi.ImageIndex("i_ctf1")
+			g.gi.ImageIndex("i_ctf2")
+			g.gi.ImageIndex("i_ctf1d")
+			g.gi.ImageIndex("i_ctf2d")
+			g.gi.ImageIndex("i_ctf1t")
+			g.gi.ImageIndex("i_ctf2t")
+			g.gi.ImageIndex("i_ctfj")
+		} else if g.ctfmod {
+			//ZOID
+			g.gi.Configstring(CS_STATUSBAR, ctf_dm_statusbar)
+		} else {
+			g.gi.Configstring(CS_STATUSBAR, dm_statusbar)
+		}
 	} else {
 		g.gi.Configstring(CS_STATUSBAR, single_statusbar)
 	}
@@ -907,6 +943,17 @@ func (g *Game) SP_worldspawn(ent *Edict) {
 	// sexed models
 	// THIS ORDER MUST MATCH THE DEFINES IN g_local.h
 	// you can add more, max 15
+	// (#if 0 //DISABLED in the ctf module, ctf/g_spawn.c:903)
+	if !g.ctfmod {
+		g.worldspawnSexedModels()
+	}
+
+	//-------------------
+	g.worldspawnRest()
+}
+
+// worldspawnSexedModels is the sexed models block of SP_worldspawn.
+func (g *Game) worldspawnSexedModels() {
 	g.gi.ModelIndex("#w_blaster.md2")
 	g.gi.ModelIndex("#w_shotgun.md2")
 	g.gi.ModelIndex("#w_sshotgun.md2")
@@ -918,8 +965,10 @@ func (g *Game) SP_worldspawn(ent *Edict) {
 	g.gi.ModelIndex("#w_hyperblaster.md2")
 	g.gi.ModelIndex("#w_railgun.md2")
 	g.gi.ModelIndex("#w_bfg.md2")
+}
 
-	//-------------------
+// worldspawnRest is the tail of SP_worldspawn (after the sexed models).
+func (g *Game) worldspawnRest() {
 
 	g.gi.SoundIndex("player/gasp1.wav") // gasping for air
 	g.gi.SoundIndex("player/gasp2.wav") // head breaking surface, not gasping

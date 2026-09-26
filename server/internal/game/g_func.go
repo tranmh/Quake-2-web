@@ -1510,7 +1510,9 @@ again:
 		first = false
 		self.S.Origin = shared.VectorSubtract(ent.S.Origin, self.Mins)
 		self.S.OldOrigin = self.S.Origin
-		self.S.Event = EV_OTHER_TELEPORT
+		if !g.ctfmod { // not in the ctf fork's older base
+			self.S.Event = EV_OTHER_TELEPORT
+		}
 		g.gi.LinkEntity(self)
 		goto again
 	}

@@ -3,6 +3,8 @@ package game
 // Port of game/g_chase.c: spectator chase camera.
 
 import (
+	"fmt"
+
 	. "quake2web/server/internal/q2const"
 	"quake2web/server/internal/qcommon/shared"
 )
@@ -15,7 +17,13 @@ func (g *Game) UpdateChaseCam(ent *Edict) {
 	var angles Vec3
 
 	// is our chase target gone?
-	if !ent.Client.ChaseTarget.InUse || ent.Client.ChaseTarget.Client.Resp.Spectator {
+	if g.ctfmod {
+		// C: ctf/g_chase.c:34 (older base, no spectator mode)
+		if !ent.Client.ChaseTarget.InUse {
+			ent.Client.ChaseTarget = nil
+			return
+		}
+	} else if !ent.Client.ChaseTarget.InUse || ent.Client.ChaseTarget.Client.Resp.Spectator {
 		old := ent.Client.ChaseTarget
 		g.ChaseNext(ent)
 		if ent.Client.ChaseTarget == old {
@@ -73,7 +81,7 @@ func (g *Game) UpdateChaseCam(ent *Edict) {
 		goal[2] += 6
 	}
 
-	if targ.Deadflag != 0 {
+	if targ.Deadflag != 0 && !g.ctfmod {
 		ent.Client.PS.PMove.PmType = PM_DEAD
 	} else {
 		ent.Client.PS.PMove.PmType = PM_FREEZE
@@ -84,7 +92,7 @@ func (g *Game) UpdateChaseCam(ent *Edict) {
 		ent.Client.PS.PMove.DeltaAngles[i] = int16(shared.ANGLE2SHORT(targ.Client.VAngle[i] - ent.Client.Resp.CmdAngles[i]))
 	}
 
-	if targ.Deadflag != 0 {
+	if targ.Deadflag != 0 && !g.ctfmod {
 		ent.Client.PS.ViewAngles[ROLL] = 40
 		ent.Client.PS.ViewAngles[PITCH] = -15
 		ent.Client.PS.ViewAngles[YAW] = targ.Client.KillerYaw
@@ -96,6 +104,18 @@ func (g *Game) UpdateChaseCam(ent *Edict) {
 	ent.Viewheight = 0
 	ent.Client.PS.PMove.PmFlags |= PMF_NO_PREDICTION
 	g.gi.LinkEntity(ent)
+
+	//ZOID: C: ctf/g_chase.c:96
+	if g.ctfmod && ((!ent.Client.Showscores && ent.Client.Menu == nil &&
+		!ent.Client.Showinventory && !ent.Client.Showhelp &&
+		g.level.Framenum&31 == 0) || ent.Client.UpdateChase) {
+		ent.Client.UpdateChase = false
+		s := fmt.Sprintf("xv 0 yb -68 string2 \"Chasing %s\"",
+			targ.Client.Pers.Netname)
+		g.gi.WriteByteC(svc_layout)
+		g.gi.WriteString(s)
+		g.gi.Unicast(ent, false)
+	}
 }
 
 // C: game/g_chase.c:111 ChaseNext
@@ -114,7 +134,11 @@ func (g *Game) ChaseNext(ent *Edict) {
 		}
 		e = &g.edicts[i]
 		if e.InUse {
-			if !e.Client.Resp.Spectator {
+			if g.ctfmod { // ctf/g_chase.c:127
+				if e.Solid != SOLID_NOT {
+					break
+				}
+			} else if !e.Client.Resp.Spectator {
 				break
 			}
 		}
@@ -143,7 +167,11 @@ func (g *Game) ChasePrev(ent *Edict) {
 		}
 		e = &g.edicts[i]
 		if e.InUse {
-			if !e.Client.Resp.Spectator {
+			if g.ctfmod { // ctf/g_chase.c:127
+				if e.Solid != SOLID_NOT {
+					break
+				}
+			} else if !e.Client.Resp.Spectator {
 				break
 			}
 		}

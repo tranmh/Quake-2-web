@@ -50,6 +50,8 @@ func TestRegistryNamesAreCFunctions(t *testing.T) {
 	if len(files) == 0 {
 		t.Skip("C sources not available")
 	}
+	// the ctf module's own functions (g_ctf.go)
+	files = append(files, filepath.Join(root, "Quake-2", "ctf", "g_ctf.c"))
 	defs := map[string]bool{}
 	re := regexp.MustCompile(`(?m)^[A-Za-z_][A-Za-z0-9_ \t\*]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}\n]*\)\s*\{`)
 	for _, f := range files {
@@ -63,7 +65,7 @@ func TestRegistryNamesAreCFunctions(t *testing.T) {
 	}
 	for _, n := range RegistryNames() {
 		if !defs[n] {
-			t.Errorf("registry name %q is not a C function definition in Quake-2/game", n)
+			t.Errorf("registry name %q is not a C function definition in Quake-2/game or Quake-2/ctf/g_ctf.c", n)
 		}
 	}
 }
@@ -71,15 +73,26 @@ func TestRegistryNamesAreCFunctions(t *testing.T) {
 // TestItemTableMatchesC compares itemlist with the itemlist[] initializer of
 // game/g_items.c, field by field, in order.
 func TestItemTableMatchesC(t *testing.T) {
+	checkItemTable(t, filepath.Join("game", "g_items.c"), itemlist)
+}
+
+// TestCTFItemTableMatchesC compares ctfItemlist (the ctf module's table)
+// with the itemlist[] initializer of ctf/g_items.c.
+func TestCTFItemTableMatchesC(t *testing.T) {
+	checkItemTable(t, filepath.Join("ctf", "g_items.c"), ctfItemlist)
+}
+
+func checkItemTable(t *testing.T, rel string, itemlist []GItem) {
 	root, err := testutil.RepoRoot()
 	if err != nil {
 		t.Skip(err)
 	}
-	b, err := os.ReadFile(filepath.Join(root, "Quake-2", "game", "g_items.c"))
+	b, err := os.ReadFile(filepath.Join(root, "Quake-2", rel))
 	if err != nil {
 		t.Skip(err)
 	}
-	src := string(b)
+	src := strings.ReplaceAll(string(b), "\r", "")
+	src = regexp.MustCompile(`(?s)\n#if 0.*?\n#endif`).ReplaceAllString(src, "")
 	start := strings.Index(src, "gitem_t\titemlist[] = ")
 	if start < 0 {
 		t.Fatal("itemlist not found in g_items.c")
@@ -150,6 +163,7 @@ func TestItemTableMatchesC(t *testing.T) {
 		"AMMO_BULLETS": AMMO_BULLETS, "AMMO_SHELLS": AMMO_SHELLS, "AMMO_ROCKETS": AMMO_ROCKETS,
 		"AMMO_GRENADES": AMMO_GRENADES, "AMMO_CELLS": AMMO_CELLS, "AMMO_SLUGS": AMMO_SLUGS,
 		"POWER_ARMOR_SCREEN": POWER_ARMOR_SCREEN, "POWER_ARMOR_SHIELD": POWER_ARMOR_SHIELD,
+		"IT_TECH": IT_TECH, "WEAP_GRAPPLE": WEAP_GRAPPLE, "EF_FLAG1": q2const.EF_FLAG1, "EF_FLAG2": q2const.EF_FLAG2,
 	}
 	evalInt := func(s string) int64 {
 		v := int64(0)

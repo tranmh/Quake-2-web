@@ -475,6 +475,15 @@ func (g *Game) P_FallingDamage(ent *Edict) {
 	}
 	delta = float32(float64(delta*delta) * 0.0001)
 
+	//ZOID
+	// never take damage if just release grapple or on grapple
+	if g.ctfmod && (float64(g.level.Time-ent.Client.CtfGrapplereleasetime) <= FRAMETIME*2 ||
+		(ent.Client.CtfGrapple != nil &&
+			ent.Client.CtfGrapplestate > CTF_GRAPPLE_STATE_FLY)) {
+		return
+	}
+	//ZOID
+
 	// never take falling damage if completely underwater
 	if ent.Waterlevel == 3 {
 		return
@@ -695,15 +704,24 @@ func (g *Game) G_SetClientEffects(ent *Edict) {
 		}
 	}
 
+	//ZOID
+	if g.ctfmod {
+		g.CTFEffects(ent)
+	}
+	//ZOID
+
+	// the ctf fork blinks quad/pent every 8 frames
+	blink := !g.ctfmod || g.level.Framenum&8 != 0
+
 	fn := float32(g.level.Framenum)
-	if ent.Client.QuadFramenum > fn {
+	if ent.Client.QuadFramenum > fn && blink {
 		remaining = int32(ent.Client.QuadFramenum - fn)
 		if remaining > 30 || remaining&4 != 0 {
 			ent.S.Effects |= EF_QUAD
 		}
 	}
 
-	if ent.Client.InvincibleFramenum > fn {
+	if ent.Client.InvincibleFramenum > fn && blink {
 		remaining = int32(ent.Client.InvincibleFramenum - fn)
 		if remaining > 30 || remaining&4 != 0 {
 			ent.S.Effects |= EF_PENT
@@ -734,14 +752,19 @@ func (g *Game) G_SetClientEvent(ent *Edict) {
 func (g *Game) G_SetClientSound(ent *Edict) {
 	var weap string
 
-	if ent.Client.Pers.GameHelpchanged != g.game.Helpchanged {
-		ent.Client.Pers.GameHelpchanged = g.game.Helpchanged
-		ent.Client.Pers.Helpchanged = 1
+	// the ctf fork keeps game_helpchanged/helpchanged in client_respawn_t
+	gameHelpchanged, helpchanged := &ent.Client.Pers.GameHelpchanged, &ent.Client.Pers.Helpchanged
+	if g.ctfmod {
+		gameHelpchanged, helpchanged = &ent.Client.Resp.GameHelpchanged, &ent.Client.Resp.Helpchanged
+	}
+	if *gameHelpchanged != g.game.Helpchanged {
+		*gameHelpchanged = g.game.Helpchanged
+		*helpchanged = 1
 	}
 
 	// help beep (no more than three times)
-	if ent.Client.Pers.Helpchanged != 0 && ent.Client.Pers.Helpchanged <= 3 && g.level.Framenum&63 == 0 {
-		ent.Client.Pers.Helpchanged++
+	if *helpchanged != 0 && *helpchanged <= 3 && g.level.Framenum&63 == 0 {
+		*helpchanged++
 		g.gi.Sound(ent, CHAN_VOICE, g.gi.SoundIndex("misc/pc_up.wav"), 1, ATTN_STATIC, 0)
 	}
 
@@ -820,11 +843,19 @@ func (g *Game) G_SetClientFrame(ent *Edict) {
 	client.AnimRun = run
 
 	if ent.Groundentity == nil {
-		client.AnimPriority = ANIM_JUMP
-		if ent.S.Frame != FRAME_jump2 {
-			ent.S.Frame = FRAME_jump1
+		//ZOID: if on grapple, don't go into jump frame, go into standing
+		//frame
+		if g.ctfmod && client.CtfGrapple != nil {
+			ent.S.Frame = FRAME_stand01
+			client.AnimEnd = FRAME_stand40
+		} else {
+			//ZOID
+			client.AnimPriority = ANIM_JUMP
+			if ent.S.Frame != FRAME_jump2 {
+				ent.S.Frame = FRAME_jump1
+			}
+			client.AnimEnd = FRAME_jump2
 		}
-		client.AnimEnd = FRAME_jump2
 	} else if run {
 		// running
 		if duck {
@@ -948,13 +979,34 @@ func (g *Game) ClientEndServerFrame(ent *Edict) {
 	// should be determined by the client
 	g.SV_CalcBlend(ent)
 
-	// chase cam stuff
-	if ent.Client.Resp.Spectator {
-		g.G_SetSpectatorStats(ent)
+	if g.ctfmod {
+		//ZOID
+		if ent.Client.ChaseTarget == nil {
+			//ZOID
+			g.G_SetStats(ent)
+		}
+
+		//ZOID
+		//update chasecam follower stats
+		for i := 1; float32(i) <= g.maxclients.Value; i++ {
+			e := &g.edicts[i]
+			if !e.InUse || e.Client.ChaseTarget != ent {
+				continue
+			}
+			e.Client.PS.Stats = ent.Client.PS.Stats
+			e.Client.PS.Stats[STAT_LAYOUTS] = 1
+			break
+		}
+		//ZOID
 	} else {
-		g.G_SetStats(ent)
+		// chase cam stuff
+		if ent.Client.Resp.Spectator {
+			g.G_SetSpectatorStats(ent)
+		} else {
+			g.G_SetStats(ent)
+		}
+		g.G_CheckChaseStats(ent)
 	}
-	g.G_CheckChaseStats(ent)
 
 	g.G_SetClientEvent(ent)
 
@@ -973,7 +1025,15 @@ func (g *Game) ClientEndServerFrame(ent *Edict) {
 
 	// if the scoreboard is up, update it
 	if ent.Client.Showscores && g.level.Framenum&31 == 0 {
-		g.DeathmatchScoreboardMessage(ent, ent.Enemy)
+		//ZOID
+		if g.ctfmod && ent.Client.Menu != nil {
+			g.PMenu_Do_Update(ent)
+			ent.Client.Menudirty = false
+			ent.Client.Menutime = g.level.Time
+		} else {
+			//ZOID
+			g.DeathmatchScoreboardMessage(ent, ent.Enemy)
+		}
 		g.gi.Unicast(ent, false)
 	}
 }

@@ -239,6 +239,9 @@ func (g *Game) ServerCommand() {
 	cmd := g.gi.Argv(1)
 	if shared.Q_stricmp(cmd, "test") == 0 {
 		g.Svcmd_Test_f()
+	} else if g.ctfmod {
+		// C: ctf/g_svcmds.c:40 (older base: no IP filter commands)
+		g.cprintf(nil, PRINT_HIGH, "Unknown server command \"%s\"\n", cmd)
 	} else if shared.Q_stricmp(cmd, "addip") == 0 {
 		g.SVCmd_AddIP_f()
 	} else if shared.Q_stricmp(cmd, "removeip") == 0 {

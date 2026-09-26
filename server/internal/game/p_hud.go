@@ -76,6 +76,12 @@ func (g *Game) BeginIntermission(targ *Edict) {
 		return // already activated
 	}
 
+	//ZOID
+	if g.deathmatch.Value != 0 && g.ctfOn() {
+		g.CTFCalcScores()
+	}
+	//ZOID
+
 	g.game.Autosaved = false
 
 	// respawn any dead clients
@@ -101,7 +107,7 @@ func (g *Game) BeginIntermission(targ *Edict) {
 				}
 				// strip players of all keys between units
 				for n := 0; n < MAX_ITEMS; n++ {
-					if n < len(itemlist) && itemlist[n].Flags&IT_KEY != 0 {
+					if n < len(g.itemlist) && g.itemlist[n].Flags&IT_KEY != 0 {
 						client.Client.Pers.Inventory[n] = 0
 					}
 				}
@@ -152,6 +158,13 @@ func (g *Game) BeginIntermission(targ *Edict) {
 func (g *Game) DeathmatchScoreboardMessage(ent, killer *Edict) {
 	var sorted, sortedscores [MAX_CLIENTS]int32
 	var j int
+
+	//ZOID
+	if g.ctfOn() {
+		g.CTFScoreboardMessage(ent, killer)
+		return
+	}
+	//ZOID
 
 	// sort the clients by score
 	total := 0
@@ -240,6 +253,11 @@ func (g *Game) DeathmatchScoreboard(ent *Edict) {
 func (g *Game) Cmd_Score_f(ent *Edict) {
 	ent.Client.Showinventory = false
 	ent.Client.Showhelp = false
+	//ZOID
+	if g.ctfmod && ent.Client.Menu != nil {
+		g.PMenu_Close(ent)
+	}
+	//ZOID
 
 	if g.deathmatch.Value == 0 && g.coop.Value == 0 {
 		return
@@ -247,6 +265,9 @@ func (g *Game) Cmd_Score_f(ent *Edict) {
 
 	if ent.Client.Showscores {
 		ent.Client.Showscores = false
+		if g.ctfmod {
+			ent.Client.UpdateChase = true
+		}
 		return
 	}
 
@@ -303,6 +324,19 @@ func (g *Game) Cmd_Help_f(ent *Edict) {
 	ent.Client.Showinventory = false
 	ent.Client.Showscores = false
 
+	if g.ctfmod {
+		// C: ctf/p_hud.c:376 (the fork keeps these in client_respawn_t)
+		if ent.Client.Showhelp && ent.Client.Resp.GameHelpchanged == g.game.Helpchanged {
+			ent.Client.Showhelp = false
+			return
+		}
+
+		ent.Client.Showhelp = true
+		ent.Client.Resp.Helpchanged = 0
+		g.HelpComputer(ent)
+		return
+	}
+
 	if ent.Client.Showhelp && ent.Client.Pers.GameHelpchanged == g.game.Helpchanged {
 		ent.Client.Showhelp = false
 		return
@@ -335,7 +369,7 @@ func (g *Game) G_SetStats(ent *Edict) {
 		stats[STAT_AMMO_ICON] = 0
 		stats[STAT_AMMO] = 0
 	} else {
-		item = &itemlist[ent.Client.AmmoIndex]
+		item = &g.itemlist[ent.Client.AmmoIndex]
 		stats[STAT_AMMO_ICON] = int16(g.gi.ImageIndex(item.Icon))
 		stats[STAT_AMMO] = int16(ent.Client.Pers.Inventory[ent.Client.AmmoIndex])
 	}
@@ -402,7 +436,7 @@ func (g *Game) G_SetStats(ent *Edict) {
 	if ent.Client.Pers.SelectedItem == -1 {
 		stats[STAT_SELECTED_ICON] = 0
 	} else {
-		stats[STAT_SELECTED_ICON] = int16(g.gi.ImageIndex(itemlist[ent.Client.Pers.SelectedItem].Icon))
+		stats[STAT_SELECTED_ICON] = int16(g.gi.ImageIndex(g.itemlist[ent.Client.Pers.SelectedItem].Icon))
 	}
 
 	stats[STAT_SELECTED_ITEM] = int16(ent.Client.Pers.SelectedItem)
@@ -436,12 +470,23 @@ func (g *Game) G_SetStats(ent *Edict) {
 	//
 	// help icon / current weapon if not shown
 	//
-	if ent.Client.Pers.Helpchanged != 0 && g.level.Framenum&8 != 0 {
+	helpchanged := ent.Client.Pers.Helpchanged
+	if g.ctfmod {
+		helpchanged = ent.Client.Resp.Helpchanged
+	}
+	if helpchanged != 0 && g.level.Framenum&8 != 0 {
 		stats[STAT_HELPICON] = int16(g.gi.ImageIndex("i_help"))
 	} else if (ent.Client.Pers.Hand == CENTER_HANDED || ent.Client.PS.Fov > 91) && ent.Client.Pers.Weapon != nil {
 		stats[STAT_HELPICON] = int16(g.gi.ImageIndex(ent.Client.Pers.Weapon.Icon))
 	} else {
 		stats[STAT_HELPICON] = 0
+	}
+
+	if g.ctfmod {
+		//ZOID
+		g.SetCTFStats(ent)
+		//ZOID
+		return
 	}
 
 	stats[STAT_SPECTATOR] = 0

@@ -71,39 +71,39 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 | `ctf/docs/tech2.gif` | 2 | N/A | build/doc file | - | n/a |
 | `ctf/docs/tech3.gif` | 1 | N/A | build/doc file | - | n/a |
 | `ctf/docs/tech4.gif` | 4 | N/A | build/doc file | - | n/a |
-| `ctf/g_ai.c` | 1117 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_chase.c` | 157 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_cmds.c` | 1066 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_combat.c` | 596 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_ctf.c` | 4016 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_ctf.h` | 185 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_func.c` | 2047 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_items.c` | 2446 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_local.h` | 1145 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_main.c` | 427 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_misc.c` | 1909 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_monster.c` | 740 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_phys.c` | 959 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_save.c` | 743 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_spawn.c` | 998 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_svcmds.c` | 48 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_target.c` | 809 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_trigger.c` | 598 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_utils.c` | 570 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/g_weapon.c` | 919 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/game.h` | 242 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
+| `ctf/g_ai.c` | 1117 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_chase.c` | 157 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_cmds.c` | 1066 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_combat.c` | 596 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_ctf.c` | 4016 | P | Go internal/game g_ctf.go / p_menu.go (docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_ctf.h` | 185 | P | Go internal/game g_ctf.go / p_menu.go (docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_func.c` | 2047 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_items.c` | 2446 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_local.h` | 1145 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_main.c` | 427 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_misc.c` | 1909 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_monster.c` | 740 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_phys.c` | 959 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_save.c` | 743 | P | Go internal/game (InitGame hunks inline; the Go save format is shared by both modes, docs/CTF.md) | oracle_game_ctf ctf_* (InitGame) | ported |
+| `ctf/g_spawn.c` | 998 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_svcmds.c` | 48 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_target.c` | 809 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_trigger.c` | 598 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_utils.c` | 570 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/g_weapon.c` | 919 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/game.h` | 242 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
 | `ctf/layout.txt` | 12 | N/A | build/doc file | - | n/a |
-| `ctf/m_move.c` | 556 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/m_player.h` | 225 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/p_client.c` | 1726 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/p_hud.c` | 544 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/p_menu.c` | 256 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/p_menu.h` | 49 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/p_trail.c` | 146 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/p_view.c` | 1135 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/p_weapon.c` | 1469 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/q_shared.c` | 1419 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
-| `ctf/q_shared.h` | 1200 | P | Go internal/game (CTF mode, //ZOID hunks inline) | oracle_game_ctf | pending |
+| `ctf/m_move.c` | 556 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/m_player.h` | 225 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/p_client.c` | 1726 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/p_hud.c` | 544 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/p_menu.c` | 256 | P | Go internal/game g_ctf.go / p_menu.go (docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/p_menu.h` | 49 | P | Go internal/game g_ctf.go / p_menu.go (docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/p_trail.c` | 146 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/p_view.c` | 1135 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/p_weapon.c` | 1469 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/q_shared.c` | 1419 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
+| `ctf/q_shared.h` | 1200 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
 | `game/g_ai.c` | 1117 | P | Go internal/game | oracle_game | pending |
 | `game/g_chase.c` | 175 | P | Go internal/game | oracle_game | pending |
 | `game/g_cmds.c` | 992 | P | Go internal/game | oracle_game | pending |

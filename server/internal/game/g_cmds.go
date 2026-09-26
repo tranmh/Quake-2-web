@@ -59,10 +59,15 @@ func cmdsInventory(pers *ClientPersistant, index int32) int32 {
 func (g *Game) SelectNextItem(ent *Edict, itflags int32) {
 	cl := ent.Client
 
-	if cl.ChaseTarget != nil {
+	//ZOID
+	if g.ctfmod && cl.Menu != nil {
+		g.PMenu_Next(ent)
+		return
+	} else if cl.ChaseTarget != nil {
 		g.ChaseNext(ent)
 		return
 	}
+	//ZOID
 
 	// scan  for the next valid one
 	for i := int32(1); i <= MAX_ITEMS; i++ {
@@ -70,7 +75,7 @@ func (g *Game) SelectNextItem(ent *Edict, itflags int32) {
 		if cmdsInventory(&cl.Pers, index) == 0 {
 			continue
 		}
-		it := &itemlist[index]
+		it := &g.itemlist[index]
 		if it.Use == nil {
 			continue
 		}
@@ -89,10 +94,15 @@ func (g *Game) SelectNextItem(ent *Edict, itflags int32) {
 func (g *Game) SelectPrevItem(ent *Edict, itflags int32) {
 	cl := ent.Client
 
-	if cl.ChaseTarget != nil {
+	//ZOID
+	if g.ctfmod && cl.Menu != nil {
+		g.PMenu_Prev(ent)
+		return
+	} else if cl.ChaseTarget != nil {
 		g.ChasePrev(ent)
 		return
 	}
+	//ZOID
 
 	// scan  for the next valid one
 	for i := int32(1); i <= MAX_ITEMS; i++ {
@@ -100,7 +110,7 @@ func (g *Game) SelectPrevItem(ent *Edict, itflags int32) {
 		if cmdsInventory(&cl.Pers, index) == 0 {
 			continue
 		}
-		it := &itemlist[index]
+		it := &g.itemlist[index]
 		if it.Use == nil {
 			continue
 		}
@@ -163,7 +173,7 @@ func (g *Game) Cmd_Give_f(ent *Edict) {
 
 	if give_all || shared.Q_stricmp(name, "weapons") == 0 {
 		for i := int32(0); i < g.game.NumItems; i++ {
-			it = &itemlist[i]
+			it = &g.itemlist[i]
 			if it.Pickup == nil {
 				continue
 			}
@@ -179,7 +189,7 @@ func (g *Game) Cmd_Give_f(ent *Edict) {
 
 	if give_all || shared.Q_stricmp(name, "ammo") == 0 {
 		for i := int32(0); i < g.game.NumItems; i++ {
-			it = &itemlist[i]
+			it = &g.itemlist[i]
 			if it.Pickup == nil {
 				continue
 			}
@@ -226,7 +236,7 @@ func (g *Game) Cmd_Give_f(ent *Edict) {
 
 	if give_all {
 		for i := int32(0); i < g.game.NumItems; i++ {
-			it = &itemlist[i]
+			it = &g.itemlist[i]
 			if it.Pickup == nil {
 				continue
 			}
@@ -364,6 +374,15 @@ func (g *Game) Cmd_Use_f(ent *Edict) {
 // Cmd_Drop_f drops an inventory item.
 // C: game/g_cmds.c:432 Cmd_Drop_f
 func (g *Game) Cmd_Drop_f(ent *Edict) {
+	//ZOID--special case for tech powerups
+	if g.ctfmod && shared.Q_stricmp(g.gi.Args(), "tech") == 0 {
+		if it := g.CTFWhat_Tech(ent); it != nil {
+			g.itemDrop(it).fn(g, ent, it)
+			return
+		}
+	}
+	//ZOID
+
 	s := g.gi.Args()
 	it := g.FindItem(s)
 	if it == nil {
@@ -390,10 +409,25 @@ func (g *Game) Cmd_Inven_f(ent *Edict) {
 	cl.Showscores = false
 	cl.Showhelp = false
 
+	//ZOID
+	if g.ctfmod && ent.Client.Menu != nil {
+		g.PMenu_Close(ent)
+		ent.Client.UpdateChase = true
+		return
+	}
+	//ZOID
+
 	if cl.Showinventory {
 		cl.Showinventory = false
 		return
 	}
+
+	//ZOID
+	if g.ctfOn() && cl.Resp.CtfTeam == CTF_NOTEAM {
+		g.CTFOpenJoinMenu(ent)
+		return
+	}
+	//ZOID
 
 	cl.Showinventory = true
 
@@ -406,6 +440,13 @@ func (g *Game) Cmd_Inven_f(ent *Edict) {
 
 // C: game/g_cmds.c:497 Cmd_InvUse_f
 func (g *Game) Cmd_InvUse_f(ent *Edict) {
+	//ZOID
+	if g.ctfmod && ent.Client.Menu != nil {
+		g.PMenu_Select(ent)
+		return
+	}
+	//ZOID
+
 	g.ValidateSelectedItem(ent)
 
 	if ent.Client.Pers.SelectedItem == -1 {
@@ -413,12 +454,24 @@ func (g *Game) Cmd_InvUse_f(ent *Edict) {
 		return
 	}
 
-	it := &itemlist[ent.Client.Pers.SelectedItem]
+	it := &g.itemlist[ent.Client.Pers.SelectedItem]
 	if it.Use == nil {
 		g.gi.Cprintf(ent, PRINT_HIGH, "Item is not usable.\n")
 		return
 	}
 	it.Use.fn(g, ent, it)
+}
+
+// Cmd_LastWeap_f (ctf module; not bound to a command in ClientCommand).
+// C: ctf/g_cmds.c:563 Cmd_LastWeap_f
+func (g *Game) Cmd_LastWeap_f(ent *Edict) {
+	cl := ent.Client
+
+	if cl.Pers.Weapon == nil || cl.Pers.Lastweapon == nil {
+		return
+	}
+
+	cl.Pers.Lastweapon.Use.fn(g, ent, cl.Pers.Lastweapon)
 }
 
 // C: game/g_cmds.c:523 Cmd_WeapPrev_f
@@ -437,7 +490,7 @@ func (g *Game) Cmd_WeapPrev_f(ent *Edict) {
 		if cl.Pers.Inventory[index] == 0 {
 			continue
 		}
-		it := &itemlist[index]
+		it := &g.itemlist[index]
 		if it.Use == nil {
 			continue
 		}
@@ -467,7 +520,7 @@ func (g *Game) Cmd_WeapNext_f(ent *Edict) {
 		if cl.Pers.Inventory[index] == 0 {
 			continue
 		}
-		it := &itemlist[index]
+		it := &g.itemlist[index]
 		if it.Use == nil {
 			continue
 		}
@@ -493,7 +546,7 @@ func (g *Game) Cmd_WeapLast_f(ent *Edict) {
 	if cl.Pers.Inventory[index] == 0 {
 		return
 	}
-	it := &itemlist[index]
+	it := &g.itemlist[index]
 	if it.Use == nil {
 		return
 	}
@@ -512,7 +565,7 @@ func (g *Game) Cmd_InvDrop_f(ent *Edict) {
 		return
 	}
 
-	it := &itemlist[ent.Client.Pers.SelectedItem]
+	it := &g.itemlist[ent.Client.Pers.SelectedItem]
 	if g.itemDrop(it) == nil {
 		g.gi.Cprintf(ent, PRINT_HIGH, "Item is not dropable.\n")
 		return
@@ -522,6 +575,12 @@ func (g *Game) Cmd_InvDrop_f(ent *Edict) {
 
 // C: game/g_cmds.c:648 Cmd_Kill_f
 func (g *Game) Cmd_Kill_f(ent *Edict) {
+	//ZOID
+	if g.ctfmod && ent.Solid == SOLID_NOT {
+		return
+	}
+	//ZOID
+
 	if (g.level.Time - ent.Client.RespawnTime) < 5 {
 		return
 	}
@@ -536,6 +595,14 @@ func (g *Game) Cmd_PutAway_f(ent *Edict) {
 	ent.Client.Showscores = false
 	ent.Client.Showhelp = false
 	ent.Client.Showinventory = false
+	//ZOID
+	if g.ctfmod {
+		if ent.Client.Menu != nil {
+			g.PMenu_Close(ent)
+		}
+		ent.Client.UpdateChase = true
+	}
+	//ZOID
 }
 
 // C: game/g_cmds.c:671 PlayerSort
@@ -628,6 +695,34 @@ func (g *Game) Cmd_Wave_f(ent *Edict) {
 	}
 }
 
+// CheckFlood returns true (and prints) when the client is flood-locked.
+// C: ctf/g_cmds.c:850 CheckFlood (inline in game/g_cmds.c Cmd_Say_f)
+func (g *Game) CheckFlood(ent *Edict) bool {
+	if g.flood_msgs.Value != 0 {
+		cl := ent.Client
+
+		if g.level.Time < cl.FloodLocktill {
+			g.cprintf(ent, PRINT_HIGH, "You can't talk for %d more seconds\n",
+				int32(cl.FloodLocktill-g.level.Time))
+			return true
+		}
+		i := int32(float32(cl.FloodWhenhead) - g.flood_msgs.Value + 1)
+		if i < 0 {
+			i = int32(len(cl.FloodWhen)) + i
+		}
+		if cl.FloodWhen[i] != 0 &&
+			g.level.Time-cl.FloodWhen[i] < g.flood_persecond.Value {
+			cl.FloodLocktill = g.level.Time + g.flood_waitdelay.Value
+			g.cprintf(ent, PRINT_CHAT, "Flood protection:  You can't talk for %d seconds.\n",
+				int32(g.flood_waitdelay.Value))
+			return true
+		}
+		cl.FloodWhenhead = (cl.FloodWhenhead + 1) % int32(len(cl.FloodWhen))
+		cl.FloodWhen[cl.FloodWhenhead] = g.level.Time
+	}
+	return false
+}
+
 // C: game/g_cmds.c:787 Cmd_Say_f
 func (g *Game) Cmd_Say_f(ent *Edict, team, arg0 bool) {
 	var text string
@@ -669,27 +764,10 @@ func (g *Game) Cmd_Say_f(ent *Edict, team, arg0 bool) {
 
 	text += "\n"
 
-	if g.flood_msgs.Value != 0 {
-		cl := ent.Client
-
-		if g.level.Time < cl.FloodLocktill {
-			g.cprintf(ent, PRINT_HIGH, "You can't talk for %d more seconds\n",
-				int32(cl.FloodLocktill-g.level.Time))
-			return
-		}
-		i := int32(float32(cl.FloodWhenhead) - g.flood_msgs.Value + 1)
-		if i < 0 {
-			i = int32(len(cl.FloodWhen)) + i
-		}
-		if cl.FloodWhen[i] != 0 &&
-			g.level.Time-cl.FloodWhen[i] < g.flood_persecond.Value {
-			cl.FloodLocktill = g.level.Time + g.flood_waitdelay.Value
-			g.cprintf(ent, PRINT_CHAT, "Flood protection:  You can't talk for %d seconds.\n",
-				int32(g.flood_waitdelay.Value))
-			return
-		}
-		cl.FloodWhenhead = (cl.FloodWhenhead + 1) % int32(len(cl.FloodWhen))
-		cl.FloodWhen[cl.FloodWhenhead] = g.level.Time
+	// the 3.19 inline flood check is the same code as the ctf fork's
+	// CheckFlood (ctf/g_cmds.c:850), so both modes share it
+	if g.CheckFlood(ent) {
+		return
 	}
 
 	if g.dedicated.Value != 0 {
@@ -761,7 +839,13 @@ func (g *Game) ClientCommand(ent *Edict) {
 		g.Cmd_Say_f(ent, false, false)
 		return
 	}
-	if shared.Q_stricmp(cmd, "say_team") == 0 {
+	if g.ctfmod {
+		//ZOID
+		if shared.Q_stricmp(cmd, "say_team") == 0 || shared.Q_stricmp(cmd, "steam") == 0 {
+			g.CTFSay_Team(ent, g.gi.Args())
+			return
+		}
+	} else if shared.Q_stricmp(cmd, "say_team") == 0 {
 		g.Cmd_Say_f(ent, true, false)
 		return
 	}
@@ -820,8 +904,11 @@ func (g *Game) ClientCommand(ent *Edict) {
 		g.Cmd_PutAway_f(ent)
 	} else if shared.Q_stricmp(cmd, "wave") == 0 {
 		g.Cmd_Wave_f(ent)
-	} else if shared.Q_stricmp(cmd, "playerlist") == 0 {
+	} else if !g.ctfmod && shared.Q_stricmp(cmd, "playerlist") == 0 {
 		g.Cmd_PlayerList_f(ent)
+	} else if g.ctfmod && g.ctfClientCommand(ent, cmd) {
+		//ZOID: team, id, yes, no, ready, notready, ghost, admin, stats,
+		// warp, boot, playerlist, observer (ctf/g_cmds.c:1034)
 	} else { // anything that doesn't match a command will be a chat
 		g.Cmd_Say_f(ent, false, true)
 	}

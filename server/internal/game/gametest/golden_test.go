@@ -36,12 +36,20 @@ var mustPass = map[string]bool{
 	"synth_medic":     true,
 	"synth_mutant":    true,
 	"synth_supertank": true,
+	// ctf module scenarios (oracle_game_ctf; synthetic ones from
+	// oracle/scripts/gen_ctf_scenarios.py)
+	"ctf_demo1":        true,
+	"ctf_flags":        true,
+	"ctf_capturelimit": true,
+	"ctf_grapple":      true,
+	"ctf_techs":        true,
+	"ctf_teams":        true,
+	"ctf_match":        true,
+	"ctf_vote":         true,
 }
 
-// skipped scenarios (other game module).
-var skipScenario = map[string]string{
-	"ctf_demo1": "module ctf is not ported",
-}
+// skipped scenarios.
+var skipScenario = map[string]string{}
 
 // TestGoldenGame runs every game fixture. Env Q2_GAME_SCENARIO restricts the
 // run to one scenario, Q2_GAME_FRAMES limits the frames.

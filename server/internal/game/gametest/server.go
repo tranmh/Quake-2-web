@@ -44,10 +44,17 @@ func NewServer(sc *Scenario, basedir string, newGame NewGameFunc) (*Server, erro
 	e := s.E
 	cv := e.Cvars
 
-	// oracle_init: "+set k v" early commands (Cvar_Set creates with flags 0)
+	// oracle_init: "+set k v" early commands (Cvar_Set creates with flags 0);
+	// the ctf binary also sets "game ctf" (game_main.c), which selects the
+	// ctf game module
+	if sc.Module == "ctf" {
+		cv.Set("game", "ctf")
+	}
 	for _, kv := range sc.Cvars {
 		cv.Set(kv.Key, kv.Value)
 	}
+	// FS_InitFilesystem
+	cv.Get("game", "", CVAR_LATCH|CVAR_SERVERINFO)
 	// Qcommon_Init / SV_Init registrations that matter for the game
 	cv.Get("dedicated", "0", CVAR_NOSET)
 	cv.Get("rcon_password", "", 0)

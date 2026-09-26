@@ -325,8 +325,46 @@ func (g *Game) Drop_Weapon(ent *Edict, item *GItem) {
 // Weapon_Generic: a generic function to handle the basics of weapon thinking.
 // pause_frames and fire_frames are 0-terminated like the C arrays; a nil
 // pause_frames is the C NULL.
-// C: game/p_weapon.c:380 Weapon_Generic
+// In the ctf module this body is Weapon_Generic2 and Weapon_Generic is the
+// haste/grapple wrapper below.
+// C: game/p_weapon.c:380 Weapon_Generic, ctf/p_weapon.c:380 Weapon_Generic2
 func (g *Game) Weapon_Generic(ent *Edict, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST int32, pause_frames, fire_frames []int32, fire func(g *Game, ent *Edict)) {
+	if g.ctfmod {
+		g.ctfWeapon_Generic(ent, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST, pause_frames, fire_frames, fire)
+		return
+	}
+	g.Weapon_Generic2(ent, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST, pause_frames, fire_frames, fire)
+}
+
+// ctfWeapon_Generic runs the weapon frame again if hasted (and for the
+// grapple when not firing).
+// C: ctf/p_weapon.c:548 Weapon_Generic
+func (g *Game) ctfWeapon_Generic(ent *Edict, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST int32, pause_frames, fire_frames []int32, fire func(g *Game, ent *Edict)) {
+	oldstate := ent.Client.Weaponstate
+
+	g.Weapon_Generic2(ent, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST,
+		FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST, pause_frames,
+		fire_frames, fire)
+
+	// run the weapon frame again if hasted
+	if shared.Q_stricmp(ent.Client.Pers.Weapon.PickupName, "Grapple") == 0 &&
+		ent.Client.Weaponstate == WEAPON_FIRING {
+		return
+	}
+
+	if (g.CTFApplyHaste(ent) ||
+		(shared.Q_stricmp(ent.Client.Pers.Weapon.PickupName, "Grapple") == 0 &&
+			ent.Client.Weaponstate != WEAPON_FIRING)) &&
+		oldstate == ent.Client.Weaponstate {
+		g.Weapon_Generic2(ent, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST,
+			FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST, pause_frames,
+			fire_frames, fire)
+	}
+}
+
+// Weapon_Generic2 is the generic weapon frame (Weapon_Generic of 3.19).
+// C: game/p_weapon.c:380 Weapon_Generic, ctf/p_weapon.c:380 Weapon_Generic2
+func (g *Game) Weapon_Generic2(ent *Edict, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST int32, pause_frames, fire_frames []int32, fire func(g *Game, ent *Edict)) {
 	FRAME_FIRE_FIRST := FRAME_ACTIVATE_LAST + 1
 	FRAME_IDLE_FIRST := FRAME_FIRE_LAST + 1
 	FRAME_DEACTIVATE_FIRST := FRAME_IDLE_LAST + 1
@@ -357,9 +395,15 @@ func (g *Game) Weapon_Generic(ent *Edict, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, 
 	}
 
 	if ent.Client.Weaponstate == WEAPON_ACTIVATING {
-		if ent.Client.PS.GunFrame == FRAME_ACTIVATE_LAST {
+		if ent.Client.PS.GunFrame == FRAME_ACTIVATE_LAST || (g.ctfmod && g.instantweap.Value != 0) {
 			ent.Client.Weaponstate = WEAPON_READY
 			ent.Client.PS.GunFrame = FRAME_IDLE_FIRST
+			if g.ctfmod {
+				// we go recursive here to instant ready the weapon
+				g.Weapon_Generic2(ent, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST,
+					FRAME_IDLE_LAST, FRAME_DEACTIVATE_LAST, pause_frames,
+					fire_frames, fire)
+			}
 			return
 		}
 
@@ -369,6 +413,10 @@ func (g *Game) Weapon_Generic(ent *Edict, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, 
 
 	if ent.Client.Newweapon != nil && ent.Client.Weaponstate != WEAPON_FIRING {
 		ent.Client.Weaponstate = WEAPON_DROPPING
+		if g.ctfmod && g.instantweap.Value != 0 {
+			g.ChangeWeapon(ent)
+			return
+		}
 		ent.Client.PS.GunFrame = FRAME_DEACTIVATE_FIRST
 
 		if (FRAME_DEACTIVATE_LAST - FRAME_DEACTIVATE_FIRST) < 4 {
@@ -432,9 +480,18 @@ func (g *Game) Weapon_Generic(ent *Edict, FRAME_ACTIVATE_LAST, FRAME_FIRE_LAST, 
 	if ent.Client.Weaponstate == WEAPON_FIRING {
 		for n = 0; fire_frames[n] != 0; n++ {
 			if ent.Client.PS.GunFrame == fire_frames[n] {
-				if ent.Client.QuadFramenum > float32(g.level.Framenum) {
-					g.gi.Sound(ent, CHAN_ITEM, g.gi.SoundIndex("items/damage3.wav"), 1, ATTN_NORM, 0)
+				//ZOID
+				if !(g.ctfmod && g.CTFApplyStrengthSound(ent)) {
+					//ZOID
+					if ent.Client.QuadFramenum > float32(g.level.Framenum) {
+						g.gi.Sound(ent, CHAN_ITEM, g.gi.SoundIndex("items/damage3.wav"), 1, ATTN_NORM, 0)
+					}
 				}
+				//ZOID
+				if g.ctfmod {
+					g.CTFApplyHasteSound(ent)
+				}
+				//ZOID
 
 				fire(g, ent)
 				break
@@ -499,7 +556,7 @@ func (g *Game) weapon_grenade_fire(ent *Edict, held bool) {
 		return
 	}
 
-	if ent.Health <= 0 {
+	if !g.ctfmod && ent.Health <= 0 { // no health check in the ctf fork's older base
 		return
 	}
 

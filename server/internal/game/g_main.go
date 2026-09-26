@@ -60,6 +60,23 @@ type Game struct {
 	flood_waitdelay    *cvar.Cvar
 	sv_maplist         *cvar.Cvar
 
+	// ctf module (ctf/g_main.c:41, //ZOID)
+	capturelimit *cvar.Cvar
+	instantweap  *cvar.Cvar
+
+	// ctfmod is true when this instance runs as the ctf game module
+	// (ctf/*.c, docs/CTF.md): the per-mode item table, spawn table and every
+	// //ZOID hunk and base-vs-fork branch are selected by it. Within the ctf
+	// module the C `ctf->value` checks use the ctf cvar (ctfOn()).
+	ctfmod bool
+	// moduleForced: ctfmod was chosen by NewModule, not detected at Init.
+	moduleForced bool
+	// itemlist is the item table of the running module (itemlist or
+	// ctfItemlist, g_items.go / g_ctf.go).
+	itemlist []GItem
+	// ctfg holds the globals of ctf/g_ctf.c and ctf/p_menu.c.
+	ctfg ctfGlobals
+
 	// g_ai.c
 	enemy_vis     bool
 	enemy_infront bool
@@ -125,9 +142,34 @@ type Game struct {
 // New creates a game module instance (C GetGameAPI). rng is the process
 // rand() state shared with the server.
 // C: game/g_main.c:107 GetGameAPI
+//
+// The module (baseq2 or ctf) is detected in Init from the "game" cvar
+// (the gamedir: "ctf" selects the ctf module, like loading ctf/game.so).
 func New(gi Import, rng *crand.Rand) *Game {
-	return &Game{gi: gi, rng: rng, mstatics: map[string]any{}}
+	return &Game{gi: gi, rng: rng, mstatics: map[string]any{}, itemlist: itemlist}
 }
+
+// NewModule creates a game module instance for an explicit module: "ctf"
+// runs the ctf module (ctf/*.c), anything else the 3.19 baseq2 game.
+func NewModule(gi Import, rng *crand.Rand, module string) *Game {
+	g := New(gi, rng)
+	g.moduleForced = true
+	g.setModule(module == "ctf")
+	return g
+}
+
+// setModule selects the ctf module (per-mode item table).
+func (g *Game) setModule(ctf bool) {
+	g.ctfmod = ctf
+	if ctf {
+		g.itemlist = ctfItemlist
+	} else {
+		g.itemlist = itemlist
+	}
+}
+
+// IsCTF reports whether this instance runs the ctf module.
+func (g *Game) IsCTF() bool { return g.ctfmod }
 
 var _ Export = (*Game)(nil)
 
@@ -201,6 +243,11 @@ func (g *Game) ShutdownGame() {
 func (g *Game) InitGame() {
 	g.gi.Dprintf("==== InitGame ====\n")
 
+	// module selection (the gamedir decides which game.so the engine loads)
+	if !g.moduleForced {
+		g.setModule(g.gi.Cvar("game", "", 0).String == "ctf")
+	}
+
 	g.gun_x = g.gi.Cvar("gun_x", "0", 0)
 	g.gun_y = g.gi.Cvar("gun_y", "0", 0)
 	g.gun_z = g.gi.Cvar("gun_z", "0", 0)
@@ -220,19 +267,44 @@ func (g *Game) InitGame() {
 	g.gi.Cvar("gamedate", GAMEDATE, CVAR_SERVERINFO|CVAR_LATCH)
 
 	g.maxclients = g.gi.Cvar("maxclients", "4", CVAR_SERVERINFO|CVAR_LATCH)
-	g.maxspectators = g.gi.Cvar("maxspectators", "4", CVAR_SERVERINFO)
+	if !g.ctfmod { // the ctf fork has no spectator mode (docs/CTF.md)
+		g.maxspectators = g.gi.Cvar("maxspectators", "4", CVAR_SERVERINFO)
+	}
 	g.deathmatch = g.gi.Cvar("deathmatch", "0", CVAR_LATCH)
 	g.coop = g.gi.Cvar("coop", "0", CVAR_LATCH)
 	g.skill = g.gi.Cvar("skill", "1", CVAR_LATCH)
 	g.maxentities = g.gi.Cvar("maxentities", "1024", CVAR_LATCH)
 
+	//ZOID
+	if g.ctfmod {
+		// C: ctf/g_save.c:175
+		//This game.dll only supports deathmatch
+		if g.deathmatch.Value == 0 {
+			g.gi.Dprintf("Forcing deathmatch.")
+			g.gi.CvarSet("deathmatch", "1")
+		}
+		//force coop off
+		if g.coop.Value != 0 {
+			g.gi.CvarSet("coop", "0")
+		}
+	}
+	//ZOID
+
 	// change anytime vars
 	g.dmflags = g.gi.Cvar("dmflags", "0", CVAR_SERVERINFO)
 	g.fraglimit = g.gi.Cvar("fraglimit", "0", CVAR_SERVERINFO)
 	g.timelimit = g.gi.Cvar("timelimit", "0", CVAR_SERVERINFO)
-	g.password = g.gi.Cvar("password", "", CVAR_USERINFO)
-	g.spectator_password = g.gi.Cvar("spectator_password", "", CVAR_USERINFO)
-	g.filterban = g.gi.Cvar("filterban", "1", 0)
+	if g.ctfmod {
+		//ZOID
+		g.capturelimit = g.gi.Cvar("capturelimit", "0", CVAR_SERVERINFO)
+		g.instantweap = g.gi.Cvar("instantweap", "0", CVAR_SERVERINFO)
+		//ZOID
+		g.password = g.gi.Cvar("password", "", CVAR_USERINFO)
+	} else {
+		g.password = g.gi.Cvar("password", "", CVAR_USERINFO)
+		g.spectator_password = g.gi.Cvar("spectator_password", "", CVAR_USERINFO)
+		g.filterban = g.gi.Cvar("filterban", "1", 0)
+	}
 
 	g.g_select_empty = g.gi.Cvar("g_select_empty", "0", CVAR_ARCHIVE)
 
@@ -270,6 +342,12 @@ func (g *Game) InitGame() {
 		g.game.Clients[i].Index = i
 	}
 	g.num_edicts = g.game.Maxclients + 1
+
+	//ZOID
+	if g.ctfmod {
+		g.CTFInit()
+	}
+	//ZOID
 }
 
 // GAMEDATE stands for the C __DATE__ of the "gamedate" cvar and the
@@ -315,6 +393,11 @@ func (g *Game) EndDMLevel() {
 	// stay on same level flag
 	if int32(g.dmflags.Value)&DF_SAME_LEVEL != 0 {
 		g.BeginIntermission(g.CreateTargetChangeLevel(g.level.Mapname))
+		return
+	}
+
+	if g.ctfmod && g.level.Forcemap != "" { // C: ctf/g_main.c:231
+		g.BeginIntermission(g.CreateTargetChangeLevel(g.level.Forcemap))
 		return
 	}
 
@@ -366,6 +449,18 @@ func (g *Game) CheckDMRules() {
 		return
 	}
 
+	//ZOID
+	if g.ctfmod {
+		if g.ctfOn() && g.CTFCheckRules() {
+			g.EndDMLevel()
+			return
+		}
+		if g.CTFInMatch() {
+			return // no checking in match mode
+		}
+	}
+	//ZOID
+
 	if g.timelimit.Value != 0 {
 		if g.level.Time >= g.timelimit.Value*60 {
 			g.gi.Bprintf(PRINT_HIGH, "Timelimit hit.\n")
@@ -392,6 +487,10 @@ func (g *Game) CheckDMRules() {
 
 // C: game/g_main.c:318 ExitLevel
 func (g *Game) ExitLevel() {
+	if g.ctfmod {
+		g.ctfExitLevel()
+		return
+	}
 	command := fmt.Sprintf("gamemap \"%s\"\n", g.level.Changemap)
 	if len(command) > 255 {
 		command = command[:255]
@@ -401,6 +500,37 @@ func (g *Game) ExitLevel() {
 	g.level.Exitintermission = 0
 	g.level.Intermissiontime = 0
 	g.ClientEndServerFrames()
+
+	// clear some things before going to next level
+	for i := 0; float32(i) < g.maxclients.Value; i++ {
+		ent := &g.edicts[1+i]
+		if !ent.InUse {
+			continue
+		}
+		if ent.Health > ent.Client.Pers.MaxHealth {
+			ent.Health = ent.Client.Pers.MaxHealth
+		}
+	}
+}
+
+// ctfExitLevel is the ctf fork's ExitLevel (CTFNextMap hook, different order).
+// C: ctf/g_main.c:333 ExitLevel
+func (g *Game) ctfExitLevel() {
+	g.level.Exitintermission = 0
+	g.level.Intermissiontime = 0
+
+	if g.CTFNextMap() {
+		return
+	}
+
+	command := fmt.Sprintf("gamemap \"%s\"\n", g.level.Changemap)
+	if len(command) > 255 {
+		command = command[:255]
+	}
+	g.gi.AddCommandString(command)
+	g.ClientEndServerFrames()
+
+	g.level.Changemap = ""
 
 	// clear some things before going to next level
 	for i := 0; float32(i) < g.maxclients.Value; i++ {

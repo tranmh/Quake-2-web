@@ -102,13 +102,13 @@ func (g *Game) GetItemByIndex(index int32) *GItem {
 		return nil
 	}
 
-	return &itemlist[index]
+	return &g.itemlist[index]
 }
 
 // C: game/g_items.c:77 FindItemByClassname
 func (g *Game) FindItemByClassname(classname string) *GItem {
 	for i := 0; i < int(g.game.NumItems); i++ {
-		it := &itemlist[i]
+		it := &g.itemlist[i]
 		if it.Classname == "" {
 			continue
 		}
@@ -123,7 +123,7 @@ func (g *Game) FindItemByClassname(classname string) *GItem {
 // C: game/g_items.c:100 FindItem
 func (g *Game) FindItem(pickup_name string) *GItem {
 	for i := 0; i < int(g.game.NumItems); i++ {
-		it := &itemlist[i]
+		it := &g.itemlist[i]
 		if it.PickupName == "" {
 			continue
 		}
@@ -144,12 +144,23 @@ func (g *Game) DoRespawn(ent *Edict) {
 
 		master := ent.Teammaster
 
-		for count, ent = 0, master; ent != nil; ent, count = ent.Chain, count+1 {
-		}
+		//ZOID
+		//in ctf, when we are weapons stay, only the master of a team of weapons
+		//is spawned
+		if g.ctfOn() &&
+			int32(g.dmflags.Value)&DF_WEAPONS_STAY != 0 &&
+			master.Item != nil && master.Item.Flags&IT_WEAPON != 0 {
+			ent = master
+		} else {
+			//ZOID
 
-		choice := g.rng.Rand() % count
+			for count, ent = 0, master; ent != nil; ent, count = ent.Chain, count+1 {
+			}
 
-		for count, ent = 0, master; count < choice; ent, count = ent.Chain, count+1 {
+			choice := g.rng.Rand() % count
+
+			for count, ent = 0, master; count < choice; ent, count = ent.Chain, count+1 {
+			}
 		}
 	}
 
@@ -502,7 +513,8 @@ func (g *Game) Drop_Ammo(ent *Edict, item *GItem) {
 		dropped.Count = ent.Client.Pers.Inventory[index]
 	}
 
-	if ent.Client.Pers.Weapon != nil &&
+	// the ctf fork (older base) has no "Can't drop current weapon" check
+	if !g.ctfmod && ent.Client.Pers.Weapon != nil &&
 		ent.Client.Pers.Weapon.Tag == AMMO_GRENADES &&
 		item.Tag == AMMO_GRENADES &&
 		ent.Client.Pers.Inventory[index]-dropped.Count <= 0 {
@@ -519,7 +531,10 @@ func (g *Game) Drop_Ammo(ent *Edict, item *GItem) {
 
 // C: game/g_items.c:541 MegaHealth_think
 func (g *Game) MegaHealth_think(self *Edict) {
-	if self.Owner.Health > self.Owner.MaxHealth {
+	if self.Owner.Health > self.Owner.MaxHealth &&
+		//ZOID
+		!g.CTFHasRegeneration(self.Owner) {
+		//ZOID
 		self.Nextthink = g.level.Time + 1
 		self.Owner.Health -= 1
 		return
@@ -540,7 +555,19 @@ func (g *Game) Pickup_Health(ent, other *Edict) bool {
 		}
 	}
 
+	//ZOID
+	if g.ctfmod && other.Health >= 250 && ent.Count > 25 {
+		return false
+	}
+	//ZOID
+
 	other.Health += ent.Count
+
+	//ZOID
+	if g.ctfmod && other.Health > 250 && ent.Count > 25 {
+		other.Health = 250
+	}
+	//ZOID
 
 	if ent.Style&HEALTH_IGNORE_MAX == 0 {
 		if other.Health > other.MaxHealth {
@@ -548,7 +575,10 @@ func (g *Game) Pickup_Health(ent, other *Edict) bool {
 		}
 	}
 
-	if ent.Style&HEALTH_TIMED != 0 {
+	if ent.Style&HEALTH_TIMED != 0 &&
+		//ZOID
+		!g.CTFHasRegeneration(other) {
+		//ZOID
 		ent.Think = MegaHealth_think
 		ent.Nextthink = g.level.Time + 5
 		ent.Owner = other
@@ -740,6 +770,10 @@ func (g *Game) Touch_Item(ent, other *Edict, plane *CPlane, surf *CSurface) {
 	}
 	if ent.Item.Pickup == nil {
 		return // not a grabbable item?
+	}
+
+	if g.CTFMatchSetup() {
+		return // can't pick stuff up right now
 	}
 
 	taken := ent.Item.Pickup.fn(g, ent, other)
@@ -1046,6 +1080,16 @@ func (g *Game) SpawnItem(ent *Edict, item *GItem) {
 		g.itemDropCleared[item.index] = true // C: item->drop = NULL;
 	}
 
+	//ZOID
+	//Don't spawn the flags unless enabled
+	if g.ctfmod && g.ctfg.ctf.Value == 0 &&
+		(ent.Classname == "item_flag_team1" ||
+			ent.Classname == "item_flag_team2") {
+		g.G_FreeEdict(ent)
+		return
+	}
+	//ZOID
+
 	ent.Item = item
 	ent.Nextthink = float32(float64(g.level.Time) + 2*FRAMETIME) // items start after other solids
 	ent.Think = droptofloor
@@ -1054,6 +1098,14 @@ func (g *Game) SpawnItem(ent *Edict, item *GItem) {
 	if ent.Model != "" {
 		g.gi.ModelIndex(ent.Model)
 	}
+
+	//ZOID
+	//flags are server animated and have special handling
+	if g.ctfmod && (ent.Classname == "item_flag_team1" ||
+		ent.Classname == "item_flag_team2") {
+		ent.Think = CTFFlagSetup
+	}
+	//ZOID
 }
 
 //======================================================================
@@ -1171,14 +1223,14 @@ func (g *Game) SP_item_health_mega(self *Edict) {
 
 // C: game/g_items.c:2186 InitItems
 func (g *Game) InitItems() {
-	g.game.NumItems = int32(len(itemlist) - 1)
+	g.game.NumItems = int32(len(g.itemlist) - 1)
 }
 
 // SetItemNames is called by worldspawn.
 // C: game/g_items.c:2200 SetItemNames
 func (g *Game) SetItemNames() {
 	for i := 0; i < int(g.game.NumItems); i++ {
-		it := &itemlist[i]
+		it := &g.itemlist[i]
 		g.gi.Configstring(CS_ITEMS+i, it.PickupName)
 	}
 

@@ -200,4 +200,16 @@ type ClientPrivate struct {
 
 	ChaseTarget *Edict // player we are chasing
 	UpdateChase bool   // need to update chase info?
+
+	// ctf module only (ctf/g_local.h:906 and :978, //ZOID)
+	Inmenu                bool      // in menu
+	Menu                  *PMenuHnd `save:"-"` // current menu
+	CtfGrapple            *Edict    // entity of grapple
+	CtfGrapplestate       int32     // true if pulling
+	CtfGrapplereleasetime float32   // time of grapple release
+	CtfRegentime          float32   // regen tech
+	CtfTechsndtime        float32
+	CtfLasttechmsg        float32
+	Menutime              float32 // time to update menu
+	Menudirty             bool
 }

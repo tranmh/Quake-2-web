@@ -314,7 +314,11 @@ func (g *Game) fire_blaster(self *Edict, start, dir Vec3, damage, speed, effect 
 	shared.VectorNormalize(&dir)
 
 	bolt := g.G_Spawn()
-	bolt.SVFlags = SVF_DEADMONSTER
+	if g.ctfmod {
+		bolt.SVFlags = SVF_PROJECTILE // special net code is used for projectiles
+	} else {
+		bolt.SVFlags = SVF_DEADMONSTER
+	}
 	// yes, I know it looks weird that projectiles are deadmonsters
 	// what this means is that when prediction is used against the object
 	// (blaster/hyperblaster shots), the player won't be solid clipped against
@@ -754,6 +758,15 @@ func (g *Game) bfg_think(self *Edict) {
 		if ent.SVFlags&SVF_MONSTER == 0 && ent.Client == nil && ent.Classname != "misc_explobox" {
 			continue
 		}
+
+		//ZOID
+		//don't target players in CTF
+		if g.ctfOn() && ent.Client != nil &&
+			self.Owner.Client != nil &&
+			ent.Client.Resp.CtfTeam == self.Owner.Client.Resp.CtfTeam {
+			continue
+		}
+		//ZOID
 
 		point := shared.VectorMA(ent.AbsMin, 0.5, ent.Size)
 

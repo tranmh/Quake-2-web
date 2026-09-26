@@ -92,7 +92,7 @@ func Run(scenario string, opt Options) (res *Result, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if sc.Module != "baseq2" {
+	if sc.Module != "baseq2" && sc.Module != "ctf" {
 		return nil, fmt.Errorf("module %q not supported", sc.Module)
 	}
 

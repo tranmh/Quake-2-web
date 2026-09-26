@@ -177,7 +177,11 @@ func (g *Game) IsFemale(ent *Edict) bool {
 		return false
 	}
 
-	info := shared.Info_ValueForKey(ent.Client.Pers.Userinfo, "gender")
+	key := "gender"
+	if g.ctfmod {
+		key = "skin" // C: ctf/p_client.c:192 (older base: no gender userinfo)
+	}
+	info := shared.Info_ValueForKey(ent.Client.Pers.Userinfo, key)
 	if len(info) > 0 && (info[0] == 'f' || info[0] == 'F') {
 		return true
 	}
@@ -186,7 +190,7 @@ func (g *Game) IsFemale(ent *Edict) bool {
 
 // C: game/p_client.c:198 IsNeutral
 func (g *Game) IsNeutral(ent *Edict) bool {
-	if ent.Client == nil {
+	if ent.Client == nil || g.ctfmod { // no IsNeutral in the ctf fork's older base
 		return false
 	}
 
@@ -335,6 +339,13 @@ func (g *Game) ClientObituary(self, inflictor, attacker *Edict) {
 			case MOD_TELEFRAG:
 				message = "tried to invade"
 				message2 = "'s personal space"
+			//ZOID
+			case MOD_GRAPPLE:
+				if g.ctfmod {
+					message = "was caught by"
+					message2 = "'s grapple"
+				}
+				//ZOID
 			}
 			if message != "" {
 				g.bprintf(PRINT_MEDIUM, "%s %s %s%s\n", self.Client.Pers.Netname, message, attacker.Client.Pers.Netname, message2)
@@ -442,6 +453,11 @@ func (g *Game) player_die(self, inflictor, attacker *Edict, damage int32, point 
 	self.Movetype = MOVETYPE_TOSS
 
 	self.S.ModelIndex2 = 0 // remove linked weapon model
+	//ZOID
+	if g.ctfmod {
+		self.S.ModelIndex3 = 0 // remove linked ctf flag
+	}
+	//ZOID
 
 	self.S.Angles[0] = 0
 	self.S.Angles[2] = 0
@@ -459,18 +475,41 @@ func (g *Game) player_die(self, inflictor, attacker *Edict, damage int32, point 
 		g.LookAtKiller(self, inflictor, attacker)
 		self.Client.PS.PMove.PmType = PM_DEAD
 		g.ClientObituary(self, inflictor, attacker)
-		g.TossClientWeapon(self)
-		if g.deathmatch.Value != 0 {
-			g.Cmd_Help_f(self) // show scores
-		}
-
-		// clear inventory
-		// this is kind of ugly, but it's how we want to handle keys in coop
-		for n := 0; n < int(g.game.NumItems); n++ {
-			if g.coop.Value != 0 && itemlist[n].Flags&IT_KEY != 0 {
-				self.Client.Resp.CoopRespawn.Inventory[n] = self.Client.Pers.Inventory[n]
+		if g.ctfmod {
+			//ZOID: C: ctf/p_client.c:520
+			// if at start and same team, clear
+			if g.ctfOn() && g.meansOfDeath == MOD_TELEFRAG &&
+				self.Client.Resp.CtfState < 2 &&
+				self.Client.Resp.CtfTeam == attacker.Client.Resp.CtfTeam {
+				attacker.Client.Resp.Score--
+				self.Client.Resp.CtfState = 0
 			}
-			self.Client.Pers.Inventory[n] = 0
+
+			g.CTFFragBonuses(self, inflictor, attacker)
+			//ZOID
+			g.TossClientWeapon(self)
+			//ZOID
+			g.CTFPlayerResetGrapple(self)
+			g.CTFDeadDropFlag(self)
+			g.CTFDeadDropTech(self)
+			//ZOID
+			if g.deathmatch.Value != 0 && !self.Client.Showscores {
+				g.Cmd_Help_f(self) // show scores
+			}
+		} else {
+			g.TossClientWeapon(self)
+			if g.deathmatch.Value != 0 {
+				g.Cmd_Help_f(self) // show scores
+			}
+
+			// clear inventory
+			// this is kind of ugly, but it's how we want to handle keys in coop
+			for n := 0; n < int(g.game.NumItems); n++ {
+				if g.coop.Value != 0 && g.itemlist[n].Flags&IT_KEY != 0 {
+					self.Client.Resp.CoopRespawn.Inventory[n] = self.Client.Pers.Inventory[n]
+				}
+				self.Client.Pers.Inventory[n] = 0
+			}
 		}
 	}
 
@@ -479,7 +518,14 @@ func (g *Game) player_die(self, inflictor, attacker *Edict, damage int32, point 
 	self.Client.InvincibleFramenum = 0
 	self.Client.BreatherFramenum = 0
 	self.Client.EnviroFramenum = 0
-	self.Flags &^= FL_POWER_ARMOR
+	if g.ctfmod {
+		// C: ctf/p_client.c:547 (older base: no FL_POWER_ARMOR reset;
+		// the inventory is cleared on every call)
+		// clear inventory
+		self.Client.Pers.Inventory = [MAX_ITEMS]int32{}
+	} else {
+		self.Flags &^= FL_POWER_ARMOR
+	}
 
 	if self.Health < -40 {
 		// gib
@@ -488,7 +534,12 @@ func (g *Game) player_die(self, inflictor, attacker *Edict, damage int32, point 
 			g.ThrowGib(self, "models/objects/gibs/sm_meat/tris.md2", damage, GIB_ORGANIC)
 		}
 		g.ThrowClientHead(self, damage)
-
+		//ZOID
+		if g.ctfmod {
+			self.Client.AnimPriority = ANIM_DEATH
+			self.Client.AnimEnd = 0
+		}
+		//ZOID
 		self.Takedamage = DAMAGE_NO
 	} else {
 		// normal death
@@ -535,6 +586,16 @@ func (g *Game) InitClientPersistant(client *GClient) {
 	client.Pers.Inventory[client.Pers.SelectedItem] = 1
 
 	client.Pers.Weapon = item
+	if g.ctfmod {
+		//ZOID
+		client.Pers.Lastweapon = item
+		//ZOID
+
+		//ZOID
+		item = g.FindItem("Grapple")
+		client.Pers.Inventory[ITEM_INDEX(item)] = 1
+		//ZOID
+	}
 
 	client.Pers.Health = 100
 	client.Pers.MaxHealth = 100
@@ -551,9 +612,28 @@ func (g *Game) InitClientPersistant(client *GClient) {
 
 // C: game/p_client.c:633 InitClientResp
 func (g *Game) InitClientResp(client *GClient) {
+	//ZOID
+	ctf_team := client.Resp.CtfTeam
+	id_state := client.Resp.IdState
+	//ZOID
+
 	client.Resp = ClientRespawn{}
+
+	//ZOID
+	if g.ctfmod {
+		client.Resp.CtfTeam = ctf_team
+		client.Resp.IdState = id_state
+	}
+	//ZOID
+
 	client.Resp.Enterframe = g.level.Framenum
 	client.Resp.CoopRespawn = client.Pers
+
+	//ZOID
+	if g.ctfOn() && client.Resp.CtfTeam < CTF_TEAM1 {
+		g.CTFAssignTeam(client)
+	}
+	//ZOID
 }
 
 // SaveClientData: some information that should be persistant, like health,
@@ -568,7 +648,12 @@ func (g *Game) SaveClientData() {
 		}
 		g.game.Clients[i].Pers.Health = ent.Health
 		g.game.Clients[i].Pers.MaxHealth = ent.MaxHealth
-		g.game.Clients[i].Pers.SavedFlags = ent.Flags & (FL_GODMODE | FL_NOTARGET | FL_POWER_ARMOR)
+		if g.ctfmod {
+			// C: ctf/p_client.c:689 pers.powerArmorActive = (ent->flags & FL_POWER_ARMOR)
+			g.game.Clients[i].Pers.SavedFlags = ent.Flags & FL_POWER_ARMOR
+		} else {
+			g.game.Clients[i].Pers.SavedFlags = ent.Flags & (FL_GODMODE | FL_NOTARGET | FL_POWER_ARMOR)
+		}
 		if g.coop.Value != 0 {
 			g.game.Clients[i].Pers.Score = ent.Client.Resp.Score
 		}
@@ -750,7 +835,13 @@ func (g *Game) SelectSpawnPoint(ent *Edict) (origin, angles Vec3) {
 	var spot *Edict
 
 	if g.deathmatch.Value != 0 {
-		spot = g.SelectDeathmatchSpawnPoint()
+		//ZOID
+		if g.ctfOn() {
+			spot = g.SelectCTFSpawnPoint(ent)
+		} else {
+			//ZOID
+			spot = g.SelectDeathmatchSpawnPoint()
+		}
 	} else if g.coop.Value != 0 {
 		spot = g.SelectCoopSpawnPoint(ent)
 	}
@@ -982,13 +1073,22 @@ func (g *Game) PutClientInServer(ent *Edict) {
 		resp = client.Resp
 		userinfo := client.Pers.Userinfo
 		// this is kind of ugly, but it's how we want to handle keys in coop
-		//		for (n = 0; n < game.num_items; n++)
-		//		{
-		//			if (itemlist[n].flags & IT_KEY)
-		//				resp.coop_respawn.inventory[n] = client->pers.inventory[n];
-		//		}
-		resp.CoopRespawn.GameHelpchanged = client.Pers.GameHelpchanged
-		resp.CoopRespawn.Helpchanged = client.Pers.Helpchanged
+		if g.ctfmod {
+			// C: ctf/p_client.c:1087 (older base; coop is forced off in ctf)
+			for n := 0; n < MAX_ITEMS; n++ {
+				if n < len(g.itemlist) && g.itemlist[n].Flags&IT_KEY != 0 {
+					resp.CoopRespawn.Inventory[n] = client.Pers.Inventory[n]
+				}
+			}
+		} else {
+			//		for (n = 0; n < game.num_items; n++)
+			//		{
+			//			if (itemlist[n].flags & IT_KEY)
+			//				resp.coop_respawn.inventory[n] = client->pers.inventory[n];
+			//		}
+			resp.CoopRespawn.GameHelpchanged = client.Pers.GameHelpchanged
+			resp.CoopRespawn.Helpchanged = client.Pers.Helpchanged
+		}
 		client.Pers = resp.CoopRespawn
 		g.clientUserinfoChanged(ent, userinfo)
 		if resp.Score > client.Pers.Score {
@@ -1079,8 +1179,12 @@ func (g *Game) PutClientInServer(ent *Edict) {
 	client.PS.ViewAngles = ent.S.Angles
 	client.VAngle = ent.S.Angles
 
-	// spawn a spectator
-	if client.Pers.Spectator {
+	//ZOID
+	if g.ctfmod {
+		if g.CTFStartClient(ent) {
+			return
+		}
+	} else if client.Pers.Spectator { // spawn a spectator
 		client.ChaseTarget = nil
 
 		client.Resp.Spectator = true
@@ -1091,8 +1195,9 @@ func (g *Game) PutClientInServer(ent *Edict) {
 		ent.Client.PS.GunIndex = 0
 		g.gi.LinkEntity(ent)
 		return
+	} else {
+		client.Resp.Spectator = false
 	}
-	client.Resp.Spectator = false
 
 	if !g.KillBox(ent) {
 		// could't spawn in?
@@ -1197,13 +1302,15 @@ func (g *Game) clientUserinfoChanged(ent *Edict, userinfo string) string {
 	s := shared.Info_ValueForKey(userinfo, "name")
 	ent.Client.Pers.Netname = pclientStrncpy(s, 16)
 
-	// set spectator
-	s = shared.Info_ValueForKey(userinfo, "spectator")
-	// spectators are only supported in deathmatch
-	if g.deathmatch.Value != 0 && s != "" && s != "0" {
-		ent.Client.Pers.Spectator = true
-	} else {
-		ent.Client.Pers.Spectator = false
+	if !g.ctfmod { // the ctf fork has no spectator mode
+		// set spectator
+		s = shared.Info_ValueForKey(userinfo, "spectator")
+		// spectators are only supported in deathmatch
+		if g.deathmatch.Value != 0 && s != "" && s != "0" {
+			ent.Client.Pers.Spectator = true
+		} else {
+			ent.Client.Pers.Spectator = false
+		}
 	}
 
 	// set skin
@@ -1212,7 +1319,13 @@ func (g *Game) clientUserinfoChanged(ent *Edict, userinfo string) string {
 	playernum := ent.Index - 1
 
 	// combine name and skin into a configstring
-	g.gi.Configstring(CS_PLAYERSKINS+playernum, fmt.Sprintf("%s\\%s", ent.Client.Pers.Netname, s))
+	//ZOID
+	if g.ctfOn() {
+		g.CTFAssignSkin(ent, s)
+	} else {
+		//ZOID
+		g.gi.Configstring(CS_PLAYERSKINS+playernum, fmt.Sprintf("%s\\%s", ent.Client.Pers.Netname, s))
+	}
 
 	// fov
 	if g.deathmatch.Value != 0 && int32(g.dmflags.Value)&DF_FIXED_FOV != 0 {
@@ -1255,6 +1368,9 @@ func (g *Game) pclientSetValueForKey(s, key, value string) string {
 // loadgames will.
 // C: game/p_client.c:1431 ClientConnect
 func (g *Game) ClientConnect(ent *Edict, userinfo string) (bool, string) {
+	if g.ctfmod {
+		return g.ctfClientConnect(ent, userinfo)
+	}
 	// check to see if they are on the banned IP list
 	value := shared.Info_ValueForKey(userinfo, "ip")
 	if g.SV_FilterPacket(value) {
@@ -1317,6 +1433,48 @@ func (g *Game) ClientConnect(ent *Edict, userinfo string) (bool, string) {
 	return true, userinfo
 }
 
+// ctfClientConnect is the ctf fork's ClientConnect: no IP filter, no
+// spectators, force team join.
+// C: ctf/p_client.c:1369 ClientConnect
+func (g *Game) ctfClientConnect(ent *Edict, userinfo string) (bool, string) {
+	// check to see if they are on the banned IP list
+	_ = shared.Info_ValueForKey(userinfo, "ip")
+
+	// check for a password
+	value := shared.Info_ValueForKey(userinfo, "password")
+	if g.password.String != "" && g.password.String != "none" &&
+		g.password.String != value {
+		userinfo = g.pclientSetValueForKey(userinfo, "rejmsg", "Password required or incorrect.")
+		return false, userinfo
+	}
+
+	// they can connect
+	ent.Client = &g.game.Clients[ent.Index-1]
+
+	// if there is already a body waiting for us (a loadgame), just
+	// take it, otherwise spawn one from scratch
+	if !ent.InUse {
+		// clear the respawning variables
+		//ZOID -- force team join
+		ent.Client.Resp.CtfTeam = -1
+		ent.Client.Resp.IdState = false
+		//ZOID
+		g.InitClientResp(ent.Client)
+		if !g.game.Autosaved || ent.Client.Pers.Weapon == nil {
+			g.InitClientPersistant(ent.Client)
+		}
+	}
+
+	userinfo = g.clientUserinfoChanged(ent, userinfo)
+
+	if g.game.Maxclients > 1 {
+		g.dprintf("%s connected\n", ent.Client.Pers.Netname)
+	}
+
+	ent.Client.Pers.Connected = true
+	return true, userinfo
+}
+
 // ClientDisconnect is called when a player drops from the server.
 // Will not be called between levels.
 // C: game/p_client.c:1504 ClientDisconnect
@@ -1326,6 +1484,13 @@ func (g *Game) ClientDisconnect(ent *Edict) {
 	}
 
 	g.bprintf(PRINT_HIGH, "%s disconnected\n", ent.Client.Pers.Netname)
+
+	//ZOID
+	if g.ctfmod {
+		g.CTFDeadDropFlag(ent)
+		g.CTFDeadDropTech(ent)
+	}
+	//ZOID
 
 	// send effect
 	g.gi.WriteByteC(svc_muzzleflash)
@@ -1406,6 +1571,11 @@ func (g *Game) ClientThink(ent *Edict, ucmd *shared.UserCmd) {
 		client.Resp.CmdAngles[0] = float32(shared.SHORT2ANGLE(int32(ucmd.Angles[0])))
 		client.Resp.CmdAngles[1] = float32(shared.SHORT2ANGLE(int32(ucmd.Angles[1])))
 		client.Resp.CmdAngles[2] = float32(shared.SHORT2ANGLE(int32(ucmd.Angles[2])))
+		//ZOID
+		if g.ctfmod {
+			return
+		}
+		//ZOID
 	} else {
 		// set up for pmove
 		var pm pmove.PmoveT
@@ -1480,6 +1650,12 @@ func (g *Game) ClientThink(ent *Edict, ucmd *shared.UserCmd) {
 			client.PS.ViewAngles = pm.ViewAngles
 		}
 
+		//ZOID
+		if g.ctfmod && client.CtfGrapple != nil {
+			g.CTFGrapplePull(client.CtfGrapple)
+		}
+		//ZOID
+
 		g.gi.LinkEntity(ent)
 
 		if ent.Movetype != MOVETYPE_NOCLIP {
@@ -1512,6 +1688,11 @@ func (g *Game) ClientThink(ent *Edict, ucmd *shared.UserCmd) {
 	// save light level the player is standing on for
 	// monster sighting AI
 	ent.LightLevel = int32(ucmd.LightLevel)
+
+	if g.ctfmod {
+		g.ctfClientThinkTail(ent)
+		return
+	}
 
 	// fire weapon from final position if needed
 	if client.LatchedButtons&BUTTON_ATTACK != 0 {
@@ -1554,6 +1735,44 @@ func (g *Game) ClientThink(ent *Edict, ucmd *shared.UserCmd) {
 	}
 }
 
+// ctfClientThinkTail is the end of the ctf fork's ClientThink.
+// C: ctf/p_client.c:1634
+func (g *Game) ctfClientThinkTail(ent *Edict) {
+	client := ent.Client
+
+	// fire weapon from final position if needed
+	if client.LatchedButtons&BUTTON_ATTACK != 0 &&
+		//ZOID
+		ent.Movetype != MOVETYPE_NOCLIP {
+		//ZOID
+		if !client.WeaponThunk {
+			client.WeaponThunk = true
+			g.Think_Weapon(ent)
+		}
+	}
+
+	//ZOID
+	//regen tech
+	g.CTFApplyRegeneration(ent)
+	//ZOID
+
+	//ZOID
+	for i := 1; float32(i) <= g.maxclients.Value; i++ {
+		other := &g.edicts[i]
+		if other.InUse && other.Client.ChaseTarget == ent {
+			g.UpdateChaseCam(other)
+		}
+	}
+
+	if client.Menudirty && client.Menutime <= g.level.Time {
+		g.PMenu_Do_Update(ent)
+		g.gi.Unicast(ent, true)
+		client.Menutime = g.level.Time
+		client.Menudirty = false
+	}
+	//ZOID
+}
+
 // ClientBeginServerFrame will be called once for each server frame, before
 // running any other entities in the world.
 // C: game/p_client.c:1755 ClientBeginServerFrame
@@ -1566,7 +1785,7 @@ func (g *Game) ClientBeginServerFrame(ent *Edict) {
 
 	client := ent.Client
 
-	if g.deathmatch.Value != 0 &&
+	if !g.ctfmod && g.deathmatch.Value != 0 &&
 		client.Pers.Spectator != client.Resp.Spectator &&
 		(g.level.Time-client.RespawnTime) >= 5 {
 		g.spectator_respawn(ent)
@@ -1574,7 +1793,16 @@ func (g *Game) ClientBeginServerFrame(ent *Edict) {
 	}
 
 	// run weapon animations if it hasn't been done by a ucmd_t
-	if !client.WeaponThunk && !client.Resp.Spectator {
+	if g.ctfmod {
+		if !client.WeaponThunk &&
+			//ZOID
+			ent.Movetype != MOVETYPE_NOCLIP {
+			//ZOID
+			g.Think_Weapon(ent)
+		} else {
+			client.WeaponThunk = false
+		}
+	} else if !client.WeaponThunk && !client.Resp.Spectator {
 		g.Think_Weapon(ent)
 	} else {
 		client.WeaponThunk = false
@@ -1591,7 +1819,8 @@ func (g *Game) ClientBeginServerFrame(ent *Edict) {
 			}
 
 			if client.LatchedButtons&buttonMask != 0 ||
-				(g.deathmatch.Value != 0 && int32(g.dmflags.Value)&DF_FORCE_RESPAWN != 0) {
+				(g.deathmatch.Value != 0 && int32(g.dmflags.Value)&DF_FORCE_RESPAWN != 0) ||
+				g.CTFMatchOn() {
 				g.respawn(ent)
 				client.LatchedButtons = 0
 			}
