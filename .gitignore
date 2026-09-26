@@ -20,3 +20,7 @@ test-results/
 /data/
 /server/data/
 .claude/
+/server/q2server
+/server/q2ingest
+/server/wsbridge
+__pycache__/
