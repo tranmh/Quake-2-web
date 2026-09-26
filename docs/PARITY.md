@@ -15,40 +15,40 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 | `baseq2/save/save0/server.ssv` | 1 | N/A | build/docs | - | n/a |
 | `changes.txt` | 166 | N/A | build/docs | - | n/a |
 | `client/adivtab.h` | 1058 | D | x86 asm / software-renderer helpers | - | n/a |
-| `client/anorms.h` | 181 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
+| `client/anorms.h` | 181 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
 | `client/asm_i386.h` | 81 | D | x86 asm / software-renderer helpers | - | n/a |
 | `client/block16.h` | 123 | D | x86 asm / software-renderer helpers | - | n/a |
 | `client/block8.h` | 124 | D | x86 asm / software-renderer helpers | - | n/a |
-| `client/cdaudio.h` | 26 | R | optional user OGG tracks keyed by CS_CDTRACK | - | pending |
-| `client/cl_cin.c` | 650 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_ents.c` | 1500 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_fx.c` | 2298 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_input.c` | 542 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_inv.c` | 142 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_main.c` | 1844 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_newfx.c` | 1323 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_parse.c` | 806 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_pred.c` | 278 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_scrn.c` | 1401 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_tent.c` | 1745 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/cl_view.c` | 584 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/client.h` | 584 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/console.c` | 682 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/console.h` | 62 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/input.h` | 34 | R | browser input / canvas | - | pending |
-| `client/keys.c` | 943 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/keys.h` | 146 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/menu.c` | 4016 | R | React shell (Q2 aesthetic) + in-canvas where server-driven | manual/Playwright | pending |
-| `client/qmenu.c` | 674 | R | React shell (Q2 aesthetic) + in-canvas where server-driven | manual/Playwright | pending |
-| `client/qmenu.h` | 140 | R | React shell (Q2 aesthetic) + in-canvas where server-driven | manual/Playwright | pending |
-| `client/ref.h` | 224 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/screen.h` | 62 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/snd_dma.c` | 1214 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/snd_loc.h` | 164 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/snd_mem.c` | 359 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/snd_mix.c` | 497 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/sound.h` | 45 | P | TS q2-client / q2-snd-worklet | oracle_client | pending |
-| `client/vid.h` | 42 | R | browser input / canvas | - | pending |
+| `client/cdaudio.h` | 26 | R | optional user OGG tracks keyed by CS_CDTRACK | - | ported |
+| `client/cl_cin.c` | 650 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_ents.c` | 1500 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_fx.c` | 2298 | P | TS q2-client / q2-snd-worklet | oracle_client | verified |
+| `client/cl_input.c` | 542 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_inv.c` | 142 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_main.c` | 1844 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_newfx.c` | 1323 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_parse.c` | 806 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_pred.c` | 278 | P | TS q2-client / q2-snd-worklet | oracle_client | verified |
+| `client/cl_scrn.c` | 1401 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_tent.c` | 1745 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_view.c` | 584 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/client.h` | 584 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/console.c` | 682 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/console.h` | 62 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/input.h` | 34 | R | browser input / canvas | - | ported |
+| `client/keys.c` | 943 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/keys.h` | 146 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/menu.c` | 4016 | R | React shell (Q2 aesthetic) + in-canvas where server-driven | manual/Playwright | ported |
+| `client/qmenu.c` | 674 | R | React shell (Q2 aesthetic) + in-canvas where server-driven | manual/Playwright | ported |
+| `client/qmenu.h` | 140 | R | React shell (Q2 aesthetic) + in-canvas where server-driven | manual/Playwright | ported |
+| `client/ref.h` | 224 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/screen.h` | 62 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/snd_dma.c` | 1214 | P | TS q2-client / q2-snd-worklet | oracle_client | verified |
+| `client/snd_loc.h` | 164 | P | TS q2-client / q2-snd-worklet | oracle_client | verified |
+| `client/snd_mem.c` | 359 | P | TS q2-client / q2-snd-worklet | oracle_client | verified |
+| `client/snd_mix.c` | 497 | P | TS q2-client / q2-snd-worklet | oracle_client | verified |
+| `client/sound.h` | 45 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/vid.h` | 42 | R | browser input / canvas | - | ported |
 | `client/x86.c` | 95 | D | x86 asm / software-renderer helpers | - | n/a |
 | `ctf/2do.txt` | 16 | N/A | build/doc file | - | n/a |
 | `ctf/Makefile.Linux.i386` | 159 | N/A | build/doc file | - | n/a |
@@ -104,84 +104,84 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 | `ctf/p_weapon.c` | 1469 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
 | `ctf/q_shared.c` | 1419 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
 | `ctf/q_shared.h` | 1200 | P | Go internal/game (CTF mode, //ZOID hunks inline, docs/CTF.md) | oracle_game_ctf ctf_* | verified |
-| `game/g_ai.c` | 1117 | P | Go internal/game | oracle_game | pending |
-| `game/g_chase.c` | 175 | P | Go internal/game | oracle_game | pending |
-| `game/g_cmds.c` | 992 | P | Go internal/game | oracle_game | pending |
-| `game/g_combat.c` | 576 | P | Go internal/game | oracle_game | pending |
-| `game/g_func.c` | 2048 | P | Go internal/game | oracle_game | pending |
-| `game/g_items.c` | 2216 | P | Go internal/game | oracle_game | pending |
-| `game/g_local.h` | 1113 | P | Go internal/game | oracle_game | pending |
-| `game/g_main.c` | 411 | P | Go internal/game | oracle_game | pending |
-| `game/g_misc.c` | 1876 | P | Go internal/game | oracle_game | pending |
-| `game/g_monster.c` | 740 | P | Go internal/game | oracle_game | pending |
-| `game/g_phys.c` | 961 | P | Go internal/game | oracle_game | pending |
-| `game/g_save.c` | 769 | R | named-function registry + versioned saves (ADR-0004) | save idempotence | pending |
-| `game/g_spawn.c` | 984 | P | Go internal/game | oracle_game | pending |
-| `game/g_svcmds.c` | 300 | P | Go internal/game | oracle_game | pending |
-| `game/g_target.c` | 809 | P | Go internal/game | oracle_game | pending |
-| `game/g_trigger.c` | 598 | P | Go internal/game | oracle_game | pending |
-| `game/g_turret.c` | 432 | P | Go internal/game | oracle_game | pending |
-| `game/g_utils.c` | 568 | P | Go internal/game | oracle_game | pending |
-| `game/g_weapon.c` | 916 | P | Go internal/game | oracle_game | pending |
+| `game/g_ai.c` | 1117 | P | Go internal/game | oracle_game | verified |
+| `game/g_chase.c` | 175 | P | Go internal/game | oracle_game | verified |
+| `game/g_cmds.c` | 992 | P | Go internal/game | oracle_game | verified |
+| `game/g_combat.c` | 576 | P | Go internal/game | oracle_game | verified |
+| `game/g_func.c` | 2048 | P | Go internal/game | oracle_game | verified |
+| `game/g_items.c` | 2216 | P | Go internal/game | oracle_game | verified |
+| `game/g_local.h` | 1113 | P | Go internal/game | oracle_game | verified |
+| `game/g_main.c` | 411 | P | Go internal/game | oracle_game | verified |
+| `game/g_misc.c` | 1876 | P | Go internal/game | oracle_game | verified |
+| `game/g_monster.c` | 740 | P | Go internal/game | oracle_game | verified |
+| `game/g_phys.c` | 961 | P | Go internal/game | oracle_game | verified |
+| `game/g_save.c` | 769 | R | named-function registry + versioned saves (ADR-0004) | save idempotence | verified |
+| `game/g_spawn.c` | 984 | P | Go internal/game | oracle_game | verified |
+| `game/g_svcmds.c` | 300 | P | Go internal/game | oracle_game | verified |
+| `game/g_target.c` | 809 | P | Go internal/game | oracle_game | verified |
+| `game/g_trigger.c` | 598 | P | Go internal/game | oracle_game | verified |
+| `game/g_turret.c` | 432 | P | Go internal/game | oracle_game | verified |
+| `game/g_utils.c` | 568 | P | Go internal/game | oracle_game | verified |
+| `game/g_weapon.c` | 916 | P | Go internal/game | oracle_game | verified |
 | `game/game.001` | 1619 | N/A | build file | - | n/a |
 | `game/game.def` | 2 | N/A | build file | - | n/a |
 | `game/game.dsp` | 1618 | N/A | build file | - | n/a |
-| `game/game.h` | 254 | P | Go internal/game | oracle_game | pending |
+| `game/game.h` | 254 | P | Go internal/game | oracle_game | verified |
 | `game/game.plg` | 75 | N/A | build file | - | n/a |
-| `game/m_actor.c` | 609 | P | Go internal/game | oracle_game | pending |
-| `game/m_actor.h` | 506 | P | Go internal/game | oracle_game | pending |
-| `game/m_berserk.c` | 457 | P | Go internal/game | oracle_game | pending |
-| `game/m_berserk.h` | 269 | P | Go internal/game | oracle_game | pending |
-| `game/m_boss2.c` | 679 | P | Go internal/game | oracle_game | pending |
-| `game/m_boss2.h` | 206 | P | Go internal/game | oracle_game | pending |
-| `game/m_boss3.c` | 76 | P | Go internal/game | oracle_game | pending |
-| `game/m_boss31.c` | 749 | P | Go internal/game | oracle_game | pending |
-| `game/m_boss31.h` | 213 | P | Go internal/game | oracle_game | pending |
-| `game/m_boss32.c` | 913 | P | Go internal/game | oracle_game | pending |
-| `game/m_boss32.h` | 516 | P | Go internal/game | oracle_game | pending |
-| `game/m_brain.c` | 676 | P | Go internal/game | oracle_game | pending |
-| `game/m_brain.h` | 247 | P | Go internal/game | oracle_game | pending |
-| `game/m_chick.c` | 677 | P | Go internal/game | oracle_game | pending |
-| `game/m_chick.h` | 313 | P | Go internal/game | oracle_game | pending |
-| `game/m_flash.c` | 488 | P | generated tables (genconst) + Go game | genconst | pending |
-| `game/m_flipper.c` | 403 | P | Go internal/game | oracle_game | pending |
-| `game/m_flipper.h` | 185 | P | Go internal/game | oracle_game | pending |
-| `game/m_float.c` | 663 | P | Go internal/game | oracle_game | pending |
-| `game/m_float.h` | 273 | P | Go internal/game | oracle_game | pending |
-| `game/m_flyer.c` | 626 | P | Go internal/game | oracle_game | pending |
-| `game/m_flyer.h` | 182 | P | Go internal/game | oracle_game | pending |
-| `game/m_gladiator.c` | 387 | P | Go internal/game | oracle_game | pending |
-| `game/m_gladiator.h` | 115 | P | Go internal/game | oracle_game | pending |
-| `game/m_gunner.c` | 628 | P | Go internal/game | oracle_game | pending |
-| `game/m_gunner.h` | 234 | P | Go internal/game | oracle_game | pending |
-| `game/m_hover.c` | 620 | P | Go internal/game | oracle_game | pending |
-| `game/m_hover.h` | 230 | P | Go internal/game | oracle_game | pending |
-| `game/m_infantry.c` | 607 | P | Go internal/game | oracle_game | pending |
-| `game/m_infantry.h` | 232 | P | Go internal/game | oracle_game | pending |
-| `game/m_insane.c` | 693 | P | Go internal/game | oracle_game | pending |
-| `game/m_insane.h` | 307 | P | Go internal/game | oracle_game | pending |
-| `game/m_medic.c` | 769 | P | Go internal/game | oracle_game | pending |
-| `game/m_medic.h` | 262 | P | Go internal/game | oracle_game | pending |
-| `game/m_move.c` | 556 | P | Go internal/game | oracle_game | pending |
-| `game/m_mutant.c` | 663 | P | Go internal/game | oracle_game | pending |
-| `game/m_mutant.h` | 174 | P | Go internal/game | oracle_game | pending |
-| `game/m_parasite.c` | 552 | P | Go internal/game | oracle_game | pending |
-| `game/m_parasite.h` | 143 | P | Go internal/game | oracle_game | pending |
-| `game/m_player.h` | 224 | P | Go internal/game | oracle_game | pending |
-| `game/m_rider.h` | 66 | P | Go internal/game | oracle_game | pending |
-| `game/m_soldier.c` | 1299 | P | Go internal/game | oracle_game | pending |
-| `game/m_soldier.h` | 500 | P | Go internal/game | oracle_game | pending |
-| `game/m_supertank.c` | 717 | P | Go internal/game | oracle_game | pending |
-| `game/m_supertank.h` | 279 | P | Go internal/game | oracle_game | pending |
-| `game/m_tank.c` | 856 | P | Go internal/game | oracle_game | pending |
-| `game/m_tank.h` | 319 | P | Go internal/game | oracle_game | pending |
-| `game/p_client.c` | 1805 | P | Go internal/game | oracle_game | pending |
-| `game/p_hud.c` | 571 | P | Go internal/game | oracle_game | pending |
-| `game/p_trail.c` | 146 | P | Go internal/game | oracle_game | pending |
-| `game/p_view.c` | 1087 | P | Go internal/game | oracle_game | pending |
-| `game/p_weapon.c` | 1434 | P | Go internal/game | oracle_game | pending |
-| `game/q_shared.c` | 1418 | P | Go internal/qcommon/shared; TS q2-shared | core | pending |
-| `game/q_shared.h` | 1200 | P | Go internal/qcommon/shared; TS q2-shared | core | pending |
+| `game/m_actor.c` | 609 | P | Go internal/game | oracle_game | verified |
+| `game/m_actor.h` | 506 | P | Go internal/game | oracle_game | verified |
+| `game/m_berserk.c` | 457 | P | Go internal/game | oracle_game | verified |
+| `game/m_berserk.h` | 269 | P | Go internal/game | oracle_game | verified |
+| `game/m_boss2.c` | 679 | P | Go internal/game | oracle_game | verified |
+| `game/m_boss2.h` | 206 | P | Go internal/game | oracle_game | verified |
+| `game/m_boss3.c` | 76 | P | Go internal/game | oracle_game | verified |
+| `game/m_boss31.c` | 749 | P | Go internal/game | oracle_game | verified |
+| `game/m_boss31.h` | 213 | P | Go internal/game | oracle_game | verified |
+| `game/m_boss32.c` | 913 | P | Go internal/game | oracle_game | verified |
+| `game/m_boss32.h` | 516 | P | Go internal/game | oracle_game | verified |
+| `game/m_brain.c` | 676 | P | Go internal/game | oracle_game | verified |
+| `game/m_brain.h` | 247 | P | Go internal/game | oracle_game | verified |
+| `game/m_chick.c` | 677 | P | Go internal/game | oracle_game | verified |
+| `game/m_chick.h` | 313 | P | Go internal/game | oracle_game | verified |
+| `game/m_flash.c` | 488 | P | generated tables (genconst) + Go game | genconst | verified |
+| `game/m_flipper.c` | 403 | P | Go internal/game | oracle_game | verified |
+| `game/m_flipper.h` | 185 | P | Go internal/game | oracle_game | verified |
+| `game/m_float.c` | 663 | P | Go internal/game | oracle_game | verified |
+| `game/m_float.h` | 273 | P | Go internal/game | oracle_game | verified |
+| `game/m_flyer.c` | 626 | P | Go internal/game | oracle_game | verified |
+| `game/m_flyer.h` | 182 | P | Go internal/game | oracle_game | verified |
+| `game/m_gladiator.c` | 387 | P | Go internal/game | oracle_game | verified |
+| `game/m_gladiator.h` | 115 | P | Go internal/game | oracle_game | verified |
+| `game/m_gunner.c` | 628 | P | Go internal/game | oracle_game | verified |
+| `game/m_gunner.h` | 234 | P | Go internal/game | oracle_game | verified |
+| `game/m_hover.c` | 620 | P | Go internal/game | oracle_game | verified |
+| `game/m_hover.h` | 230 | P | Go internal/game | oracle_game | verified |
+| `game/m_infantry.c` | 607 | P | Go internal/game | oracle_game | verified |
+| `game/m_infantry.h` | 232 | P | Go internal/game | oracle_game | verified |
+| `game/m_insane.c` | 693 | P | Go internal/game | oracle_game | verified |
+| `game/m_insane.h` | 307 | P | Go internal/game | oracle_game | verified |
+| `game/m_medic.c` | 769 | P | Go internal/game | oracle_game | verified |
+| `game/m_medic.h` | 262 | P | Go internal/game | oracle_game | verified |
+| `game/m_move.c` | 556 | P | Go internal/game | oracle_game | verified |
+| `game/m_mutant.c` | 663 | P | Go internal/game | oracle_game | verified |
+| `game/m_mutant.h` | 174 | P | Go internal/game | oracle_game | verified |
+| `game/m_parasite.c` | 552 | P | Go internal/game | oracle_game | verified |
+| `game/m_parasite.h` | 143 | P | Go internal/game | oracle_game | verified |
+| `game/m_player.h` | 224 | P | Go internal/game | oracle_game | verified |
+| `game/m_rider.h` | 66 | P | Go internal/game | oracle_game | verified |
+| `game/m_soldier.c` | 1299 | P | Go internal/game | oracle_game | verified |
+| `game/m_soldier.h` | 500 | P | Go internal/game | oracle_game | verified |
+| `game/m_supertank.c` | 717 | P | Go internal/game | oracle_game | verified |
+| `game/m_supertank.h` | 279 | P | Go internal/game | oracle_game | verified |
+| `game/m_tank.c` | 856 | P | Go internal/game | oracle_game | verified |
+| `game/m_tank.h` | 319 | P | Go internal/game | oracle_game | verified |
+| `game/p_client.c` | 1805 | P | Go internal/game | oracle_game | verified |
+| `game/p_hud.c` | 571 | P | Go internal/game | oracle_game | verified |
+| `game/p_trail.c` | 146 | P | Go internal/game | oracle_game | verified |
+| `game/p_view.c` | 1087 | P | Go internal/game | oracle_game | verified |
+| `game/p_weapon.c` | 1434 | P | Go internal/game | oracle_game | verified |
+| `game/q_shared.c` | 1418 | P | Go internal/qcommon/shared; TS q2-shared | core | verified |
+| `game/q_shared.h` | 1200 | P | Go internal/qcommon/shared; TS q2-shared | core | verified |
 | `gnu.txt` | 87 | N/A | build/docs | - | n/a |
 | `irix/cd_irix.c` | 40 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
 | `irix/glw_imp.c` | 927 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
@@ -238,18 +238,18 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 | `null/swimp_null.c` | 30 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
 | `null/sys_null.c` | 127 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
 | `null/vid_null.c` | 145 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
-| `qcommon/cmd.c` | 892 | P | Go internal/qcommon/cmd; TS q2-client | core | pending |
-| `qcommon/cmodel.c` | 1770 | P | Go internal/cmodel; TS q2-pmove | core | pending |
-| `qcommon/common.c` | 1588 | P | Go internal/qcommon/msg; TS q2-protocol (Z_* -> GC, Qcommon_Frame -> loops) | core | pending |
-| `qcommon/crc.c` | 92 | P | Go internal/qcommon/crc; TS q2-protocol | core | pending |
-| `qcommon/crc.h` | 6 | P | shared header (types ported alongside users) | core | pending |
-| `qcommon/cvar.c` | 527 | P | Go internal/qcommon/cvar; TS q2-client | core | pending |
-| `qcommon/files.c` | 877 | P | Go internal/assets/pak; TS q2-formats | core | pending |
-| `qcommon/md4.c` | 278 | P | Go internal/qcommon/md4; TS q2-protocol | core | pending |
-| `qcommon/net_chan.c` | 387 | P | Go internal/net; TS q2-protocol | core | pending |
-| `qcommon/pmove.c` | 1360 | P | Go internal/pmove; TS q2-pmove | core | pending |
-| `qcommon/qcommon.h` | 826 | P | shared header (types ported alongside users) | core | pending |
-| `qcommon/qfiles.h` | 482 | P | shared header (types ported alongside users) | core | pending |
+| `qcommon/cmd.c` | 892 | P | Go internal/qcommon/cmd; TS q2-client | core | verified |
+| `qcommon/cmodel.c` | 1770 | P | Go internal/cmodel; TS q2-pmove | core | verified |
+| `qcommon/common.c` | 1588 | P | Go internal/qcommon/msg; TS q2-protocol (Z_* -> GC, Qcommon_Frame -> loops) | core | verified |
+| `qcommon/crc.c` | 92 | P | Go internal/qcommon/crc; TS q2-protocol | core | verified |
+| `qcommon/crc.h` | 6 | P | shared header (types ported alongside users) | core | ported |
+| `qcommon/cvar.c` | 527 | P | Go internal/qcommon/cvar; TS q2-client | core | verified |
+| `qcommon/files.c` | 877 | P | Go internal/assets/pak; TS q2-formats | core | verified |
+| `qcommon/md4.c` | 278 | P | Go internal/qcommon/md4; TS q2-protocol | core | verified |
+| `qcommon/net_chan.c` | 387 | P | Go internal/net; TS q2-protocol | core | verified |
+| `qcommon/pmove.c` | 1360 | P | Go internal/pmove; TS q2-pmove | core | verified |
+| `qcommon/qcommon.h` | 826 | P | shared header (types ported alongside users) | core | ported |
+| `qcommon/qfiles.h` | 482 | P | shared header (types ported alongside users) | core | ported |
 | `quake2.001` | 2061 | N/A | build/docs | - | n/a |
 | `quake2.bce` | 81 | N/A | build/docs | - | n/a |
 | `quake2.bcp` | 6 | N/A | build/docs | - | n/a |
@@ -331,16 +331,16 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 | `rhapsody/swimp_rhap.m` | 580 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
 | `rhapsody/sys_rhap.m` | 338 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
 | `rhapsody/vid_next.m` | 1789 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
-| `server/server.h` | 341 | P | Go internal/sv | lockstep/.dm2 | pending |
-| `server/sv_ccmds.c` | 1050 | P | Go internal/sv | lockstep/.dm2 | pending |
-| `server/sv_ents.c` | 727 | P | Go internal/sv | lockstep/.dm2 | pending |
-| `server/sv_game.c` | 396 | P | Go internal/sv | lockstep/.dm2 | pending |
-| `server/sv_init.c` | 465 | P | Go internal/sv | lockstep/.dm2 | pending |
-| `server/sv_main.c` | 1055 | P | Go internal/sv | lockstep/.dm2 | pending |
+| `server/server.h` | 341 | P | Go internal/sv | lockstep/.dm2 | ported |
+| `server/sv_ccmds.c` | 1050 | P | Go internal/sv | lockstep/.dm2 | ported |
+| `server/sv_ents.c` | 727 | P | Go internal/sv | lockstep/.dm2 | ported |
+| `server/sv_game.c` | 396 | P | Go internal/sv | lockstep/.dm2 | ported |
+| `server/sv_init.c` | 465 | P | Go internal/sv | lockstep/.dm2 | ported |
+| `server/sv_main.c` | 1055 | P | Go internal/sv | lockstep/.dm2 | ported |
 | `server/sv_null.c` | 15 | D | stub for client-only builds | - | n/a |
-| `server/sv_send.c` | 567 | P | Go internal/sv | lockstep/.dm2 | pending |
-| `server/sv_user.c` | 664 | P | Go internal/sv | lockstep/.dm2 | pending |
-| `server/sv_world.c` | 659 | P | Go internal/sv | lockstep/.dm2 | pending |
+| `server/sv_send.c` | 567 | P | Go internal/sv | lockstep/.dm2 | ported |
+| `server/sv_user.c` | 664 | P | Go internal/sv | lockstep/.dm2 | ported |
+| `server/sv_world.c` | 659 | P | Go internal/sv | lockstep/.dm2 | ported |
 | `solaris/Makefile.OLD` | 478 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
 | `solaris/Makefile.Solaris` | 719 | D | platform layer (replaced by browser/Go runtime) | - | n/a |
 | `solaris/g_so.c` | 3 | D | platform layer (replaced by browser/Go runtime) | - | n/a |

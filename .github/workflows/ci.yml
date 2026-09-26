@@ -39,7 +39,15 @@ jobs:
   go:
     needs: fixtures
     runs-on: ubuntu-latest
-    env: { GOAMD64: v1 }
+    env:
+      GOAMD64: v1
+      DATABASE_URL_TEST: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: test }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with: { submodules: true }
@@ -73,4 +81,12 @@ jobs:
       - run: make demo
       - uses: actions/download-artifact@v4
         with: { name: fixtures, path: fixtures/generated }
-      - run: cd web && pnpm install --frozen-lockfile && pnpm -r typecheck && pnpm -r lint && pnpm -r test
+      - run: cd web && pnpm install --frozen-lockfile && pnpm -r typecheck && pnpm lint && pnpm -r test && pnpm --filter web build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: true }
+      - run: docker build -f deploy/Dockerfile.server -t q2web-server .
+      - run: docker build -f deploy/Dockerfile.web -t q2web-web .
