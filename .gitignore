@@ -24,3 +24,4 @@ test-results/
 /server/q2ingest
 /server/wsbridge
 __pycache__/
+.pnpm-store/
