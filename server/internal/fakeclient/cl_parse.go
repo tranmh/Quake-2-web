@@ -93,6 +93,7 @@ func (c *Client) parseServerMessage(m *msg.SizeBuf) {
 			for i := range c.Inventory {
 				c.Inventory[i] = m.MSG_ReadShort()
 			}
+			c.Counts.Inventory++
 
 		case q2const.Svc_layout:
 			c.Layouts = appendHistory(c.Layouts, m.MSG_ReadString(), c.opt.MaxHistory, &c.Counts.Layouts)

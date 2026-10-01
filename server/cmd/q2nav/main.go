@@ -1,13 +1,26 @@
 // Command q2nav inspects the navigation knowledge the agent derives from a
-// map and checks the checked-in route tables:
+// map, builds and checks the navigation graphs, and checks the checked-in
+// route tables:
 //
-//	q2nav info -pak assets/demo/baseq2/pak0.pak -map demo1 [-skill 1]
-//	q2nav plan -pak assets/demo/baseq2/pak0.pak [-routes fixtures/agent/routes] [-skill 1]
+//	q2nav info   -pak assets/demo/baseq2/pak0.pak -map demo1 [-skill 1]
+//	q2nav plan   -pak assets/demo/baseq2/pak0.pak [-routes fixtures/agent/routes] [-skill 1]
+//	q2nav build  -pak assets/demo/baseq2/pak0.pak (-map demo1 | -all) [-out assets/nav] [-workers n] [-force]
+//	q2nav verify -pak assets/demo/baseq2/pak0.pak -map demo1 [-sample 300] [-live 40] [-seed 1] [-nav assets/nav]
+//	q2nav dump   -pak assets/demo/baseq2/pak0.pak -map demo1 [-o demo1-nav.json]
+//	q2nav path   -pak assets/demo/baseq2/pak0.pak -map demo1 [-from spawn] -to x,y,z|ent:N
 //
 // info prints the entity counts and the mover, trigger, exit and laser
 // tables of one map. plan prints, for every map of the pak, each exit with
 // the logic chains that fire it, then validates every route table of the
 // campaign against the pak and exits non-zero on any error.
+//
+// build writes the navigation graph cache (gzipped JSON under assets/nav,
+// named <map>-<checksum>-v<format>-<physics hash>.json.gz). verify
+// re-simulates a sample of edges with navsim, executes a sample on a live
+// lockstep server through the fakeclient, and checks that every step of the
+// map's route tables is reachable; it exits non-zero when a gate fails.
+// dump writes compact JSON for a dev overlay (nodes, edges, trigger and
+// mover boxes, lasers). path prints the cheapest path between two points.
 package main
 
 import (
@@ -34,6 +47,10 @@ func commands() []command {
 	return []command{
 		{"info", "info -pak <pak> -map <name> [-skill n] [-deathmatch]", runInfo},
 		{"plan", "plan -pak <pak> [-routes dir] [-skill n]", runPlan},
+		{"build", "build -pak <pak> (-map <name> | -all) [-out dir] [-workers n] [-force]", runBuild},
+		{"verify", "verify -pak <pak> -map <name> [-sample n] [-live n] [-seed n] [-nav dir] [-routes dir] [-skill n] [-v]", runVerify},
+		{"dump", "dump -pak <pak> -map <name> [-o file.json] [-nav dir] [-skill n]", runDump},
+		{"path", "path -pak <pak> -map <name> [-from spawn[:name]|x,y,z] -to x,y,z|ent:N [-nav dir] [-skill n]", runPath},
 	}
 }
 

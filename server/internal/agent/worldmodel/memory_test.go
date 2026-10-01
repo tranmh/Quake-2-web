@@ -1,0 +1,155 @@
+package worldmodel
+
+import (
+	"fmt"
+	"reflect"
+	"testing"
+
+	"quake2web/server/internal/agent/perception"
+	"quake2web/server/internal/q2const"
+	"quake2web/server/internal/qcommon/shared"
+)
+
+// helpLayout is HelpComputer's layout (C: game/p_hud.c:301).
+func helpLayout(k, km int) string {
+	return fmt.Sprintf("xv 32 yv 8 picn help xv 202 yv 12 string2 \"medium\" xv 0 yv 24 cstring2 \"Outer Base\" "+
+		"xv 0 yv 54 cstring2 \"Find the exit\" xv 0 yv 110 cstring2 \"\" "+
+		"xv 50 yv 164 string2 \" kills     goals    secrets\" xv 50 yv 172 string2 \"%3d/%3d     %d/%d       %d/%d\" ",
+		k, km, 0, 1, 0, 2)
+}
+
+func TestLevelMemoryRestore(t *testing.T) {
+	s := newSim(t)
+	key := LevelKey{Map: "floor"}
+	s.ents = []shared.EntityState{soldierAt(20, Vec3{200, 0, 24}), {Number: 40, ModelIndex: mStim, Origin: Vec3{100, 30, 16}}}
+	s.step()
+	s.w.MarkBlocked("n12-n13")
+	s.w.MarkBlocked("n2-n3")
+	s.w.MarkBlocked("n12-n13")
+	s.ps.Stats[q2const.STAT_HEALTH] = 0
+	s.ps.PMove.PmType = q2const.PM_DEAD
+	s.step()
+	b := s.w.Belief()
+	if !b.Self.Dead || !reflect.DeepEqual(b.Memory.DeathSpots, []Vec3{{0, 0, 24}}) ||
+		!reflect.DeepEqual(b.Memory.Blocked, []string{"n12-n13", "n2-n3"}) || b.Memory.Entries != 1 {
+		t.Fatalf("memory %+v dead %v", b.Memory, b.Self.Dead)
+	}
+
+	// reload: the level comes back as it was at entry; the static learnings stay
+	s.w.Reset(Level{Key: key, CM: floorCM(t)})
+	s.level = &perception.LevelStatic{Gen: 2, MapName: "floor"}
+	s.ps.Stats[q2const.STAT_HEALTH] = 100
+	s.ps.PMove.PmType = q2const.PM_NORMAL
+	s.ents = nil
+	s.ps.ViewAngles[q2const.YAW] = 180 // looking away from everything
+	b = s.step()
+	if len(b.Tracks) != 0 || len(b.Damage) != 0 || b.Memory.Entries != 2 || len(b.Memory.DeathSpots) != 1 ||
+		len(b.Memory.Blocked) != 2 {
+		t.Fatalf("after reload: tracks %v memory %+v", b.Tracks, b.Memory)
+	}
+	if len(b.Items) != 1 || !b.Items[0].Remembered || b.Items[0].Class != "item_health_small" ||
+		b.Items[0].Pos != (Vec3{100, 30, 16}) || b.Items[0].Life != LifeAlive || b.Items[0].Visible {
+		t.Fatalf("remembered items %+v", b.Items)
+	}
+	// seeing it again binds the remembered item, not a new one
+	s.ps.ViewAngles[q2const.YAW] = 0
+	s.ents = []shared.EntityState{{Number: 40, ModelIndex: mStim, Origin: Vec3{100, 30, 16}}}
+	b = s.step()
+	if len(b.Items) != 1 || b.Items[0].Remembered || !b.Items[0].Visible {
+		t.Fatalf("re-seen item %+v", b.Items)
+	}
+
+	// another level starts empty; coming back restores its memory
+	s.w.Reset(Level{Key: LevelKey{Map: "other"}, CM: floorCM(t)})
+	s.level = &perception.LevelStatic{Gen: 3, MapName: "other"}
+	s.step()
+	if m := s.w.Memory(); m.Entries != 1 || len(m.DeathSpots) != 0 || len(m.Items) != 1 {
+		t.Fatalf("other level memory %+v", m)
+	}
+	s.w.Reset(Level{Key: key, CM: floorCM(t)})
+	s.w.Reset(Level{Key: key, CM: floorCM(t)}) // a repeated Reset is one entry
+	s.level = &perception.LevelStatic{Gen: 4, MapName: "floor"}
+	s.ents = nil
+	s.step()
+	if m := s.w.Memory(); m.Entries != 3 || len(m.DeathSpots) != 1 || len(m.Items) != 1 {
+		t.Fatalf("back: %+v", m)
+	}
+	// a level generation without a Reset (a reload the caller did not
+	// announce) is an entry of the same level too
+	s.level = &perception.LevelStatic{Gen: 5, MapName: "floor"}
+	s.step()
+	if m := s.w.Memory(); m.Entries != 4 || s.w.Level().Key != key {
+		t.Fatalf("auto entry: %+v %+v", m, s.w.Level().Key)
+	}
+	// the second visit of the same map is a different key
+	if s.w.MemoryFor(LevelKey{Map: "floor", Visit: 1}) != nil {
+		t.Fatal("visit 1 shares visit 0's memory")
+	}
+}
+
+func TestRefreshSignals(t *testing.T) {
+	s := newSim(t)
+	s.step()
+	w := s.w
+	if !w.WantsInventoryRefresh() || w.WantsHelpRefresh() {
+		t.Fatal("first: inventory wanted, help after it")
+	}
+	w.NoteInventoryRequested()
+	s.step()
+	if w.WantsInventoryRefresh() || w.WantsHelpRefresh() {
+		t.Fatal("asked within 2 s")
+	}
+	// the inventory arrives
+	s.inv[2], s.inv[3] = 1, 20
+	s.invSeq++
+	for i := 0; i < 20; i++ {
+		s.step()
+	}
+	b := w.Belief()
+	if !b.Inventory.Known || b.Inventory.Stale || b.Inventory.Count("Shells") != 20 || b.Inventory.Count("Blaster") != 1 ||
+		len(b.Inventory.Items) != 2 || b.Inventory.At != 300 {
+		t.Fatalf("inventory %+v", b.Inventory)
+	}
+	if w.WantsInventoryRefresh() || !w.WantsHelpRefresh() {
+		t.Fatalf("help wanted once the inventory is known")
+	}
+	w.NoteHelpRequested()
+	s.ev.Layouts = []string{helpLayout(3, 12)}
+	s.step()
+	if b := w.Belief(); !b.HelpKnown || b.Help.Kills != 3 || b.Help.KillsMax != 12 || b.Help.LevelName != "Outer Base" {
+		t.Fatalf("help %+v", b.Help)
+	}
+	if w.WantsHelpRefresh() {
+		t.Fatal("help read")
+	}
+	// a pickup makes the inventory stale; combat holds the request back
+	s.ps.Stats[q2const.STAT_PICKUP_STRING] = int16(q2const.CS_ITEMS + 3)
+	s.ps.Stats[q2const.STAT_HEALTH] = 90
+	s.ps.Stats[q2const.STAT_FLASHES] = 1
+	s.step()
+	if !w.Belief().Inventory.Stale || !w.Belief().Self.InCombat || w.WantsInventoryRefresh() {
+		t.Fatal("stale inventory must wait for the end of combat")
+	}
+	for i := 0; i < 31; i++ {
+		s.step()
+	}
+	if w.Belief().Self.InCombat || !w.WantsInventoryRefresh() {
+		t.Fatal("after combat the inventory is wanted")
+	}
+	w.NoteInventoryRequested()
+	// the help icon blinks: new objectives
+	s.ps.Stats[q2const.STAT_HELPICON] = 1 // CS_IMAGES+1 "i_help"
+	for i := 0; i < 120; i++ {
+		s.step()
+	}
+	if !w.Belief().Self.HelpBlink || !w.WantsHelpRefresh() {
+		t.Fatal("blinking help icon wants the help computer")
+	}
+	// dead or in an intermission: nothing is asked
+	s.ps.PMove.PmType = q2const.PM_FREEZE
+	s.ps.Stats[q2const.STAT_LAYOUTS] = 1
+	s.step()
+	if !w.Belief().Self.Intermission || w.WantsHelpRefresh() || w.WantsInventoryRefresh() {
+		t.Fatal("intermission")
+	}
+}

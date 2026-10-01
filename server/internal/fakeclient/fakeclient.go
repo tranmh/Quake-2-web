@@ -90,11 +90,14 @@ type Options struct {
 }
 
 // HistoryCounts counts the events each history slice of a Client recorded
-// since New, including the ones MaxHistory discarded since.
+// since New, including the ones MaxHistory discarded since. Inventory counts
+// the svc_inventory messages parsed (each one replaces Client.Inventory), so
+// a reader can tell a fresh inventory from an unchanged array.
 type HistoryCounts struct {
 	Prints, CenterPrints, StuffTexts, Layouts uint64
 	Sounds, TempEnts, TempEntEvents           uint64
 	MuzzleFlashes, Downloads, OOB             uint64
+	Inventory                                 uint64
 }
 
 // NewSince returns the entries of history s recorded after its count was
