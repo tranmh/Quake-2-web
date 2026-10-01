@@ -9,6 +9,7 @@ const (
 	SourceScripted = "scripted" // the scripted policy (fallback or scripted backend)
 	SourceReflex   = "reflex"   // a reflex overrode the answer
 	SourceStale    = "stale"    // a previous answer kept past its TTL
+	SourceDefault  = "default"  // no answer was available: the field's default
 )
 
 // RunStart is the body of run_start.
@@ -107,6 +108,13 @@ type Decision struct {
 	OutputTokens int64           `json:"output_tokens,omitempty"`
 	CostUSD      float64         `json:"cost_usd,omitempty"`
 	Combat       bool            `json:"combat,omitempty"`
+	// ReqDigest is the digest of the request's state and questions
+	// (decide.Request.Digest): replay matches recorded responses by it.
+	ReqDigest string `json:"req_digest,omitempty"`
+	// Err is the backend's error when the request failed (no Response).
+	Err string `json:"err,omitempty"`
+	// Stale: the answer arrived after its TTL and was not applied.
+	Stale bool `json:"stale,omitempty"`
 }
 
 // APICall is the body of api_call: one backend request.
