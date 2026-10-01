@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "name": "demo1",
+  "map": "demo1",
+  "visit": 0,
+  "title": "Outer Base",
+  "from": "",
+  "exit": {"map": "demo2$base1"},
+  "steps": [
+    {
+      "op": "goto",
+      "target": {"entity": 589, "model": "*32", "classname": "func_door"},
+      "note": "cross the base to the elevator: the auto doors *32/*33 (team master *32) open from the trigger box around the pair"
+    },
+    {
+      "op": "goto",
+      "target": {"entity": 582, "model": "*31", "classname": "func_door", "targetname": "t4"},
+      "note": "stand inside the elevator car (angle -2: it drops 158 units when t4 fires)"
+    },
+    {
+      "op": "press",
+      "target": {"entity": 591, "model": "*34", "classname": "func_button"},
+      "effects": [{"kind": "moverAt", "target": {"model": "*31"}, "pose": "pos2"}],
+      "note": "the button inside the car fires t4"
+    },
+    {
+      "op": "ride",
+      "target": {"model": "*31"},
+      "until": "pos2",
+      "note": "1.7 s down into the exit trigger"
+    },
+    {
+      "op": "touch",
+      "target": {"entity": 419, "model": "*27", "classname": "trigger_multiple"},
+      "effects": [{"kind": "exit", "target": {"entity": 418, "classname": "target_changelevel", "targetname": "t37"}}],
+      "note": "reached by riding the car down; fires t37"
+    }
+  ]
+}

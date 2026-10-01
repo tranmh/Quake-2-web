@@ -1,13 +1,20 @@
-// Package fakeclient is a headless protocol-34 Quake 2 client for tests. It
-// ports the protocol side of client/cl_main.c (connection handshake),
-// client/cl_parse.c, client/cl_ents.c (frame / delta entity parsing) and
-// client/cl_input.c CL_SendCmd over any net.Conn.
+// Package fakeclient is a headless protocol-34 Quake 2 client for tests and
+// the agent. It ports the protocol side of client/cl_main.c (connection
+// handshake), client/cl_parse.c, client/cl_ents.c (frame / delta entity
+// parsing) and client/cl_input.c CL_SendCmd over any net.Conn.
+//
+// Connect, WaitActive and Poll receive from the connection themselves. A
+// driver that owns the datagram loop (a single-goroutine lockstep server)
+// uses BeginConnect, Feed and Tick instead. The Options hooks (Clock,
+// OnServerMessage, Passive, MaxHistory) and RequestFullFrame are opt-in:
+// with a zero Options the client behaves, and sends, exactly as without them.
 package fakeclient
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"quake2web/server/internal/net"
@@ -40,12 +47,77 @@ const (
 // ErrDisconnected is returned once the server dropped the client.
 var ErrDisconnected = errors.New("fakeclient: disconnected")
 
-// Options configures a Client.
+// Options configures a Client. The zero value is the plain test client; every
+// other field is an opt-in hook that leaves the protocol behavior unchanged
+// unless it is set.
 type Options struct {
 	Qport    int    // netchan qport; 0 picks a pseudo random one
 	Userinfo string // default "\name\fakeclient\skin\male/grunt\rate\25000\msg\1\hand\0\fov\90"
 	NoDelta  bool   // cl_nodelta: always request uncompressed frames
 	Printf   func(format string, args ...any)
+
+	// Clock, when set, replaces Sys_Milliseconds (the client's curtime,
+	// which feeds the netchan and the resend / keepalive timers), so a
+	// driver with a virtual clock (a lockstep server) controls the client's
+	// notion of time. nil uses the wall clock since New.
+	Clock func() int
+
+	// OnServerMessage, when set, is called for every accepted sequenced
+	// server packet after CL_ParseServerMessage parsed it and before the
+	// commands it stuffed are executed: the point where C calls
+	// CL_WriteDemoMessage. payload is the packet without its 8 byte netchan
+	// header (exactly what CL_WriteDemoMessage writes to a .dm2) and spans
+	// locates every svc command in it. Both are fresh copies owned by the
+	// callee. A packet whose parsing ends in a Com_Error is not reported,
+	// like C, which never reaches CL_WriteDemoMessage then.
+	OnServerMessage func(c *Client, payload []byte, spans []Span)
+
+	// Passive makes a client that only parses server messages handed to
+	// FeedPayload (demo blocks): stuffed text is recorded but never
+	// executed, downloads are not answered and nothing is ever sent (Feed
+	// refuses datagrams).
+	Passive bool
+
+	// MaxHistory bounds each event history slice (Prints, CenterPrints,
+	// StuffTexts, Layouts, Sounds, TempEnts, TempEntEvents, MuzzleFlashes,
+	// Downloads, OOB). A history that reaches 2*MaxHistory entries drops
+	// its older half, so it always holds the newest MaxHistory entries (all
+	// of them while there are fewer) and never more than 2*MaxHistory; the
+	// trimming costs amortized O(1) per event. Client.Counts keeps counting
+	// every event, and NewSince returns the entries recorded after an
+	// earlier count. 0 keeps everything.
+	MaxHistory int
+}
+
+// HistoryCounts counts the events each history slice of a Client recorded
+// since New, including the ones MaxHistory discarded since.
+type HistoryCounts struct {
+	Prints, CenterPrints, StuffTexts, Layouts uint64
+	Sounds, TempEnts, TempEntEvents           uint64
+	MuzzleFlashes, Downloads, OOB             uint64
+}
+
+// NewSince returns the entries of history s recorded after its count was
+// seen, given its current count total (a HistoryCounts field), and how many
+// of those MaxHistory already discarded. Entries are never lost while at
+// most MaxHistory events arrive between two calls.
+func NewSince[T any](s []T, total, seen uint64) (fresh []T, lost uint64) {
+	if total <= seen {
+		return nil, 0
+	}
+	n := total - seen
+	if n > uint64(len(s)) {
+		return s, n - uint64(len(s))
+	}
+	return s[len(s)-int(n):], 0
+}
+
+// Span locates one svc command of a server message payload: Cmd is the svc_*
+// byte and payload[Start:End] the command including that byte (svc_frame
+// spans its playerinfo and packetentities as well).
+type Span struct {
+	Cmd        int32
+	Start, End int
 }
 
 // ServerData is what svc_serverdata carried.
@@ -96,6 +168,30 @@ type Sound struct {
 	Pos                           *shared.Vec3
 }
 
+// TempEnt records the fields CL_ParseTEnt reads from a svc_temp_entity. Which
+// ones are set depends on Type (see parseTEnt); the rest stay zero.
+type TempEnt struct {
+	Type      int32
+	Pos       shared.Vec3 // origin / beam or trail start
+	Pos2      shared.Vec3 // beam or trail end (TE_BLUEHYPERBLASTER: the second vector C reads into "dir")
+	Offset    shared.Vec3 // TE_GRAPPLE_CABLE beam offset
+	Dir       shared.Vec3 // surface normal / direction (MSG_ReadDir)
+	Ent       int32       // beam owner, TE_LIGHTNING source, TE_FLASHLIGHT entity, steam / widow id
+	Ent2      int32       // TE_LIGHTNING destination
+	Count     int32       // particle count (splash, sparks, steam)
+	Color     int32       // splash color / laser sparks color / forcewall / steam color
+	Magnitude int32       // TE_STEAM magnitude
+	Wait      int32       // TE_STEAM sustain interval (id != -1 only)
+}
+
+// MuzzleFlash records a svc_muzzleflash (Monster false: a player weapon,
+// Weapon is the MZ_* byte including MZ_SILENCED) or svc_muzzleflash2
+// (Monster true: Weapon is the MZ2_* flash number).
+type MuzzleFlash struct {
+	Ent, Weapon int32
+	Monster     bool
+}
+
 // Client is one fake client connection (C client_static_t + client_state_t).
 type Client struct {
 	conn  net.Conn
@@ -130,16 +226,24 @@ type Client struct {
 	Disconnected  bool
 	DisconnectMsg string
 
-	Prints       []string
-	CenterPrints []string
-	StuffTexts   []string
-	Layouts      []string
-	Sounds       []Sound
-	TempEnts     []int32
-	Downloads    []Download
-	Inventory    [q2const.MAX_ITEMS]int32
-	OOB          []string // connectionless messages received
-	Reliables    int      // number of reliable (stringcmd/userinfo) messages queued
+	Prints        []string
+	CenterPrints  []string
+	StuffTexts    []string
+	Layouts       []string
+	Sounds        []Sound
+	TempEnts      []int32
+	TempEntEvents []TempEnt
+	MuzzleFlashes []MuzzleFlash
+	Downloads     []Download
+	Inventory     [q2const.MAX_ITEMS]int32
+	OOB           []string      // connectionless messages received
+	Counts        HistoryCounts // events recorded into each history since New
+	Reliables     int           // number of reliable (stringcmd/userinfo) messages queued
+
+	levelGen    int    // number of svc_serverdata parsed
+	demoWaiting bool   // cls.demowaiting: ask for an uncompressed frame
+	wantSpans   bool   // record spans while parsing the current message
+	spans       []Span // svc command spans of the current message (absolute offsets)
 }
 
 // New creates a client talking over conn.
@@ -168,14 +272,66 @@ func New(conn net.Conn, opt Options) *Client {
 	return c
 }
 
+// NewPassive creates a Passive client (opt.Passive is forced on) without a
+// connection, for parsing recorded server messages with FeedPayload.
+func NewPassive(opt Options) *Client {
+	opt.Passive = true
+	if opt.Qport == 0 {
+		opt.Qport = 1 // never used: a passive client sends nothing
+	}
+	return New(nil, opt)
+}
+
 func (c *Client) printf(format string, args ...any) {
 	if c.opt.Printf != nil {
 		c.opt.Printf(format, args...)
 	}
 }
 
-// curtime is Sys_Milliseconds relative to the client's creation.
-func (c *Client) curtime() int { return int(time.Since(c.start) / time.Millisecond) }
+// curtime is Sys_Milliseconds relative to the client's creation, or
+// Options.Clock.
+func (c *Client) curtime() int {
+	if c.opt.Clock != nil {
+		return c.opt.Clock()
+	}
+	return int(time.Since(c.start) / time.Millisecond)
+}
+
+// LevelGen returns the number of svc_serverdata messages parsed so far: it
+// changes exactly when a new level (map change, load, reconnect) begins.
+func (c *Client) LevelGen() int { return c.levelGen }
+
+// RequestFullFrame makes the client ask for uncompressed frames (lastframe
+// -1) until the next one arrives, like cls.demowaiting after CL_Record_f.
+func (c *Client) RequestFullFrame() { c.demoWaiting = true }
+
+// WaitingFullFrame reports whether a requested uncompressed frame has not
+// arrived yet.
+func (c *Client) WaitingFullFrame() bool { return c.demoWaiting }
+
+// MapName returns the client's current level: the BSP name of a game level
+// ("maps/demo1.bsp" -> "demo1"), otherwise the serverdata level name (a
+// cinematic or picture such as "victory.pcx"), or "" before serverdata.
+func (c *Client) MapName() string {
+	if m := c.ConfigStrings[q2const.CS_MODELS+1]; strings.HasPrefix(m, "maps/") && strings.HasSuffix(m, ".bsp") {
+		return strings.TrimSuffix(strings.TrimPrefix(m, "maps/"), ".bsp")
+	}
+	return c.ServerData.LevelName
+}
+
+// appendHistory appends v to a history, counts it in *count and applies
+// MaxHistory (limit <= 0: unbounded): when s already holds 2*limit
+// entries, its newest limit-1 are moved to the front first, so the backing
+// array never grows past 2*limit and each event costs amortized O(1).
+func appendHistory[T any](s []T, v T, limit int, count *uint64) []T {
+	*count++
+	if limit > 0 && len(s) >= 2*limit {
+		n := copy(s, s[len(s)-(limit-1):])
+		clear(s[n:])
+		s = s[:n]
+	}
+	return append(s, v)
+}
 
 // Qport returns the qport the client uses.
 func (c *Client) Qport() int { return c.opt.Qport }
@@ -186,8 +342,7 @@ func (c *Client) Qport() int { return c.opt.Qport }
 // Connect starts the handshake: getchallenge, connect, and waits until the
 // server answered client_connect (the "new" command is then queued).
 func (c *Client) Connect(ctx context.Context) error {
-	c.State = CaConnecting
-	c.connectTime = -99999 // CL_CheckForResend() will fire immediately
+	c.BeginConnect()
 	for c.State == CaConnecting {
 		if err := c.checkForResend(); err != nil {
 			return err
@@ -199,6 +354,30 @@ func (c *Client) Connect(ctx context.Context) error {
 	if c.Disconnected {
 		return ErrDisconnected
 	}
+	return nil
+}
+
+// BeginConnect starts connecting without waiting (the state change of
+// CL_Connect_f): the next Tick sends getchallenge. A driver that delivers the
+// datagrams itself then runs the handshake with Tick and Feed.
+// C: client/cl_main.c:494 CL_Connect_f
+func (c *Client) BeginConnect() {
+	c.State = CaConnecting
+	c.connectTime = -99999 // CL_CheckForResend() will fire immediately
+}
+
+// Tick runs the client's periodic connection work once: resend the
+// challenge request while connecting (CL_CheckForResend) and flush reliable
+// commands or send a keepalive while connected (the ca_connected branch of
+// CL_SendCmd). It sends nothing once active (use SendCmd) or when passive.
+func (c *Client) Tick() error {
+	if c.opt.Passive {
+		return nil
+	}
+	if err := c.checkForResend(); err != nil {
+		return err
+	}
+	c.sendConnected()
 	return nil
 }
 
@@ -281,7 +460,7 @@ func (c *Client) sendConnected() {
 
 // readPacket waits up to d for one datagram and processes it
 // (CL_ReadPackets for one packet), then executes stuffed commands.
-func (c *Client) readPacket(ctx context.Context, d time.Duration) (err error) {
+func (c *Client) readPacket(ctx context.Context, d time.Duration) error {
 	rctx, cancel := context.WithTimeout(ctx, d)
 	defer cancel()
 	data, rerr := c.conn.Recv(rctx)
@@ -294,28 +473,74 @@ func (c *Client) readPacket(ctx context.Context, d time.Duration) (err error) {
 		}
 		return rerr
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			ce, ok := r.(shared.ComError)
-			if !ok {
-				panic(r)
-			}
-			c.Disconnected = true
-			c.DisconnectMsg = ce.Msg
-			c.State = CaDisconnected
-			if ce.Code == q2const.ERR_DISCONNECT {
-				err = ErrDisconnected
-			} else {
-				err = fmt.Errorf("fakeclient: %s", ce.Msg)
-			}
-		}
-	}()
+	return c.Feed(data)
+}
+
+// ErrPassive is returned by Feed on a Passive client, which has no
+// connection to answer connectionless packets on (use FeedPayload).
+var ErrPassive = errors.New("fakeclient: Feed on a passive client (use FeedPayload)")
+
+// Feed processes one received datagram (the body of CL_ReadPackets for one
+// packet) and then executes the stuffed commands, exactly what Poll does
+// with each datagram it receives. It is for drivers that deliver datagrams
+// themselves (a single-goroutine lockstep loop). A Com_Error raised while
+// parsing disconnects the client: ErrDisconnected for svc_disconnect, any
+// other drop as an error carrying its message. A Passive client refuses
+// datagrams with ErrPassive.
+func (c *Client) Feed(data []byte) (err error) {
+	if c.opt.Passive {
+		return ErrPassive
+	}
+	defer c.recoverComError(&err)
 	c.processPacket(data)
 	c.cmd.Cbuf_Execute()
 	if c.Disconnected {
 		return ErrDisconnected
 	}
 	return nil
+}
+
+// FeedPayload parses one server message that has no netchan header (a .dm2
+// block, or a payload passed to OnServerMessage) on a Passive client and
+// returns the spans of its svc commands. OnServerMessage, when set, is
+// called for it as for a received packet. Errors are reported like Feed.
+func (c *Client) FeedPayload(payload []byte) (spans []Span, err error) {
+	if !c.opt.Passive {
+		return nil, errors.New("fakeclient: FeedPayload needs a passive client")
+	}
+	defer c.recoverComError(&err)
+	m := msg.NewReader(payload)
+	c.parseMessage(m, 0)
+	spans = c.spans
+	c.spans = nil
+	if c.Disconnected {
+		return spans, ErrDisconnected
+	}
+	return spans, nil
+}
+
+// recoverComError turns a Com_Error raised while handling server input into
+// a disconnect (the client side of Com_Error's longjmp). It must be deferred
+// directly.
+func (c *Client) recoverComError(errp *error) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	ce, ok := r.(shared.ComError)
+	if !ok {
+		panic(r)
+	}
+	c.wantSpans = false
+	c.spans = nil
+	c.Disconnected = true
+	c.DisconnectMsg = ce.Msg
+	c.State = CaDisconnected
+	if ce.Code == q2const.ERR_DISCONNECT {
+		*errp = ErrDisconnected
+	} else {
+		*errp = fmt.Errorf("fakeclient: %s", ce.Msg)
+	}
 }
 
 // C: client/cl_main.c:987 CL_ReadPackets (body for one packet)
@@ -336,7 +561,32 @@ func (c *Client) processPacket(data []byte) {
 	if !c.Netchan.Process(m, c.curtime()) {
 		return // wasn't accepted for some reason
 	}
+	if c.opt.OnServerMessage == nil {
+		c.parseServerMessage(m)
+		return
+	}
+	// the first eight bytes are just packet sequencing stuff
+	// (C: client/cl_main.c:113 CL_WriteDemoMessage)
+	c.parseMessage(m, 8)
+	c.spans = nil
+}
+
+// parseMessage runs CL_ParseServerMessage recording the svc command spans
+// and then reports the message to OnServerMessage. base is the offset of the
+// payload in m (the netchan header length).
+func (c *Client) parseMessage(m *msg.SizeBuf, base int) {
+	c.wantSpans = true
+	c.spans = nil
 	c.parseServerMessage(m)
+	c.wantSpans = false
+	for i := range c.spans {
+		c.spans[i].Start -= base
+		c.spans[i].End -= base
+	}
+	if c.opt.OnServerMessage != nil {
+		payload := append([]byte(nil), m.Data[base:m.CurSize]...)
+		c.opt.OnServerMessage(c, payload, append([]Span(nil), c.spans...))
+	}
 }
 
 // C: client/cl_main.c:866 CL_ConnectionlessPacket
@@ -344,7 +594,7 @@ func (c *Client) connectionlessPacket(m *msg.SizeBuf) {
 	m.MSG_BeginReading()
 	m.MSG_ReadLong() // skip the -1
 	s := m.MSG_ReadStringLine()
-	c.OOB = append(c.OOB, s)
+	c.OOB = appendHistory(c.OOB, s, c.opt.MaxHistory, &c.Counts.OOB)
 	c.cmd.TokenizeString(s, false)
 	cmdName := c.cmd.Argv(0)
 	c.printf("OOB: %s\n", cmdName)
@@ -365,7 +615,7 @@ func (c *Client) connectionlessPacket(m *msg.SizeBuf) {
 		c.printf("Command packet from remote host.  Ignored.\n")
 	case "print":
 		s := m.MSG_ReadString()
-		c.Prints = append(c.Prints, s)
+		c.Prints = appendHistory(c.Prints, s, c.opt.MaxHistory, &c.Counts.Prints)
 		c.printf("%s", s)
 		if c.State == CaConnecting && c.Challenge != 0 {
 			// a rejected connect ("Server is full.", "Bad challenge." ...)

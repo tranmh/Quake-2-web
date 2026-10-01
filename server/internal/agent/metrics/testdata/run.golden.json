@@ -1,0 +1,194 @@
+{
+  "schema": "q2bot.run/1",
+  "run": "run-golden",
+  "outcome": "failed",
+  "reason": "aborted by the operator",
+  "backend": "jev",
+  "model": "jev-1.13",
+  "session": "lockstep",
+  "maps": [
+    "demo1",
+    "demo2",
+    "demo3"
+  ],
+  "skill": 1,
+  "seed": 77,
+  "episode_seeds": [
+    78
+  ],
+  "model_driven": false,
+  "started": "2026-10-01T09:00:00.01Z",
+  "wall_ms": 410,
+  "game_ms": 70000,
+  "events": 42,
+  "totals": {
+    "levels": 3,
+    "levels_completed": 2,
+    "deaths": 1,
+    "reloads": 1,
+    "damage_taken": 92,
+    "bot_kills": 1,
+    "stuck": 1,
+    "kills": 10,
+    "monsters": 25,
+    "secrets": 1,
+    "total_secrets": 3,
+    "combat_ms": 5000
+  },
+  "decisions": {
+    "decisions": 12,
+    "fields": {
+      "danger": {
+        "model": 0,
+        "scripted": 0,
+        "reflex": 0,
+        "stale": 0,
+        "other": 1,
+        "model_share": 0
+      },
+      "fire_policy": {
+        "model": 10,
+        "scripted": 0,
+        "reflex": 1,
+        "stale": 0,
+        "model_share": 0.9090909090909091
+      },
+      "mode": {
+        "model": 1,
+        "scripted": 1,
+        "reflex": 0,
+        "stale": 0,
+        "model_share": 0.5
+      },
+      "target": {
+        "model": 10,
+        "scripted": 1,
+        "reflex": 0,
+        "stale": 1,
+        "model_share": 0.8333333333333334
+      }
+    },
+    "all": {
+      "model": 21,
+      "scripted": 2,
+      "reflex": 1,
+      "stale": 1,
+      "other": 1,
+      "model_share": 0.8076923076923077
+    },
+    "gate_model_share": 0.84,
+    "comparisons": 21,
+    "disagreements": 10,
+    "disagreement_rate": 0.47619047619047616
+  },
+  "api": {
+    "calls": 12,
+    "ok": 11,
+    "errors": 1,
+    "retries": 1,
+    "stale": 1,
+    "stale_rate": 0.09090909090909091,
+    "by_status": {
+      "200": 11,
+      "429": 1
+    },
+    "latency_ms": {
+      "p50": 210,
+      "p95": 480,
+      "p99": 480,
+      "max": 480
+    },
+    "input_tokens": 12000,
+    "output_tokens": 480,
+    "cost_usd": 0.000504,
+    "combat_calls": 7,
+    "combat_qps": 1.4
+  },
+  "budget": {
+    "spent_usd": 1.9,
+    "limit_usd": 2,
+    "rate_hz": 0,
+    "scripted_only": true,
+    "reason": "budget"
+  },
+  "errors": 1,
+  "last_error": "jev: 429 Too Many Requests",
+  "episodes": [
+    {
+      "index": 0,
+      "seed": 78,
+      "outcome": "incomplete",
+      "game_ms": 70000,
+      "totals": {
+        "levels": 3,
+        "levels_completed": 2,
+        "deaths": 1,
+        "reloads": 1,
+        "damage_taken": 92,
+        "bot_kills": 1,
+        "stuck": 1,
+        "kills": 10,
+        "monsters": 25,
+        "secrets": 1,
+        "total_secrets": 3,
+        "combat_ms": 5000
+      },
+      "levels": [
+        {
+          "lvl": 0,
+          "map": "demo1",
+          "visit": 0,
+          "outcome": "exit",
+          "start_gms": 600,
+          "time_ms": 30000,
+          "combat_ms": 2000,
+          "deaths": 0,
+          "reloads": 0,
+          "damage_taken": 12,
+          "bot_kills": 1,
+          "stuck": 0,
+          "kills": 4,
+          "monsters": 11,
+          "secrets": 1,
+          "total_secrets": 2
+        },
+        {
+          "lvl": 1,
+          "map": "demo2",
+          "visit": 0,
+          "outcome": "exit",
+          "start_gms": 31000,
+          "time_ms": 30000,
+          "combat_ms": 3000,
+          "deaths": 1,
+          "reloads": 1,
+          "damage_taken": 75,
+          "bot_kills": 0,
+          "stuck": 1,
+          "kills": 6,
+          "monsters": 14,
+          "secrets": 0,
+          "total_secrets": 1
+        },
+        {
+          "lvl": 2,
+          "map": "demo3",
+          "visit": 0,
+          "outcome": "incomplete",
+          "start_gms": 61500,
+          "time_ms": 8500,
+          "combat_ms": 0,
+          "deaths": 0,
+          "reloads": 0,
+          "damage_taken": 5,
+          "bot_kills": 0,
+          "stuck": 0,
+          "kills": 0,
+          "monsters": 0,
+          "secrets": 0,
+          "total_secrets": 0
+        }
+      ]
+    }
+  ]
+}

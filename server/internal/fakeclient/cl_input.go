@@ -10,9 +10,14 @@ import (
 // SendCmd builds and sends one move packet with cmd as the newest command
 // (CL_CreateCmd is replaced by the argument). While only connected it sends
 // the pending reliable data / keepalive instead, like the C client. It returns
-// the unreliable payload that was transmitted (nil when no move was sent).
-// C: client/cl_input.c:463 CL_SendCmd
+// the unreliable payload that was transmitted (nil when no move was sent). A
+// passive client sends nothing.
+// C: client/cl_input.c:453 CL_SendCmd
 func (c *Client) SendCmd(ucmd shared.UserCmd) []byte {
+	if c.opt.Passive {
+		return nil
+	}
+
 	// save this command off for prediction
 	i := c.Netchan.OutgoingSequence & (CMD_BACKUP - 1)
 	c.cmds[i] = ucmd
@@ -45,7 +50,7 @@ func (c *Client) SendCmd(ucmd shared.UserCmd) []byte {
 
 	// let the server know what the last frame we
 	// got was, so the next message can be delta compressed
-	if c.opt.NoDelta || !c.Frame.Valid {
+	if c.opt.NoDelta || !c.Frame.Valid || c.demoWaiting {
 		buf.MSG_WriteLong(-1) // no compression
 	} else {
 		buf.MSG_WriteLong(c.Frame.ServerFrame)

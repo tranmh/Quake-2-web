@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "name": "demo2a",
+  "map": "demo2",
+  "visit": 0,
+  "title": "Installation (first visit)",
+  "from": "base1",
+  "exit": {"map": "demo3$base2a"},
+  "steps": [
+    {
+      "op": "goto",
+      "target": {"entity": 496, "model": "*44", "classname": "func_door"},
+      "note": "leave the arrival car west through the auto doors *44/*45; keep away from the car's button *43"
+    },
+    {
+      "op": "press",
+      "target": {"entity": 533, "model": "*48", "classname": "func_button"},
+      "effects": [
+        {"kind": "doorOpen", "target": {"entity": 538, "model": "*49", "targetname": "t5"}},
+        {"kind": "doorOpen", "target": {"entity": 539, "model": "*50", "targetname": "t5"}}
+      ],
+      "note": "t5 swings both halves of the floor hatch over the shaft down (X axis, 90 degrees, 2.7 s)"
+    },
+    {
+      "op": "wait",
+      "seconds": 3,
+      "effects": [{"kind": "doorOpen", "target": {"model": "*49"}}, {"kind": "doorOpen", "target": {"model": "*50"}}],
+      "note": "until the hatch is open"
+    },
+    {
+      "op": "touch",
+      "target": {"entity": 439, "model": "*40", "classname": "trigger_multiple"},
+      "effects": [{"kind": "exit", "target": {"entity": 438, "classname": "target_changelevel", "targetname": "t9"}}],
+      "note": "drop down the shaft through the mid-air trigger; fires t9"
+    }
+  ],
+  "avoid": [
+    {
+      "target": {"entity": 495, "model": "*43", "classname": "func_button"},
+      "why": "button on the arrival car's east wall, about 70 units from the spawn: t7 raises the car *46 into trigger *41, which fires the changelevel back to demo1$base2"
+    },
+    {
+      "target": {"entity": 437, "model": "*39", "classname": "trigger_multiple"},
+      "why": "directional trigger (facing -x) west of base3b: fires the changelevel to demo3$base2b"
+    }
+  ]
+}

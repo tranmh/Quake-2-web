@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "name": "demo2b",
+  "map": "demo2",
+  "visit": 1,
+  "title": "Installation (second visit)",
+  "from": "base3b",
+  "exit": {"map": "victory.pcx"},
+  "steps": [
+    {
+      "op": "goto",
+      "target": {"entity": 377, "model": "*29", "classname": "func_door"},
+      "note": "the level is restored as it was left; the auto door *29 is just east of base3b"
+    },
+    {
+      "op": "touch",
+      "target": {"entity": 284, "model": "*22", "classname": "trigger_once"},
+      "effects": [
+        {"kind": "moverAt", "target": {"entity": 558, "model": "*51", "targetname": "t67"}, "pose": "pos2"},
+        {"kind": "doorOpen", "target": {"entity": 638, "model": "*55", "targetname": "t6"}},
+        {"kind": "remove", "target": {"entity": 186, "model": "*17", "targetname": "block"}},
+        {"kind": "remove", "target": {"entity": 258, "model": "*20", "targetname": "block"}}
+      ],
+      "note": "the trigger in front of the lever *51 fires t67: the lever swings and fires t6, which opens *55 ('This door is opened elsewhere'), swings the START_OPEN door *42 and kills the 'block' walls *17/*20"
+    },
+    {
+      "op": "touch",
+      "target": {"entity": 156, "model": "*15", "classname": "trigger_once"},
+      "effects": [{"kind": "wake", "target": {"entity": 29, "classname": "monster_gunner", "targetname": "t88"}}],
+      "note": "the corridor trigger t88 wakes the ambush gunner"
+    },
+    {
+      "op": "kill",
+      "class": "monster_gunner",
+      "pos": [336, -1792, 24],
+      "target": {"entity": 29, "targetname": "t88"},
+      "effects": [{"kind": "enable", "target": {"entity": 667, "model": "*58", "targetname": "t85"}}],
+      "note": "its death fires t85, which enables the TRIGGERED trigger *58 in front of the doors t84"
+    },
+    {
+      "op": "touch",
+      "target": {"entity": 667, "model": "*58", "classname": "trigger_once"},
+      "effects": [
+        {"kind": "doorOpen", "target": {"entity": 649, "model": "*56", "targetname": "t84"}},
+        {"kind": "doorOpen", "target": {"entity": 650, "model": "*57", "targetname": "t84"}},
+        {"kind": "wake", "target": {"entity": 666, "classname": "monster_tank", "targetname": "t83"}}
+      ],
+      "note": "fires t80: the doors t84 open at speed 25 (3.7 s); 2.5 s later t83 turns the lights on and wakes the tank behind them"
+    },
+    {
+      "op": "wait",
+      "seconds": 4,
+      "effects": [{"kind": "doorOpen", "target": {"model": "*56"}}, {"kind": "doorOpen", "target": {"model": "*57"}}],
+      "note": "until the doors are open"
+    },
+    {
+      "op": "press",
+      "target": {"entity": 668, "model": "*59", "classname": "func_button"},
+      "effects": [{"kind": "exit", "target": {"entity": 669, "classname": "target_changelevel", "targetname": "t86"}}],
+      "note": "fires t86: the changelevel to victory.pcx ends the campaign"
+    }
+  ],
+  "avoid": [
+    {
+      "target": {"entity": 437, "model": "*39", "classname": "trigger_multiple"},
+      "why": "directional trigger (facing -x) just west of the arrival point: fires the changelevel back to demo3$base2b"
+    },
+    {
+      "target": {"entity": 495, "model": "*43", "classname": "func_button"},
+      "why": "the first visit's arrival-car button: t7 raises the car *46 into trigger *41 -> demo1$base2"
+    }
+  ]
+}

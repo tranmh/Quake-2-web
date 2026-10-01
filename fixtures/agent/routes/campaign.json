@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "name": "demo",
+  "skill": 1,
+  "start": "demo1",
+  "visits": ["demo1.json", "demo2a.json", "demo3.json", "demo2b.json"],
+  "terminal": {"exit": "victory.pcx", "kind": "pic"}
+}

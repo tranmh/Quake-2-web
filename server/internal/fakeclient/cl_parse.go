@@ -13,6 +13,7 @@ func (c *Client) parseServerMessage(m *msg.SizeBuf) {
 		if m.ReadCount > m.CurSize {
 			shared.Error(q2const.ERR_DROP, "CL_ParseServerMessage: Bad server message")
 		}
+		start := m.ReadCount
 		cmd := m.MSG_ReadByte()
 		if cmd == -1 {
 			break
@@ -34,16 +35,18 @@ func (c *Client) parseServerMessage(m *msg.SizeBuf) {
 		case q2const.Svc_print:
 			m.MSG_ReadByte() // print level
 			s := m.MSG_ReadString()
-			c.Prints = append(c.Prints, s)
+			c.Prints = appendHistory(c.Prints, s, c.opt.MaxHistory, &c.Counts.Prints)
 			c.printf("%s", s)
 
 		case q2const.Svc_centerprint:
-			c.CenterPrints = append(c.CenterPrints, m.MSG_ReadString())
+			c.CenterPrints = appendHistory(c.CenterPrints, m.MSG_ReadString(), c.opt.MaxHistory, &c.Counts.CenterPrints)
 
 		case q2const.Svc_stufftext:
 			s := m.MSG_ReadString()
-			c.StuffTexts = append(c.StuffTexts, s)
-			c.cmd.Cbuf_AddText(s)
+			c.StuffTexts = appendHistory(c.StuffTexts, s, c.opt.MaxHistory, &c.Counts.StuffTexts)
+			if !c.opt.Passive {
+				c.cmd.Cbuf_AddText(s)
+			}
 
 		case q2const.Svc_serverdata:
 			c.cmd.Cbuf_Execute() // make sure any stuffed commands are done
@@ -67,7 +70,8 @@ func (c *Client) parseServerMessage(m *msg.SizeBuf) {
 			if i < 1 || i >= q2const.MAX_EDICTS {
 				shared.Error(q2const.ERR_DROP, "CL_ParseMuzzleFlash: bad entity")
 			}
-			m.MSG_ReadByte()
+			weapon := m.MSG_ReadByte()
+			c.MuzzleFlashes = appendHistory(c.MuzzleFlashes, MuzzleFlash{Ent: i, Weapon: weapon}, c.opt.MaxHistory, &c.Counts.MuzzleFlashes)
 
 		case q2const.Svc_muzzleflash2:
 			// C: client/cl_fx.c:429 CL_ParseMuzzleFlash2
@@ -75,7 +79,8 @@ func (c *Client) parseServerMessage(m *msg.SizeBuf) {
 			if ent < 1 || ent >= q2const.MAX_EDICTS {
 				shared.Error(q2const.ERR_DROP, "CL_ParseMuzzleFlash2: bad entity")
 			}
-			m.MSG_ReadByte()
+			flash := m.MSG_ReadByte()
+			c.MuzzleFlashes = appendHistory(c.MuzzleFlashes, MuzzleFlash{Ent: ent, Weapon: flash, Monster: true}, c.opt.MaxHistory, &c.Counts.MuzzleFlashes)
 
 		case q2const.Svc_download:
 			c.parseDownload(m)
@@ -90,10 +95,13 @@ func (c *Client) parseServerMessage(m *msg.SizeBuf) {
 			}
 
 		case q2const.Svc_layout:
-			c.Layouts = append(c.Layouts, m.MSG_ReadString())
+			c.Layouts = appendHistory(c.Layouts, m.MSG_ReadString(), c.opt.MaxHistory, &c.Counts.Layouts)
 
 		case q2const.Svc_playerinfo, q2const.Svc_packetentities, q2const.Svc_deltapacketentities:
 			shared.Error(q2const.ERR_DROP, "Out of place frame data")
+		}
+		if c.wantSpans {
+			c.spans = append(c.spans, Span{Cmd: cmd, Start: start, End: m.ReadCount})
 		}
 	}
 }
@@ -103,6 +111,7 @@ func (c *Client) parseServerData(m *msg.SizeBuf) {
 	// wipe the client_state_t struct
 	c.clearState()
 	c.State = CaConnected
+	c.levelGen++
 
 	// parse protocol version number
 	i := m.MSG_ReadLong()
@@ -169,21 +178,22 @@ func (c *Client) parseStartSoundPacket(m *msg.SizeBuf) {
 		p := m.MSG_ReadPos()
 		s.Pos = &p
 	}
-	c.Sounds = append(c.Sounds, s)
+	c.Sounds = appendHistory(c.Sounds, s, c.opt.MaxHistory, &c.Counts.Sounds)
 }
 
 // parseDownload records the message; data is skipped (assets come over HTTP).
+// A passive client never asks for the next block.
 // C: client/cl_parse.c:200 CL_ParseDownload
 func (c *Client) parseDownload(m *msg.SizeBuf) {
 	size := m.MSG_ReadShort()
 	percent := m.MSG_ReadByte()
-	c.Downloads = append(c.Downloads, Download{Size: size, Percent: percent})
+	c.Downloads = appendHistory(c.Downloads, Download{Size: size, Percent: percent}, c.opt.MaxHistory, &c.Counts.Downloads)
 	if size < 0 { // -1: not found (other negatives: memory safety)
 		c.printf("Server does not have this file.\n")
 		return
 	}
 	m.ReadCount += int(size)
-	if percent != 100 {
+	if percent != 100 && !c.opt.Passive {
 		// request next block
 		c.Netchan.Message.MSG_WriteByte(q2const.Clc_stringcmd)
 		c.Netchan.Message.SZ_Print("nextdl")

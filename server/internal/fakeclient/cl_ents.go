@@ -79,7 +79,9 @@ func (c *Client) parsePacketEntities(m *msg.SizeBuf, oldframe, newframe *Frame) 
 
 	for {
 		newnum, bits := m.ParseEntityBits()
-		if newnum >= q2const.MAX_EDICTS {
+		// newnum < 0 (a 16 bit number with the sign bit set) indexes
+		// cl_entities out of bounds in C: memory-safety check
+		if newnum >= q2const.MAX_EDICTS || newnum < 0 {
 			shared.Error(q2const.ERR_DROP, "CL_ParsePacketEntities: bad number:%d", newnum)
 		}
 		if m.ReadCount > m.CurSize {
@@ -143,7 +145,8 @@ func (c *Client) parseFrame(m *msg.SizeBuf) {
 	// message
 	var old *Frame
 	if c.Frame.DeltaFrame <= 0 {
-		c.Frame.Valid = true // uncompressed frame
+		c.Frame.Valid = true  // uncompressed frame
+		c.demoWaiting = false // we can start recording now
 	} else {
 		old = &c.Frames[c.Frame.DeltaFrame&q2const.UPDATE_MASK]
 		if !old.Valid { // should never happen

@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "name": "demo3",
+  "map": "demo3",
+  "visit": 0,
+  "title": "Comm Center",
+  "from": "base2a",
+  "exit": {"map": "demo2$base3b"},
+  "steps": [
+    {
+      "op": "kill",
+      "class": "monster_gunner",
+      "pos": [-536, -472, -272],
+      "target": {"entity": 418, "targetname": "t142"},
+      "effects": [
+        {"kind": "laserOff", "target": {"entity": 176, "classname": "target_laser", "targetname": "t145"}},
+        {"kind": "laserOff", "target": {"entity": 177, "classname": "target_laser", "targetname": "t145"}}
+      ],
+      "note": "the ambush gunner south of the lasers (woken by trigger *10 or the explosive wall *18); its death fires t145, which toggles both 100-damage lasers across y=-400 off"
+    },
+    {
+      "op": "confirm",
+      "effects": [
+        {"kind": "laserOff", "target": {"entity": 176}},
+        {"kind": "laserOff", "target": {"entity": 177}}
+      ],
+      "note": "the two RF_BEAM entities are gone before crossing y=-400"
+    },
+    {
+      "op": "press",
+      "target": {"entity": 882, "model": "*44", "classname": "func_button"},
+      "effects": [
+        {"kind": "doorOpen", "target": {"entity": 399, "model": "*20", "targetname": "t133"}},
+        {"kind": "moverAt", "target": {"entity": 398, "model": "*19", "targetname": "t134"}, "pose": "pos2"}
+      ],
+      "note": "t108: 3 s later the hatch *20 slides open, 3 s after that the pedestal *19 rises 50 units with the blue key"
+    },
+    {
+      "op": "wait",
+      "seconds": 7,
+      "effects": [{"kind": "moverAt", "target": {"model": "*19"}, "pose": "pos2"}],
+      "note": "until the pedestal is up"
+    },
+    {
+      "op": "pickup",
+      "class": "key_blue_key",
+      "pos": [-416, -312, -320],
+      "note": "on the pedestal *19"
+    },
+    {
+      "op": "touch",
+      "target": {"entity": 298, "model": "*12", "classname": "trigger_multiple"},
+      "effects": [{"kind": "doorOpen", "target": {"entity": 878, "model": "*42", "targetname": "t138"}}],
+      "note": "fires t137: the trigger_key takes the blue key and fires t138, opening the door *42 just north of the trigger"
+    },
+    {
+      "op": "ride",
+      "target": {"entity": 731, "model": "*40", "classname": "func_plat"},
+      "until": "top",
+      "note": "LOW_TRIGGER plat: step on at the bottom, it rises 154 units"
+    },
+    {
+      "op": "goto",
+      "target": {"entity": 729, "model": "*39", "classname": "func_door"},
+      "note": "the auto door at the top of the plat"
+    },
+    {
+      "op": "touch",
+      "target": {"entity": 592, "model": "*34", "classname": "trigger_multiple"},
+      "yaw": 0,
+      "effects": [{"kind": "exit", "target": {"entity": 591, "classname": "target_changelevel", "targetname": "t35"}}],
+      "note": "directional exit (angle 360): only fires when facing +x"
+    }
+  ]
+}
