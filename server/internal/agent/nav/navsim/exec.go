@@ -179,8 +179,8 @@ func Stopped(s *State, p Vec3) bool {
 
 // StopAt returns an executor that walks the player to p and stops it there
 // (Stopped), for a follower that must start an edge flagged from rest.
-// After Stopped holds, or 2 s, or when the player is not on the ground, it
-// returns idle commands.
+// After Stopped holds, or 2 s, or when the player starts off the ground or
+// swims, it returns idle commands.
 func StopAt(p Vec3, msec int) Executor {
 	if msec <= 0 {
 		msec = 25
@@ -211,21 +211,36 @@ func (e *stopExec) Next(_ *World, s *State) Cmd {
 type stopper struct {
 	target  Vec3
 	elapsed int
+	started bool
 	done    bool
 }
 
 // next returns the command, or ok=false once the player is at rest at the
-// target, in the air or in water, or the time is up; from then on it
-// always reports false.
+// target, swimming, or the time is up; from then on it always reports
+// false. A player that is not on the ground at the first command (on a
+// ladder, falling) is left alone; one that leaves the ground for a moment
+// later on (a bump) gets idle commands until it lands.
 func (e *stopper) next(s *State, msec int) (c Cmd, ok bool) {
 	if e.done {
 		return Cmd{}, false
 	}
-	if Stopped(s, e.target) || !s.OnGround() || s.WaterLevel >= 2 || e.elapsed >= stopMaxMsec {
+	if !e.started && !s.OnGround() {
+		e.done = true
+		return Cmd{}, false
+	}
+	e.started = true
+	if Stopped(s, e.target) || s.WaterLevel >= 2 || e.elapsed >= stopMaxMsec {
 		e.done = true
 		return Cmd{}, false
 	}
 	e.elapsed += msec
+	if !s.OnGround() {
+		c = Cmd{Msec: uint8(msec), Yaw: s.ViewYaw}
+		if s.Ducked() {
+			c.Up = -400
+		}
+		return c, true
+	}
 	o, v := s.Origin(), s.Velocity()
 	dt := float64(msec) / 1000
 	// velocity after friction (pm_friction 6, pm_stopspeed 100)
@@ -397,6 +412,32 @@ type rider struct {
 
 func (e *rider) Next(_ *World, s *State) Cmd {
 	return Cmd{Msec: uint8(e.msec), Yaw: e.h.to(s.Origin(), e.target)}
+}
+
+// Coast returns an executor that runs ex until *stop is set (by the
+// caller's done predicate, which Run calls after every step), then gives
+// idle commands so the player coasts to rest: how a touch edge ends once
+// its target is set off.
+func Coast(ex Executor, stop *bool) Executor { return &coaster{ex: ex, stop: stop} }
+
+type coaster struct {
+	ex   Executor
+	stop *bool
+	last Cmd
+}
+
+func (e *coaster) Next(w *World, s *State) Cmd {
+	if !*e.stop {
+		e.last = e.ex.Next(w, s)
+		return e.last
+	}
+	return idleCmd(e.last)
+}
+
+// AtRest reports whether the player stands (or floats) still: on the
+// ground or in water, horizontally slower than StopSpeed.
+func AtRest(s *State) bool {
+	return (s.OnGround() || s.WaterLevel >= 1) && s.HSpeed() <= StopSpeed
 }
 
 // Arrival tolerances: an edge succeeds when the player is within ArriveXY

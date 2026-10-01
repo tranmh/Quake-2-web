@@ -3,6 +3,8 @@ package navbuild_test
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"quake2web/server/internal/agent/mapdata"
 	"quake2web/server/internal/agent/nav"
 	"quake2web/server/internal/agent/nav/navbuild"
+	"quake2web/server/internal/agent/nav/navsim"
 	"quake2web/server/internal/agent/route"
 	"quake2web/server/internal/assets/pak"
 	"quake2web/server/internal/bsp"
@@ -388,14 +391,210 @@ func TestDemo1Graph(t *testing.T) {
 	if len(g.EffectEdges(591)) == 0 {
 		t.Error("nothing presses the car button *34")
 	}
-	for i := range g.Nodes {
-		n := &g.Nodes[i]
-		if leaf := md.CM; leaf == nil {
-			break
+	if b := g.Blockers[g.BlockerOf(590)]; b.Team != 589 || g.Blockers[door].Team != 589 {
+		t.Errorf("door *33 is a slave of *32: team %d / %d", b.Team, g.Blockers[door].Team)
+	}
+	_ = md
+}
+
+// TestNoTraps: every node a spawn reaches has a way out (an end node is
+// left by the edges of the node it was reached from). A node without one
+// is a trap a follower could fall into: a hull wedged where pmove cannot
+// move it, or a pit a func_water fills at every pose.
+func TestNoTraps(t *testing.T) {
+	p := openDemo(t)
+	for _, m := range []string{"demo1", "demo2", "demo3"} {
+		g, _ := demoGraph(t, p, m, 1)
+		for i := range g.Nodes {
+			n := &g.Nodes[i]
+			if len(g.Out(nav.NodeID(i))) == 0 && n.Flags&nav.NodeEnd == 0 {
+				t.Errorf("%s: node %d %v (%v) has no way out", m, i, n.Origin, n.Flags)
+			}
 		}
-		if len(g.Out(nav.NodeID(i))) == 0 && n.Flags&nav.NodeEnd == 0 {
-			t.Errorf("node %d %v has no way out", i, n.Origin)
-			break
+	}
+}
+
+// TestChainedEntries replays edges the way a pursuing follower runs them:
+// a random walk edge into the start node from rest, then the edge right
+// away. Edges without EdgeFromRest must arrive (the jump, drop and ladder
+// executors stop at their start first); EdgeFromRest edges after
+// navsim.StopAt at their start, unless they are EdgeFragile.
+func TestChainedEntries(t *testing.T) {
+	p := openDemo(t)
+	g, md := demoGraph(t, p, "demo1", 1)
+	v := navbuild.NewVerifier(g, md.CM)
+	rng := rand.New(rand.NewSource(1))
+	every := 3
+	if raceEnabled {
+		every = 20
+	}
+	type count struct{ pass, total int }
+	var running, stopped count
+	var fails []string
+	for i := range g.Edges {
+		e := &g.Edges[i]
+		if e.Flags&(nav.EdgeFast|nav.EdgeFragile) != 0 || g.Nodes[e.From].Flags&(nav.NodeWater|nav.NodeLadder) != 0 {
+			continue
 		}
+		switch e.Kind {
+		case nav.EdgeWalk, nav.EdgeCrouch, nav.EdgeJump, nav.EdgeDrop, nav.EdgeLadder:
+		default:
+			continue
+		}
+		if i%every != 0 {
+			continue
+		}
+		var in []int32
+		for _, j := range g.In(e.From) {
+			f := &g.Edges[j]
+			if (f.Kind == nav.EdgeWalk || f.Kind == nav.EdgeCrouch) && f.From != e.To && !f.Conditional() &&
+				g.Nodes[f.From].Flags&(nav.NodeWater|nav.NodeLadder) == 0 {
+				in = append(in, j)
+			}
+		}
+		if len(in) == 0 {
+			continue
+		}
+		stop := e.Flags&nav.EdgeFromRest != 0
+		r := v.Chain(int(in[rng.Intn(len(in))]), i, stop)
+		if r.Skipped {
+			continue
+		}
+		c := &running
+		if stop {
+			c = &stopped
+		}
+		c.total++
+		if r.OK {
+			c.pass++
+		} else if len(fails) < 10 {
+			fails = append(fails, fmt.Sprintf("edge %d %s (%v) stop %v: %s", i, e.Kind, e.Flags, stop, r.Reason))
+		}
+	}
+	t.Logf("running entries %d/%d, after stopping %d/%d", running.pass, running.total, stopped.pass, stopped.total)
+	for _, f := range fails {
+		t.Log(f)
+	}
+	// the build replays one in-edge per incoming direction; another one
+	// from the same direction rarely differs
+	if running.total < 50 || float64(running.pass) < 0.99*float64(running.total) {
+		t.Errorf("running entries: %d/%d arrive", running.pass, running.total)
+	}
+	if stopped.total > 0 && float64(stopped.pass) < 0.9*float64(stopped.total) {
+		t.Errorf("from-rest edges after stopping: %d/%d arrive", stopped.pass, stopped.total)
+	}
+}
+
+// TestFallDamageRecorded: the falling damage of the frame an edge lands in
+// is part of the edge's FallDamage (demo3's drop into the pit below
+// (320, 192) deals 27 when the landing frame is judged).
+func TestFallDamageRecorded(t *testing.T) {
+	p := openDemo(t)
+	g, _ := demoGraph(t, p, "demo3", 1)
+	from := g.Localize(nav.Vec3{320, 192, -600}, 2)
+	to := g.Localize(nav.Vec3{320, 224, -808}, 2)
+	i := g.EdgeIndex(from, to)
+	if from == nav.NoNode || to == nav.NoNode || i < 0 {
+		t.Fatalf("no drop (320,192,-600) -> (320,224,-808): nodes %d %d", from, to)
+	}
+	if e := &g.Edges[i]; e.FallDamage < 20 {
+		t.Errorf("drop %+v: fall damage %d", e, e.FallDamage)
+	}
+	hurt := 0
+	for i := range g.Edges {
+		if e := &g.Edges[i]; e.Kind == nav.EdgeDrop && g.Nodes[e.From].Origin[2]-g.Nodes[e.To].Origin[2] >= 250 && e.FallDamage > 0 {
+			hurt++
+		}
+	}
+	if hurt == 0 {
+		t.Error("no drop of 250 units or more hurts")
+	}
+}
+
+// TestTouchEdgesAnyAllowedPose: a touch edge ends at To (at rest) with any
+// nearby solid blocker in any pose its conditions allow, not just in the
+// world it was built in (a spawn-world edge that leans on a door needs the
+// door in its spawn state).
+func TestTouchEdgesAnyAllowedPose(t *testing.T) {
+	p := openDemo(t)
+	for _, m := range []string{"demo1", "demo2", "demo3"} {
+		g, md := demoGraph(t, p, m, 1)
+		v := navbuild.NewVerifier(g, md.CM)
+		runs := 0
+		for i := range g.Edges {
+			e := &g.Edges[i]
+			if e.Kind != nav.EdgeTouch {
+				continue
+			}
+			base := g.EdgePoses(e)
+			a, b := g.Nodes[e.From].Origin, g.Nodes[e.To].Origin
+			var lo, hi nav.Vec3
+			for k := 0; k < 3; k++ {
+				lo[k] = min(a[k], b[k], e.Aim[k]) - 96
+				hi[k] = max(a[k], b[k], e.Aim[k]) + 96
+			}
+			for bi := range g.Blockers {
+				bl := &g.Blockers[bi]
+				if !bl.Solid {
+					continue
+				}
+				for k := range bl.Poses {
+					mn, mx := navsim.LinkBox(true, bl.Poses[k].Origin, bl.Poses[k].Angles, bl.Mins, bl.Maxs)
+					if k == base[bi] || !nav.Holds(&nav.Edge{Reqs: e.Reqs}, poseStates(g, bi, k)) ||
+						mn[0] > hi[0] || mn[1] > hi[1] || mn[2] > hi[2] || mx[0] < lo[0] || mx[1] < lo[1] || mx[2] < lo[2] {
+						continue
+					}
+					poses := append([]int(nil), base...)
+					poses[bi] = k
+					g.SetWorld(v.World(), poses)
+					g.Place(v.Runner(), e.From)
+					runs++
+					if r := v.EdgeIn(i, v.Runner().State(), poses); !r.OK {
+						t.Errorf("%s edge %d with %s %s at %s: %s", m, i, bl.Class, bl.Model, bl.Poses[k].Name, r.Reason)
+					}
+				}
+			}
+		}
+		t.Logf("%s: %d runs", m, runs)
+	}
+}
+
+// poseStates is "every blocker in any state, blocker b at pose k".
+func poseStates(g *nav.Graph, b, k int) []nav.StateMask {
+	s := make([]nav.StateMask, len(g.Blockers))
+	for i := range s {
+		s[i] = g.Blockers[i].All()
+	}
+	s[b] = nav.Pose(k)
+	return s
+}
+
+// TestDemoScenes checks scene details on the demo graphs: demo2's
+// TRIGGERED trigger *58 starts disabled, rides that need a use carry the
+// mover.
+func TestDemoScenes(t *testing.T) {
+	p := openDemo(t)
+	g, _ := demoGraph(t, p, "demo2", 1)
+	found := false
+	for _, e := range g.Ents {
+		if e.Model == "*58" {
+			found = e.Disabled
+		}
+	}
+	if !found {
+		t.Error("demo2 *58 (TRIGGERED) is not disabled")
+	}
+	needs := 0
+	for i := range g.Edges {
+		e := &g.Edges[i]
+		if e.Flags&nav.EdgeNeedsUse != 0 {
+			needs++
+			if e.Kind != nav.EdgeRide || e.Target != g.Blockers[g.Nodes[e.From].Blocker].Entity {
+				t.Errorf("needs-use edge %+v", e)
+			}
+		}
+	}
+	if needs == 0 {
+		t.Error("no ride on demo2's used movers needs a use")
 	}
 }

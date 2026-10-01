@@ -277,3 +277,146 @@ func stateOf(pm shared.PmoveState, w *navsim.World) navsim.State {
 	w.Categorize(&st)
 	return st
 }
+
+// edictByModel returns the in-use edict of a brush model ("*N"), or nil.
+func (ls *liveServer) edictByModel(model string) *game.Edict {
+	if model == "" {
+		return nil
+	}
+	eds := ls.g.Edicts()
+	for i := range eds {
+		if e := &eds[i]; e.InUse && e.Model == model {
+			return e
+		}
+	}
+	return nil
+}
+
+// moverState is the moveinfo state of a door, rotating door or plat at
+// pose k: doors rest at the bottom at pos1, plats at the top at pos1.
+func moverState(b *nav.Blocker, k int) (int32, bool) {
+	switch b.Kind {
+	case nav.BlockDoor, nav.BlockRotating:
+		if k == 0 {
+			return game.STATE_BOTTOM, true
+		}
+		return game.STATE_TOP, true
+	case nav.BlockPlat:
+		if k == 0 {
+			return game.STATE_TOP, true
+		}
+		return game.STATE_BOTTOM, true
+	}
+	return 0, false
+}
+
+// setBlocker writes blocker b's edict into one state (a tool-only edict
+// write, like place): pose k (origin, angles, moveinfo state; it stops
+// thinking and does not return by itself), or gone (k < 0: not solid any
+// more). Lasers are left alone: they do not block movement, and the player
+// is in god mode.
+func (ls *liveServer) setBlocker(g *nav.Graph, b int32, k int) error {
+	bl := &g.Blockers[b]
+	if bl.Kind == nav.BlockLaser {
+		// a laser pushes the player even in god mode (T_Damage knockback):
+		// switch it off like target_laser_off
+		if k >= 0 {
+			return nil // on: as it spawns (the demo lasers start on)
+		}
+		eds := ls.g.Edicts()
+		for i := range eds {
+			e := &eds[i]
+			if e.InUse && e.Classname == "target_laser" && e.S.Origin == bl.Start {
+				e.Spawnflags &^= 1
+				e.SVFlags |= q2const.SVF_NOCLIENT
+				e.Nextthink = 0
+				return nil
+			}
+		}
+		return fmt.Errorf("live: laser #%d not in the level", bl.Entity)
+	}
+	e := ls.edictByModel(bl.Model)
+	if e == nil {
+		if k < 0 {
+			return nil // already gone
+		}
+		return fmt.Errorf("live: blocker %s %s not in the level", bl.Class, bl.Model)
+	}
+	if k < 0 {
+		e.Solid = q2const.SOLID_NOT
+		e.SVFlags |= q2const.SVF_NOCLIENT
+		ls.l.Server().World.LinkEdict(e)
+		return nil
+	}
+	p := bl.Poses[k]
+	e.S.Origin, e.S.Angles = p.Origin, p.Angles
+	e.Velocity, e.Avelocity = shared.Vec3{}, shared.Vec3{}
+	e.Nextthink = 0
+	if st, ok := moverState(bl, k); ok {
+		e.Moveinfo.State = st
+		e.Moveinfo.Wait = -1
+	}
+	ls.l.Server().World.LinkEdict(e)
+	return nil
+}
+
+// fired reports whether the server's target of a touch edge was set off:
+// a button left its bottom state, a trigger_once/multiple fired (freed or
+// waiting), an item was picked up. checked is false for targets whose
+// state shows nothing (trigger_push, ...).
+func (ls *liveServer) fired(g *nav.Graph, e *nav.Edge) (ok, checked bool) {
+	var ent *nav.Ent
+	for i := range g.Ents {
+		if g.Ents[i].Entity == e.Target {
+			ent = &g.Ents[i]
+		}
+	}
+	if ent == nil {
+		return false, false
+	}
+	switch {
+	case ent.Class == "func_button":
+		ed := ls.edictByModel(ent.Model)
+		return ed != nil && ed.Moveinfo.State != game.STATE_BOTTOM, true
+	case ent.Class == "trigger_once" || ent.Class == "trigger_multiple":
+		for _, ed := range ls.byModel(ent.Model) {
+			// Touch_Multi records the toucher; multi_wait clears the
+			// nextthink again after the wait
+			return ed.Activator == ls.player || ed.Nextthink > 0 || ed.Touch == nil, true
+		}
+		return true, true // freed (trigger_once)
+	case strings.HasPrefix(ent.Class, "item_health") || strings.HasPrefix(ent.Class, "item_armor") || strings.HasPrefix(ent.Class, "ammo_"):
+		// not picked up at the maximum (pickup_health, pickup_armor,
+		// Add_Ammo): the touch itself leaves no trace
+		return false, false
+	case isItem(ent.Class):
+		// the item's touch box center is its origin after droptofloor
+		for _, v := range g.Volumes {
+			if v.Entity != e.Target {
+				continue
+			}
+			c := shared.Vec3{(v.Min[0] + v.Max[0]) / 2, (v.Min[1] + v.Max[1]) / 2, (v.Min[2] + v.Max[2]) / 2}
+			eds := ls.g.Edicts()
+			for i := range eds {
+				ed := &eds[i]
+				if ed.InUse && ed.Classname == ent.Class && shared.VectorLength(shared.VectorSubtract(ed.S.Origin, c)) < 2 {
+					return ed.SVFlags&q2const.SVF_NOCLIENT != 0, true // still there
+				}
+			}
+		}
+		return true, true // picked up (freed)
+	}
+	return false, false
+}
+
+// byModel returns the in-use edicts whose model is m.
+func (ls *liveServer) byModel(m string) []*game.Edict {
+	var out []*game.Edict
+	eds := ls.g.Edicts()
+	for i := range eds {
+		if eds[i].InUse && eds[i].Model == m {
+			out = append(out, &eds[i])
+		}
+	}
+	return out
+}

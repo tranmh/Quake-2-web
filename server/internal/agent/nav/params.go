@@ -16,7 +16,8 @@ type Params struct {
 	Grid float32 `json:"grid"`
 	// WaterGrid is the swim sample spacing.
 	WaterGrid float32 `json:"waterGrid"`
-	// StepMsec is the simulated usercmd length.
+	// StepMsec is the simulated usercmd length. It must be the 25 ms the
+	// agent's sessions send (Validate).
 	StepMsec int `json:"stepMsec"`
 	// Gravity and AirAccelerate are sv_gravity and sv_airaccelerate.
 	Gravity       int16   `json:"gravity"`
@@ -54,8 +55,10 @@ func (p Params) Validate() error {
 		return fmt.Errorf("nav: grid %v not in [8, 256]", p.Grid)
 	case p.WaterGrid < 8 || p.WaterGrid > 256:
 		return fmt.Errorf("nav: water grid %v not in [8, 256]", p.WaterGrid)
-	case p.StepMsec < 1 || p.StepMsec > 250:
-		return fmt.Errorf("nav: step msec %d not in [1, 250]", p.StepMsec)
+	case p.StepMsec != navsim.DefaultPhysics().StepMsec:
+		// the sessions send 25 ms commands (session.CmdMsec); edges
+		// validated with another length would not run the same on the server
+		return fmt.Errorf("nav: step msec %d, the server runs %d ms commands", p.StepMsec, navsim.DefaultPhysics().StepMsec)
 	case p.MaxDegree < 4:
 		return fmt.Errorf("nav: max degree %d < 4", p.MaxDegree)
 	case p.LedgeReach < 0 || p.MaxDrop < 0 || p.MaxRise < 0 || p.RegionRadius <= 0:

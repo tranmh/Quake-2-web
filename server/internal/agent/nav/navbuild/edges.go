@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 
+	"quake2web/server/internal/agent/mapdata"
 	"quake2web/server/internal/agent/nav"
 	"quake2web/server/internal/agent/nav/navsim"
 	"quake2web/server/internal/q2const"
@@ -283,7 +284,8 @@ func (wk *worker) validate(i int32, c cand) (nav.Edge, bool) {
 				return edge, false
 			}
 			edge.Reqs = reqs
-			edge.Effects = wk.sampleEffects(samples, 1/speed)
+			edge.Effects = wk.sampleEffects(samples, 1/speed, sup)
+			wk.markHazard(&edge, samples, edge.Cost/float32(max(len(samples)-1, 1)))
 			return edge, true
 		}
 	}
@@ -339,6 +341,8 @@ func (wk *worker) validate(i int32, c cand) (nav.Edge, bool) {
 		default:
 			add(navsim.RecipeWalk, nil)
 			add(navsim.RecipeDrop, nil)
+			// from the bottom of a pool: swim up to the swim node
+			add(navsim.RecipeSwim, nil)
 		}
 	}
 	base0 := edge
@@ -372,10 +376,11 @@ func (wk *worker) validate(i int32, c cand) (nav.Edge, bool) {
 			continue
 		}
 		edge.Reqs = reqs
-		edge.Effects = wk.outcomeEffects(out)
+		edge.Effects = wk.outcomeEffects(out, sup)
 		if wk.touchesPushable(out) {
 			edge.Flags |= nav.EdgePushes
 		}
+		wk.markHazard(&edge, out.Samples, float32(b.p.StepMsec)/1000)
 		return edge, true
 	}
 	return edge, false
@@ -646,6 +651,54 @@ func (b *builder) buildEdges() (int, error) {
 	return len(all), nil
 }
 
+// ridePairs returns the pose moves (from, to) a rider can ride on blocker
+// bl: a train corner to corner along its path, and from the last corner
+// back only when that corner leads somewhere (train_next stops at a corner
+// without a target); other movers between consecutive poses both ways,
+// except that a plat at its top never goes down with a rider inside its
+// center trigger (Touch_Plat_Center keeps delaying plat_go_down) unless
+// it is a LOW_TRIGGER plat, whose trigger covers just the bottom.
+// C: game/g_func.c:1529 train_next, game/g_func.c:466 Touch_Plat_Center
+func ridePairs(bl *nav.Blocker, g *blockerGeo) [][2]int {
+	var pairs [][2]int
+	switch bl.Kind {
+	case nav.BlockTrain:
+		for p := 0; p+1 < len(bl.Poses); p++ {
+			pairs = append(pairs, [2]int{p, p + 1})
+		}
+		if last := len(bl.Poses) - 1; g.loopTo >= 0 && g.loopTo != last {
+			pairs = append(pairs, [2]int{last, g.loopTo})
+		}
+	default:
+		for p := 0; p+1 < len(bl.Poses); p++ {
+			if !(bl.Kind == nav.BlockPlat && p == 0 && !g.lowTrigger) {
+				pairs = append(pairs, [2]int{p, p + 1})
+			}
+			pairs = append(pairs, [2]int{p + 1, p})
+		}
+	}
+	return pairs
+}
+
+// rideNeedsUse reports whether the move of blocker bl from pose a to pose
+// b needs something to use the mover: a train waits at its first corner
+// unless it starts on, and at a corner with wait -1; another mover moves by
+// itself when a touch or nothing at all sets it off, and returns to its
+// spawn pose by itself after a wait >= 0.
+// C: game/g_func.c:1490 train_wait, game/g_func.c:1601 func_train_find
+func rideNeedsUse(bl *nav.Blocker, g *blockerGeo, a, b int) bool {
+	if bl.Kind == nav.BlockTrain {
+		if a == 0 && g.act&mapdata.ActAuto == 0 {
+			return true
+		}
+		return a < len(g.cornerWait) && g.cornerWait[a] < 0
+	}
+	if g.act&(mapdata.ActTouch|mapdata.ActAuto) != 0 {
+		return false
+	}
+	return !(b == int(bl.Spawn) && g.wait >= 0)
+}
+
 // rideEdges joins the nodes of a mover at consecutive poses that stand on
 // the same spot of the mover: door, plat and secret door poses both ways,
 // train corners in path order.
@@ -694,31 +747,9 @@ func (b *builder) rideEdges() []nav.Edge {
 			}
 			return -1
 		}
-		var pairs [][2]int
-		switch bl.Kind {
-		case nav.BlockTrain:
-			for p := range bl.Poses {
-				q := (p + 1) % len(bl.Poses)
-				if q != p {
-					pairs = append(pairs, [2]int{p, q})
-				}
-			}
-		default:
-			for p := 0; p+1 < len(bl.Poses); p++ {
-				pairs = append(pairs, [2]int{p, p + 1}, [2]int{p + 1, p})
-			}
-		}
-		for _, pr := range pairs {
+		for _, pr := range ridePairs(bl, g) {
 			from, to := at(pr[0]), at(pr[1])
 			if from < 0 || to < 0 {
-				continue
-			}
-			// a plat at its top never goes down with a rider inside its
-			// center trigger (Touch_Plat_Center keeps delaying plat_go_down);
-			// only a LOW_TRIGGER plat, whose trigger covers just the bottom,
-			// carries the rider down. Boarding at the bottom always sends it
-			// up.
-			if bl.Kind == nav.BlockPlat && pr[0] == 0 && !g.lowTrigger {
 				continue
 			}
 			p0, p1 := bl.Poses[pr[0]].Origin, bl.Poses[pr[1]].Origin
@@ -732,6 +763,10 @@ func (b *builder) rideEdges() []nav.Edge {
 			}
 			e := nav.Edge{From: nav.NodeID(from), To: nav.NodeID(to), Kind: nav.EdgeRide, Recipe: navsim.RecipeRide, Cost: cost,
 				Reqs: []nav.Req{{Blocker: k.blocker, States: nav.Pose(pr[0])}}}
+			if rideNeedsUse(bl, g, pr[0], pr[1]) {
+				e.Flags |= nav.EdgeNeedsUse
+				e.Target = bl.Entity
+			}
 			// the rider's box along the move
 			o0 := b.nodes[from].o
 			var s []navsim.Sample
@@ -740,7 +775,7 @@ func (b *builder) rideEdges() []nav.Edge {
 				d := shared.VectorScale(shared.VectorSubtract(p1, p0), f)
 				s = append(s, navsim.Sample{Origin: shared.VectorAdd(o0, d), OnGround: true})
 			}
-			e.Effects = wk.sampleEffects(s, cost/pathLen(s))
+			e.Effects = wk.sampleEffects(s, cost/pathLen(s), nil) // the item on the mover moves along
 			out = append(out, e)
 		}
 	}

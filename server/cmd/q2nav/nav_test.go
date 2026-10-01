@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"os"
@@ -86,8 +87,13 @@ func TestNavCommandsSynthetic(t *testing.T) {
 	if err := json.Unmarshal(b, &d); err != nil {
 		t.Fatal(err)
 	}
-	if d.Schema != "q2nav.dump/1" || len(d.Nodes) != 25 || len(d.Edges) != 168 || len(d.Spawns) != 1 || d.EdgeKinds[1] != "walk" {
-		t.Errorf("dump %q: %d nodes %d edges %d spawns kinds %v", d.Schema, len(d.Nodes), len(d.Edges), len(d.Spawns), d.EdgeKinds)
+	if d.Schema != "q2nav.dump/2" || len(d.Nodes) != 25 || len(d.Edges) != 168 || len(d.Spawns) != 1 || d.EdgeKinds[1] != "walk" ||
+		d.EdgeFlags[0] != "fast" || d.Edges[0][4]&int32(nav.EdgeFast) == 0 {
+		t.Errorf("dump %q: %d nodes %d edges %d spawns kinds %v flags %v", d.Schema, len(d.Nodes), len(d.Edges), len(d.Spawns), d.EdgeKinds, d.EdgeFlags)
+	}
+	// empty lists are [] (an overlay maps over them), never null
+	if bytes.Contains(b, []byte("null")) || !bytes.Contains(b, []byte(`"lasers":[]`)) || !bytes.Contains(b, []byte(`"solids":[]`)) {
+		t.Errorf("dump has null lists: %s", b[:min(len(b), 400)])
 	}
 
 	if code, stdout, stderr = runQ2nav("path", "-pak", pk, "-map", "synth", "-nav", out, "-to", "64,64,24"); code != 0 || !strings.Contains(stdout, "path ") {
@@ -134,12 +140,12 @@ func TestVerifyDemo(t *testing.T) {
 	demoCached(t, "demo1", "demo2", "demo3")
 	routes := filepath.Join(filepath.Dir(routesDir(t)), "routes")
 	for _, m := range []string{"demo1", "demo2", "demo3"} {
-		code, stdout, stderr := runQ2nav("verify", "-pak", pk, "-map", m, "-sample", "200", "-live", "25", "-routes", routes)
+		code, stdout, stderr := runQ2nav("verify", "-pak", pk, "-map", m, "-sample", "200", "-live", "25", "-posed", "15", "-routes", routes)
 		if code != 0 {
 			t.Errorf("%s: verify exit %d:\n%s%s", m, code, stdout, stderr)
 			continue
 		}
-		if !strings.Contains(stdout, "verify: ok") || !strings.Contains(stdout, "route ") {
+		if !strings.Contains(stdout, "verify: ok") || !strings.Contains(stdout, "route ") || !strings.Contains(stdout, "live posed: 15/15") {
 			t.Errorf("%s: %s", m, stdout)
 		}
 		t.Logf("%s", stdout)
@@ -158,5 +164,40 @@ func TestNavUsageErrors(t *testing.T) {
 		if code, _, errOut := runQ2nav(args...); code != 2 || errOut == "" {
 			t.Errorf("q2nav %q: exit %d, stderr %q; want 2 with usage", args, code, errOut)
 		}
+	}
+}
+
+// TestDumpDemoSolids: the demo1 dump lists the static solids the edges
+// were validated with, the buttons among them, and the lasers as [].
+func TestDumpDemoSolids(t *testing.T) {
+	pk := testutil.DemoPak(t)
+	demoCached(t, "demo1")
+	out := filepath.Join(t.TempDir(), "demo1.json")
+	if code, stdout, stderr := runQ2nav("dump", "-pak", pk, "-map", "demo1", "-o", out); code != 0 {
+		t.Fatalf("dump exit %d: %s%s", code, stdout, stderr)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d dumpFile
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatal(err)
+	}
+	buttons := map[int32]bool{}
+	for _, id := range d.Buttons {
+		buttons[id] = true
+	}
+	if len(d.Solids) == 0 || !buttons[591] || d.Lasers == nil || bytes.Contains(b, []byte("null")) {
+		t.Errorf("%d solids, buttons %v, lasers %v", len(d.Solids), d.Buttons, d.Lasers)
+	}
+	for _, s := range d.Solids {
+		if s.Entity == 591 && (s.Class != "func_button" || s.Model != "*34" || s.Min[0] >= s.Max[0]) {
+			t.Errorf("button *34 %+v", s)
+		}
+	}
+	// a dump to an unwritable place fails instead of reporting success
+	if code, _, _ := runQ2nav("dump", "-pak", pk, "-map", "demo1", "-o", filepath.Join(t.TempDir(), "missing", "x.json")); code == 0 {
+		t.Error("dump into a missing directory succeeded")
 	}
 }

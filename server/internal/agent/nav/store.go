@@ -13,7 +13,8 @@ import (
 )
 
 // BuildFunc builds the skill-independent graph of a map (navbuild provides
-// one). It must honor ctx.
+// one), with the SceneDigest of each skill's map data in Graph.Scene. It
+// must honor ctx.
 type BuildFunc func(ctx context.Context, md *mapdata.Map, p Params) (*Graph, error)
 
 // Store loads navigation graphs from a cache directory and builds the
@@ -184,7 +185,9 @@ func (s *Store) loadOrBuild(ctx context.Context, name string, md *mapdata.Map, p
 }
 
 // Matches reports (nil) whether g was built from md's BSP with params p:
-// the same map name and checksum, physics hash and params.
+// the same map name and checksum, physics hash and params, and (for map
+// data loaded with single-player options, the only ones the builder uses)
+// the same scene digest at md's skill.
 func (g *Graph) Matches(md *mapdata.Map, p Params) error {
 	switch {
 	case g.Map != md.Name:
@@ -193,6 +196,11 @@ func (g *Graph) Matches(md *mapdata.Map, p Params) error {
 		return fmt.Errorf("%w: checksum %08x, want %08x", ErrMismatch, g.Checksum, md.Checksum)
 	case g.PhysicsHash != p.PhysicsHash() || g.Params != p:
 		return fmt.Errorf("%w: physics %s, want %s", ErrMismatch, g.PhysicsHash, p.PhysicsHash())
+	}
+	if singlePlayer(md) {
+		if d := SceneDigest(md); g.Scene[md.Skill&3] != d {
+			return fmt.Errorf("%w: scene digest %q at skill %d, the map data gives %q", ErrMismatch, g.Scene[md.Skill&3], md.Skill, d)
+		}
 	}
 	return nil
 }

@@ -9,15 +9,18 @@ import (
 )
 
 // Touch edges walk from a node at a button, a trigger or an item until the
-// player touches it, so every touchable thing near the graph has an edge
-// whose effects include it. The spot where the player ends up becomes the
-// edge's end: an existing node close by, or a new end node.
+// player touches it, then coast to rest, so every touchable thing near the
+// graph has an edge whose effects include it. The spot where the player
+// comes to rest becomes the edge's end: an existing node within the
+// arrival tolerances, or a new end node.
 
 const (
 	touchRadius  = 160
 	touchSources = 8
-	endMatchXY   = 24
-	endMatchZ    = 20
+	endMatchXY   = navsim.ArriveXY
+	endMatchZ    = navsim.ArriveZ
+	// coastMsec bounds the coast to rest after the touch.
+	coastMsec = 1500
 )
 
 // touchable is something touch edges aim at.
@@ -73,6 +76,8 @@ type pendingTouch struct {
 	end    Vec3
 	endSup support
 	ok     bool
+	// leaned: a spawn-world run that touched a blocker (see spawnReqs)
+	leaned bool
 }
 
 func (b *builder) buildTouchEnds() (int, error) {
@@ -121,11 +126,15 @@ func (b *builder) buildTouchEnds() (int, error) {
 			jobs = append(jobs, job{ti, x.i})
 		}
 	}
-	res := make([]pendingTouch, len(jobs))
+	per := make([][]pendingTouch, len(jobs))
 	if err := b.parallel(len(jobs), func(wk *worker, i int) {
-		res[i] = wk.touchSim(&targets[jobs[i].t], jobs[i].src)
+		per[i] = wk.touchSim(&targets[jobs[i].t], jobs[i].src)
 	}); err != nil {
 		return 0, err
+	}
+	var res []pendingTouch
+	for _, p := range per {
+		res = append(res, p...)
 	}
 
 	// resolve the ends: an existing node close by, else a new end node
@@ -195,7 +204,10 @@ func (b *builder) matchNodeFrom(p Vec3, sup support, from int) int32 {
 // touchSim walks from node src at the target until it is touched: first
 // with the movers in their spawn state (a trigger in front of a closed door
 // is touched by walking up to the door), then with them out of the way.
-func (wk *worker) touchSim(t *touchable, src int32) pendingTouch {
+// A spawn-world run that touched a blocker needs that blocker in its spawn
+// state (it rests against a closed door), so the out-of-the-way run is
+// kept as well for the other states.
+func (wk *worker) touchSim(t *touchable, src int32) []pendingTouch {
 	sup := wk.b.nodes[src].sup()
 	for _, x := range t.sup {
 		if len(sup) == 0 || sup[0].b != x.b {
@@ -203,15 +215,24 @@ func (wk *worker) touchSim(t *touchable, src int32) pendingTouch {
 		}
 	}
 	wk.setSpawnWorld(sup...)
-	if p := wk.touchSimIn(t, src, sup); p.ok {
-		p.edge.Flags |= nav.EdgeSpawnWorld
-		return p
+	p := wk.touchSimIn(t, src, sup, true)
+	if p.ok && !p.leaned {
+		return []pendingTouch{p}
 	}
 	wk.setWorld(sup...)
-	return wk.touchSimIn(t, src, sup)
+	q := wk.touchSimIn(t, src, sup, false)
+	var out []pendingTouch
+	for _, x := range []pendingTouch{p, q} {
+		if x.ok {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
-func (wk *worker) touchSimIn(t *touchable, src int32, sup []support) pendingTouch {
+// touchSimIn simulates one touch edge in the worker's current world;
+// spawnWorld marks a world with the other blockers in their spawn state.
+func (wk *worker) touchSimIn(t *touchable, src int32, sup []support, spawnWorld bool) pendingTouch {
 	b := wk.b
 	a := &b.nodes[src]
 	// aim at the closest point of the target box at the player's height
@@ -229,21 +250,18 @@ func (wk *worker) touchSimIn(t *touchable, src int32, sup []support) pendingTouc
 	hit := false
 	stuck := 0
 	stop := func(s *navsim.State, res *navsim.StepResult) bool {
-		if t.button != 0 {
-			for _, id := range res.Touched {
-				if id == t.button {
-					hit = true
-				}
-			}
-		} else {
-			for _, in := range res.Inside {
-				if in.ID == t.vol {
-					hit = true
-				}
+		if res.Teleported != 0 {
+			return true
+		}
+		if !hit {
+			if t.button != 0 {
+				hit = wk.out.HasTouched(t.button)
+			} else {
+				hit = wk.out.HasVolume(t.vol)
 			}
 		}
-		if hit || res.Teleported != 0 {
-			return true
+		if hit {
+			return navsim.AtRest(s) // coasting after the touch
 		}
 		if s.OnGround() && s.HSpeed() < 5 {
 			stuck += b.p.StepMsec
@@ -252,20 +270,31 @@ func (wk *worker) touchSimIn(t *touchable, src int32, sup []support) pendingTouc
 		stuck = 0
 		return false
 	}
-	wk.r.Run(plan.Executor(), stop, navsim.TimeLimitMsec(dist3(a.o, aim))+500, &wk.out)
+	wk.r.Run(navsim.Coast(plan.Executor(), &hit), stop, navsim.TimeLimitMsec(dist3(a.o, aim))+500+coastMsec, &wk.out)
 	st := wk.r.StatePtr()
-	if !hit || !(st.OnGround() || st.WaterLevel >= 1) {
+	if !hit || !navsim.AtRest(st) || wk.out.Teleported != 0 {
 		return pendingTouch{}
 	}
 	reqs, ok := wk.conds(wk.out.Samples, sup)
 	if !ok {
 		return pendingTouch{}
 	}
+	leaned := false
+	if spawnWorld {
+		// the run leans on blockers in their spawn state: it needs them so
+		if reqs, leaned, ok = wk.spawnReqs(reqs, sup); !ok {
+			return pendingTouch{}
+		}
+	}
 	e := nav.Edge{From: nav.NodeID(src), To: -1, Kind: nav.EdgeTouch, Recipe: plan.Recipe, Aim: aim, Target: t.entity,
-		Cost: float32(wk.out.Msec) / 1000, Reqs: reqs, Effects: wk.outcomeEffects(&wk.out)}
+		Cost: float32(wk.out.Msec) / 1000, Reqs: reqs, Effects: wk.outcomeEffects(&wk.out, sup)}
+	if spawnWorld {
+		e.Flags |= nav.EdgeSpawnWorld
+	}
 	if wk.touchesPushable(&wk.out) {
 		e.Flags |= nav.EdgePushes
 	}
+	wk.markHazard(&e, wk.out.Samples, float32(b.p.StepMsec)/1000)
 	end := support{-1, 0}
 	if bi, ok := b.sc.blockerByID[st.Ground]; ok {
 		end = support{bi, -1}
@@ -278,7 +307,43 @@ func (wk *worker) touchSimIn(t *touchable, src int32, sup []support) pendingTouc
 			return pendingTouch{}
 		}
 	}
-	return pendingTouch{edge: e, end: st.Origin(), endSup: end, ok: true}
+	return pendingTouch{edge: e, end: st.Origin(), endSup: end, ok: true, leaned: leaned}
+}
+
+// spawnReqs adds to reqs a condition "in its spawn state" for every solid
+// blocker (not a support) the last run touched; leaned reports that there
+// was one, ok is false when that contradicts a condition reqs has.
+func (wk *worker) spawnReqs(reqs []nav.Req, sup []support) (out []nav.Req, leaned, ok bool) {
+	sc := wk.b.sc
+	for _, c := range wk.out.Touched {
+		bi, ok := sc.blockerByID[c.ID]
+		if !ok || !sc.geo[bi].solid || sc.blockers[bi].Spawn < 0 {
+			continue
+		}
+		isSup := false
+		for _, s := range sup {
+			isSup = isSup || s.b == bi
+		}
+		if isSup {
+			continue
+		}
+		leaned = true
+		want := sc.blockers[bi].SpawnState()
+		found := false
+		for k := range reqs {
+			if reqs[k].Blocker == bi {
+				if reqs[k].States &= want; reqs[k].States == 0 {
+					return nil, true, false
+				}
+				found = true
+			}
+		}
+		if !found {
+			reqs = append(reqs, nav.Req{Blocker: bi, States: want})
+		}
+	}
+	sort.Slice(reqs, func(i, j int) bool { return reqs[i].Blocker < reqs[j].Blocker })
+	return reqs, leaned, true
 }
 
 func clamp32(v, lo, hi float32) float32 {

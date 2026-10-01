@@ -98,25 +98,68 @@ func (g *Graph) EdgeIndex(from, to NodeID) int {
 	return -1
 }
 
-// EffectEdges returns the indexes of the edges that set off entity ent.
-func (g *Graph) EffectEdges(ent int) []int {
-	var out []int
-	for i := range g.Edges {
-		if g.Edges[i].HasEffect(ent) {
-			out = append(out, i)
+// LocalizeIn is Localize restricted to the nodes the player can be on with
+// the blockers in states (a mask per blocker, as SpawnStates returns; nil:
+// any state): a node on a mover only when the mover can be at that pose.
+// ok, when set, rejects further nodes (for example end nodes, or nodes
+// without a clear line from p).
+func (g *Graph) LocalizeIn(p Vec3, radius float32, states []StateMask, ok func(id NodeID, n *Node) bool) NodeID {
+	for _, c := range g.Nearby(p, radius) {
+		n := &g.Nodes[c.Node]
+		if n.Blocker >= 0 && states != nil && (int(n.Blocker) >= len(states) || states[n.Blocker]&Pose(int(n.Pose)) == 0) {
+			continue
 		}
+		if ok != nil && !ok(c.Node, n) {
+			continue
+		}
+		return c.Node
 	}
-	return out
+	return NoNode
 }
+
+// lookups are the per-entity and per-blocker indexes, built on first use.
+type lookups struct {
+	effects   map[int32][]int    // entity -> edges with an effect on it
+	movers    map[int32][]NodeID // blocker -> nodes on it
+	blockerOf map[int32]int32    // entity -> blocker
+}
+
+func (g *Graph) lookup() *lookups {
+	g.lookOnce.Do(func() {
+		l := &lookups{effects: map[int32][]int{}, movers: map[int32][]NodeID{}, blockerOf: map[int32]int32{}}
+		for i := range g.Edges {
+			e := &g.Edges[i]
+			for k := range e.Effects {
+				ent := e.Effects[k].Entity
+				if list := l.effects[ent]; len(list) == 0 || list[len(list)-1] != i {
+					l.effects[ent] = append(list, i)
+				}
+			}
+		}
+		for i := range g.Nodes {
+			if b := g.Nodes[i].Blocker; b >= 0 {
+				l.movers[b] = append(l.movers[b], NodeID(i))
+			}
+		}
+		for i := len(g.Blockers) - 1; i >= 0; i-- { // the first blocker of an entity wins
+			l.blockerOf[g.Blockers[i].Entity] = int32(i)
+		}
+		g.looks = l
+	})
+	return g.looks
+}
+
+// EffectEdges returns the indexes of the edges that set off entity ent (in
+// increasing order; the slice is shared, do not modify it).
+func (g *Graph) EffectEdges(ent int) []int { return g.lookup().effects[int32(ent)] }
 
 // MoverNodes returns the nodes standing on blocker b (any pose when pose <
 // 0).
 func (g *Graph) MoverNodes(b int32, pose int) []NodeID {
 	var out []NodeID
-	for i := range g.Nodes {
-		n := &g.Nodes[i]
-		if n.Blocker == b && (pose < 0 || int(n.Pose) == pose) {
-			out = append(out, NodeID(i))
+	for _, id := range g.lookup().movers[b] {
+		if pose < 0 || int(g.Nodes[id].Pose) == pose {
+			out = append(out, id)
 		}
 	}
 	return out

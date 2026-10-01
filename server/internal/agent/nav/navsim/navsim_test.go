@@ -201,3 +201,139 @@ func TestCrouchExecutorDucks(t *testing.T) {
 		t.Errorf("crouch too fast: %d ms", out.Msec)
 	}
 }
+
+// idleExec holds still.
+type idleExec struct{}
+
+func (idleExec) Next(_ *World, s *State) Cmd { return Cmd{Msec: 25} }
+
+// TestFallDamageWorstPhase drops the player on the slab from several
+// heights: Run must report the damage of the worst server frame phase,
+// including the frame the landing happens in (judged after the run stopped
+// at the landing, by looking ahead), and leave the runner at the landing.
+func TestFallDamageWorstPhase(t *testing.T) {
+	w := NewWorld(floorMap(t))
+	for _, h := range []float32{230, 300, 420, 700} {
+		start := Vec3{0, 0, 24.125 + h}
+		// reference: step idle commands and judge every phase by hand
+		ref := NewRunner(w, DefaultPhysics())
+		ref.Reset(start, false)
+		var vel []Vec3
+		var ground []bool
+		landed := -1
+		for i := 0; landed < 0 || i < landed+4; i++ {
+			ref.Step(Cmd{})
+			vel = append(vel, ref.State().Velocity())
+			ground = append(ground, ref.State().OnGround())
+			if landed < 0 && ref.State().OnGround() {
+				landed = i
+			}
+		}
+		worst := 0
+		for k := 0; k < 4; k++ {
+			old, dmg := Vec3{}, 0
+			for i := 0; i <= landed+3; i++ {
+				if (i+1+k)%4 != 0 {
+					continue
+				}
+				dmg += FallingDamage(vel[i], old, ground[i], 0)
+				old = vel[i]
+			}
+			worst = max(worst, dmg)
+		}
+
+		r := NewRunner(w, DefaultPhysics())
+		r.Reset(start, false)
+		var out Outcome
+		r.Run(idleExec{}, func(s *State, _ *StepResult) bool { return s.OnGround() }, 5000, &out)
+		if !out.Done || len(out.Cmds) != landed+1 {
+			t.Fatalf("%v: run stopped after %d steps, landing at %d", h, len(out.Cmds), landed+1)
+		}
+		if out.FallDamage != worst {
+			t.Errorf("%vu: fall damage %d, worst phase %d", h, out.FallDamage, worst)
+		}
+		// about what a continuous free fall deals (the last boundary before
+		// the landing sees up to a step's worth of speed less)
+		if want := FallDamageForDrop(h, 800); out.FallDamage <= 0 || out.FallDamage < want-3 {
+			t.Errorf("%vu: fall damage %d, a free fall deals %d", h, out.FallDamage, want)
+		}
+		// the look-ahead put the runner back at the landing
+		if st := r.State(); st.Msec != 25*(landed+1) || !st.OnGround() || st.Velocity()[2] != vel[landed][2] {
+			t.Errorf("%vu: runner after Run at %d ms, %v", h, st.Msec, st.Velocity())
+		}
+	}
+}
+
+func TestStopAt(t *testing.T) {
+	w := NewWorld(floorMap(t))
+	r := NewRunner(w, DefaultPhysics())
+	r.Settle(Vec3{-50, 0, 30}, false, 2000)
+	for i := 0; i < 12; i++ { // full speed east
+		r.Step(Cmd{Forward: 400})
+	}
+	if r.State().HSpeed() < 290 {
+		t.Fatalf("speed %v", r.State().HSpeed())
+	}
+	p := r.State().Origin()
+	p[0] -= 4 // behind the player: it has to stop and come back
+	var out Outcome
+	r.Run(StopAt(p, 25), func(s *State, _ *StepResult) bool { return Stopped(s, p) }, 2000, &out)
+	if !out.Done || out.Msec > 1000 {
+		t.Fatalf("not at rest at %v after %d ms: %v at %v", p, out.Msec, r.State().Origin(), r.State().HSpeed())
+	}
+	// at rest at the point: a no-op
+	ex := StopAt(r.State().Origin(), 25)
+	if c := ex.Next(w, r.StatePtr()); c.Forward != 0 || c.Side != 0 || c.Up != 0 {
+		t.Errorf("command at rest %+v", c)
+	}
+	// the jump, drop and ladder executors stop first, so their commands
+	// from rest at the start are what they always were
+	o := r.State().Origin()
+	for _, rec := range []Recipe{RecipeJump, RecipeDrop} {
+		pl := Plan{Recipe: rec, From: o, Target: Vec3{o[0] + 64, o[1], o[2]}, Takeoff: o}
+		if c := pl.Executor().Next(w, r.StatePtr()); c.Forward <= 0 || c.Yaw != 0 {
+			t.Errorf("%v from rest at the start: %+v", rec, c)
+		}
+	}
+	// ... and a running player is braked (thrust against the motion)
+	for i := 0; i < 8; i++ {
+		r.Step(Cmd{Forward: 400})
+	}
+	pl := Plan{Recipe: RecipeJump, From: r.State().Origin(), Target: Vec3{200, 0, 24}, Takeoff: r.State().Origin()}
+	if c := pl.Executor().Next(w, r.StatePtr()); c.Up != 0 || AngleDiff(c.Yaw, 180) > 1 {
+		t.Errorf("jump from a running entry did not brake first: %+v", c)
+	}
+}
+
+// AngleDiff is the absolute difference of two yaws (degrees).
+func AngleDiff(a, b float32) float32 {
+	d := a - b
+	for d > 180 {
+		d -= 360
+	}
+	for d < -180 {
+		d += 360
+	}
+	if d < 0 {
+		d = -d
+	}
+	return d
+}
+
+func TestCoast(t *testing.T) {
+	w := NewWorld(floorMap(t))
+	r := NewRunner(w, DefaultPhysics())
+	r.Settle(Vec3{-50, 0, 30}, false, 2000)
+	stop := false
+	ex := Coast(Plan{Recipe: RecipeCrouch, Target: Vec3{50, 0, 24}}.Executor(), &stop)
+	if c := ex.Next(w, r.StatePtr()); c.Forward != 400 || c.Up != -400 {
+		t.Fatalf("before the stop %+v", c)
+	}
+	stop = true
+	if c := ex.Next(w, r.StatePtr()); c.Forward != 0 || c.Up != -400 || c.Yaw != 0 {
+		t.Fatalf("coasting %+v", c)
+	}
+	if !AtRest(r.StatePtr()) {
+		t.Error("a settled player is at rest")
+	}
+}

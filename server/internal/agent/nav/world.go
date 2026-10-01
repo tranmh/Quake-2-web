@@ -36,15 +36,22 @@ func (g *Graph) NewWorld(cm *cmodel.Map, poses []int) *navsim.World {
 	return w
 }
 
-// EdgePoses returns the blocker poses edge e was validated with: the movers
-// its end nodes stand on at their poses, and, for an EdgeSpawnWorld edge,
-// every other solid blocker in its spawn state.
+// EdgePoses returns blocker poses edge e was validated with: the movers
+// its end nodes stand on at their poses, every blocker a condition pins to
+// one pose (the mover an item to pick up rests on, a door that must be
+// open) at that pose, and, for an EdgeSpawnWorld edge, every other solid
+// blocker in its spawn state. Blockers left at -1 are out of the way.
 func (g *Graph) EdgePoses(e *Edge) []int {
 	poses := make([]int, len(g.Blockers))
 	for b := range poses {
 		poses[b] = -1
 		if e.Flags&EdgeSpawnWorld != 0 {
 			poses[b] = int(g.Blockers[b].Spawn)
+		}
+	}
+	for _, r := range e.Reqs {
+		if k := singlePose(r.States); k >= 0 && k < len(g.Blockers[r.Blocker].Poses) {
+			poses[r.Blocker] = k
 		}
 	}
 	for _, id := range []NodeID{e.From, e.To} {
@@ -108,4 +115,78 @@ func HoldCmd(n *Node) navsim.Cmd {
 		c.Yaw = n.Yaw
 	}
 	return c
+}
+
+// Touched reports whether a run with outcome out set off touch edge e's
+// target: touched the button, or entered a volume of the trigger or item
+// (out's volume ids must be indexes into Volumes, as RunnerVolumes makes
+// them). An item on a mover counts only in the pose e's conditions put
+// the mover in.
+func (g *Graph) Touched(e *Edge, out *navsim.Outcome) bool {
+	for _, f := range e.Effects {
+		if e.Target != 0 && f.Entity != e.Target {
+			continue
+		}
+		if f.Blocker >= 0 && f.Pose >= 0 && !reqAllows(e, f.Blocker, Pose(int(f.Pose))) {
+			continue
+		}
+		switch f.Kind {
+		case EffButton:
+			if out.HasTouched(int(f.Entity)) {
+				return true
+			}
+		case EffTrigger, EffItem:
+			for vi := range g.Volumes {
+				v := &g.Volumes[vi]
+				if v.Entity == f.Entity && v.Kind == f.Kind && v.Blocker == f.Blocker && v.Pose == f.Pose && out.HasVolume(vi) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// reqAllows reports whether e's conditions allow blocker b in a state of
+// m (an edge without a condition on b allows every state).
+func reqAllows(e *Edge, b int32, m StateMask) bool {
+	for _, r := range e.Reqs {
+		if r.Blocker == b && r.States&m == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// EdgeDone reports whether a run of edge e that is in state s with outcome
+// out has completed it:
+//   - a touch edge runs its plan until Touched, then coasts to rest
+//     (navsim.Coast); it is done when the target was set off and the
+//     player is at rest (navsim.AtRest), which the builder found within
+//     the arrival tolerances of To;
+//   - a teleport edge is done when the teleporter fired;
+//   - any other edge when the player arrived at To (navsim.Arrived with
+//     ArriveMode(To)).
+func (g *Graph) EdgeDone(e *Edge, s *navsim.State, out *navsim.Outcome) bool {
+	switch e.Kind {
+	case EdgeTouch:
+		return g.Touched(e, out) && navsim.AtRest(s)
+	case EdgeTeleport:
+		return out.Teleported != 0
+	}
+	to := g.Node(e.To)
+	return to != nil && navsim.Arrived(s, to.Origin, g.ArriveMode(e.To))
+}
+
+// singlePose returns i when m is exactly Pose(i), else -1.
+func singlePose(m StateMask) int {
+	if m == 0 || m&StateGone != 0 || m&(m-1) != 0 {
+		return -1
+	}
+	for i := 0; i < MaxPoses; i++ {
+		if m == Pose(i) {
+			return i
+		}
+	}
+	return -1
 }

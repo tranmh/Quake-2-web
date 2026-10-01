@@ -27,7 +27,8 @@ func NewVerifier(g *nav.Graph, cm *cmodel.Map) *Verifier {
 
 // Resim is the outcome of re-simulating one edge.
 type Resim struct {
-	// OK: the player arrived (or, for a touch edge, set the target off).
+	// OK: the player arrived (a touch edge: set the target off and came to
+	// rest at To).
 	OK bool
 	// Skipped: the edge is not simulated (rides follow the mover).
 	Skipped bool
@@ -62,34 +63,43 @@ func (v *Verifier) EdgeIn(i int, st navsim.State, poses []int) Resim {
 	return v.run(e)
 }
 
-// Done reports whether a run that ended in state s with outcome out
-// completed edge e: arrival at To, or for a touch edge the target set off.
-func (v *Verifier) Done(e *nav.Edge, s *navsim.State, out *navsim.Outcome) bool {
-	if e.Kind == nav.EdgeTouch {
-		return v.touched(e, out)
+// Chain re-simulates edge in from rest at its start and then edge out
+// right away from wherever in arrived, the way a follower that does not
+// stop between edges runs them; with stop, navsim.StopAt first brings the
+// player to rest at out's start, as an nav.EdgeFromRest edge requires. The
+// result is out's (Start is the state out started from). It is Skipped
+// when in does not end where out starts, the two edges need one mover at
+// different poses, or in itself does not arrive.
+func (v *Verifier) Chain(in, out int, stop bool) Resim {
+	ei, eo := &v.g.Edges[in], &v.g.Edges[out]
+	if ei.To != eo.From || ei.Kind == nav.EdgeRide || ei.Kind == nav.EdgeTouch || ei.Kind == nav.EdgeTeleport {
+		return Resim{Skipped: true, Reason: "not a chain"}
 	}
-	return navsim.Arrived(s, v.g.Nodes[e.To].Origin, v.g.ArriveMode(e.To))
+	pi, po := v.g.EdgePoses(ei), v.g.EdgePoses(eo)
+	for b := range po {
+		switch {
+		case po[b] < 0:
+			po[b] = pi[b]
+		case pi[b] >= 0 && pi[b] != po[b]:
+			return Resim{Skipped: true, Reason: "the edges need a mover at two poses"}
+		}
+	}
+	v.g.SetWorld(v.w, po)
+	v.g.Place(v.r, ei.From)
+	if r := v.run(ei); !r.OK {
+		return Resim{Skipped: true, Reason: "in-edge: " + r.Reason}
+	}
+	if stop {
+		a := v.g.Nodes[eo.From].Origin
+		v.r.Run(navsim.StopAt(a, v.g.Params.StepMsec), func(s *navsim.State, _ *navsim.StepResult) bool { return navsim.Stopped(s, a) }, 2000, &v.out)
+	}
+	return v.run(eo)
 }
 
-func (v *Verifier) touched(e *nav.Edge, out *navsim.Outcome) bool {
-	for _, f := range e.Effects {
-		if e.Target != 0 && f.Entity != e.Target {
-			continue
-		}
-		switch f.Kind {
-		case nav.EffButton:
-			if out.HasTouched(int(f.Entity)) {
-				return true
-			}
-		case nav.EffTrigger, nav.EffItem:
-			for vi := range v.g.Volumes {
-				if v.g.Volumes[vi].Entity == f.Entity && out.HasVolume(vi) {
-					return true
-				}
-			}
-		}
-	}
-	return false
+// Done reports whether a run that ended in state s with outcome out
+// completed edge e (nav.Graph.EdgeDone).
+func (v *Verifier) Done(e *nav.Edge, s *navsim.State, out *navsim.Outcome) bool {
+	return v.g.EdgeDone(e, s, out)
 }
 
 func (v *Verifier) run(e *nav.Edge) Resim {
@@ -103,15 +113,19 @@ func (v *Verifier) run(e *nav.Edge) Resim {
 	limit := navsim.TimeLimitMsec(dist3(from, to)) + p.BackupMsec
 	switch e.Kind {
 	case nav.EdgeTouch:
-		limit = navsim.TimeLimitMsec(dist3(from, p.Target)) + 500
+		// walk at the target until it is set off, then coast to rest
+		limit = navsim.TimeLimitMsec(dist3(from, p.Target)) + 500 + coastMsec
 		hit := false
 		stop := func(s *navsim.State, r *navsim.StepResult) bool {
 			// Run records contacts and volumes before calling stop
-			hit = v.touched(e, &v.out)
-			return hit
+			hit = hit || v.g.Touched(e, &v.out)
+			return v.g.EdgeDone(e, s, &v.out)
 		}
-		v.r.Run(p.Executor(), stop, limit, &v.out)
-		res.OK = hit
+		v.r.Run(navsim.Coast(p.Executor(), &hit), stop, limit, &v.out)
+		res.OK = v.out.Done && navsim.Near(v.r.State().Origin(), to)
+		if v.out.Done && !res.OK {
+			res.Reason = fmt.Sprintf("touch %d->%d set its target off but came to rest at %v, not at %v", e.From, e.To, v.r.State().Origin(), to)
+		}
 	case nav.EdgeTeleport:
 		tele := false
 		v.r.Run(p.Executor(), func(s *navsim.State, r *navsim.StepResult) bool { tele = r.Teleported != 0; return tele }, limit+500, &v.out)
@@ -122,7 +136,7 @@ func (v *Verifier) run(e *nav.Edge) Resim {
 	res.Msec = v.out.Msec
 	res.End = v.r.State().Origin()
 	res.Cmds = append([]navsim.Cmd(nil), v.out.Cmds...)
-	if !res.OK {
+	if !res.OK && res.Reason == "" {
 		res.Reason = fmt.Sprintf("%s %d->%d did not arrive: ended at %v after %d ms (target %v)", e.Kind, e.From, e.To, res.End, res.Msec, to)
 	}
 	return res

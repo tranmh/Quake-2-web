@@ -19,8 +19,9 @@ func testGraph(t testing.TB) *nav.Graph {
 	t.Helper()
 	g := &nav.Graph{
 		Format: nav.FormatVersion, Map: "test", Checksum: 0xdeadbeef, Params: nav.DefaultParams(), Skill: -1,
+		Scene: [4]string{"a", "b", "c", "d"},
 		Blockers: []nav.Blocker{
-			{Entity: 10, Class: "func_door", Model: "*1", Kind: nav.BlockDoor, Skills: nav.AllSkills, Solid: true, Headnode: 5,
+			{Entity: 10, Class: "func_door", Model: "*1", Kind: nav.BlockDoor, Skills: nav.AllSkills, Solid: true, Headnode: 5, Team: 15,
 				Mins: nav.Vec3{-8, -64, 0}, Maxs: nav.Vec3{8, 64, 128},
 				Poses: []nav.BlockerPose{{Name: "pos1", Origin: nav.Vec3{}}, {Name: "pos2", Origin: nav.Vec3{0, 0, 120}}}},
 			{Entity: 11, Class: "func_plat", Model: "*2", Kind: nav.BlockPlat, Skills: nav.AllSkills, Solid: true, Spawn: 1,
@@ -31,7 +32,7 @@ func testGraph(t testing.TB) *nav.Graph {
 		Ents: []nav.Ent{
 			{Entity: 9, Class: "func_button", Model: "*3", Skills: nav.AllSkills},
 			{Entity: 13, Class: "item_health", Skills: 0x01},
-			{Entity: 14, Class: "trigger_once", Model: "*4", Skills: nav.AllSkills},
+			{Entity: 14, Class: "trigger_once", Model: "*4", Skills: nav.AllSkills, Disabled: true},
 		},
 		Spawns: []nav.Spawn{{Entity: 20, Origin: nav.Vec3{0, 0, 24}, Node: 0, Skills: nav.AllSkills}, {Entity: 21, Targetname: "base", Node: 4, Skills: 0x02}},
 		Solids: []navsim.Solid{{ID: 30, Box: true, Origin: nav.Vec3{50, 50, 0}, Mins: nav.Vec3{-16, -16, 0}, Maxs: nav.Vec3{16, 16, 40}}},
@@ -51,7 +52,8 @@ func testGraph(t testing.TB) *nav.Graph {
 		Edges: []nav.Edge{
 			{From: 0, To: 1, Kind: nav.EdgeWalk, Recipe: navsim.RecipeWalk, Flags: nav.EdgeFast, Cost: 0.1,
 				Effects: []nav.Effect{{Kind: nav.EffTrigger, Entity: 14, Yaw: 0, T: 0.05, Pose: -1, Blocker: -1}}},
-			{From: 1, To: 2, Kind: nav.EdgeJump, Recipe: navsim.RecipeJump, Cost: 0.7, Takeoff: nav.Vec3{40, 0, 24.125}, TakeoffSpeed: 290, BackupMsec: 300, FallDamage: 3},
+			{From: 1, To: 2, Kind: nav.EdgeJump, Recipe: navsim.RecipeJump, Flags: nav.EdgeFromRest | nav.EdgeHazard | nav.EdgeFragile, Cost: 0.7,
+				Takeoff: nav.Vec3{40, 0, 24.125}, TakeoffSpeed: 290, BackupMsec: 300, FallDamage: 3, Damage: 7},
 			{From: 1, To: 3, Kind: nav.EdgeWalk, Recipe: navsim.RecipeWalk, Flags: nav.EdgeBoard, Cost: 0.3,
 				Reqs: []nav.Req{{Blocker: 0, States: nav.Pose(1)}, {Blocker: 1, States: nav.Pose(0)}}},
 			{From: 2, To: 2, Kind: nav.EdgeTouch, Recipe: navsim.RecipeWalk, Flags: nav.EdgeSpawnWorld, Cost: 0.4, Aim: nav.Vec3{180, 0, 24}, Target: 9,
@@ -93,8 +95,12 @@ func TestCodecRoundTrip(t *testing.T) {
 	if d.Map != "test" || d.Checksum != 0xdeadbeef || d.Skill != -1 || d.Params != nav.DefaultParams() || len(d.Nodes) != 5 || len(d.Edges) != 7 {
 		t.Fatalf("header %q %x %d %+v", d.Map, d.Checksum, d.Skill, d.Params)
 	}
-	if e := d.Edges[1]; e.Takeoff != (nav.Vec3{40, 0, 24.125}) || e.BackupMsec != 300 || e.FallDamage != 3 || e.TakeoffSpeed != 290 {
+	if e := d.Edges[1]; e.Takeoff != (nav.Vec3{40, 0, 24.125}) || e.BackupMsec != 300 || e.FallDamage != 3 || e.TakeoffSpeed != 290 ||
+		e.Damage != 7 || e.Flags != nav.EdgeFromRest|nav.EdgeHazard|nav.EdgeFragile {
 		t.Errorf("jump edge %+v", e)
+	}
+	if d.Scene != [4]string{"a", "b", "c", "d"} || d.Blockers[0].Team != 15 || !d.Ents[2].Disabled || d.Ents[0].Disabled {
+		t.Errorf("scene %v, team %d, disabled %v", d.Scene, d.Blockers[0].Team, d.Ents)
 	}
 	if e := d.Edges[3]; e.Target != 9 || e.Aim != (nav.Vec3{180, 0, 24}) || e.Flags != nav.EdgeSpawnWorld || e.Effects[0].Pose != -1 || e.Effects[0].Blocker != -1 {
 		t.Errorf("touch edge %+v", e)
@@ -147,7 +153,7 @@ func TestDecodeRejectsCorruptFiles(t *testing.T) {
 		"other format":    edit(`"format":1`, `"format":99`),
 		"edge past nodes": edit(`{"f":4,"t":0`, `{"f":4,"t":77`),
 		"unsorted edges":  edit(`{"f":4,"t":0`, `{"f":0,"t":0`),
-		"bad edge kind":   edit(`"k":1,"r":1,"x":1`, `"k":42,"r":1,"x":1`),
+		"bad edge kind":   edit(`"k":1,"r":1,"x":1,`, `"k":42,"r":1,"x":1,`),
 		"bad blocker req": edit(`"q":[[1,1]]`, `"q":[[7,1]]`),
 		"bad node mover":  edit(`"m":2,"r":2`, `"m":9,"r":2`),
 		"bad pose":        edit(`"m":2,"p":1`, `"m":2,"p":5`),
@@ -321,6 +327,9 @@ func TestNamesAndFlags(t *testing.T) {
 	if s := (nav.EdgeFast | nav.EdgeStep).String(); s != "fast|step" {
 		t.Errorf("edge flags %q", s)
 	}
+	if s := (nav.EdgeFromRest | nav.EdgeNeedsUse | nav.EdgeHazard | nav.EdgeFragile).String(); s != "fromrest|needsuse|hazard|fragile" {
+		t.Errorf("edge flags %q", s)
+	}
 	for k := nav.EdgeWalk; k <= nav.EdgeTouch; k++ {
 		if k.String() == "?" || k.String() == "" {
 			t.Errorf("kind %d unnamed", k)
@@ -356,6 +365,7 @@ func TestParams(t *testing.T) {
 	for _, bad := range []func(*nav.Params){
 		func(p *nav.Params) { p.Grid = 1 },
 		func(p *nav.Params) { p.StepMsec = 0 },
+		func(p *nav.Params) { p.StepMsec = 50 }, // the server runs 25 ms commands
 		func(p *nav.Params) { p.MaxDegree = 1 },
 		func(p *nav.Params) { p.LedgeReach = -1 },
 		func(p *nav.Params) { p.WaterGrid = 1000 },
@@ -368,5 +378,98 @@ func TestParams(t *testing.T) {
 	}
 	if ph := p.Physics(); ph.Gravity != 800 || ph.AirAccelerate != 0 || ph.StepMsec != 25 || ph.FrameMsec != 100 {
 		t.Errorf("physics %+v", ph)
+	}
+}
+
+func TestLocalizeIn(t *testing.T) {
+	g := testGraph(t)
+	// node 3 stands on the plat at its top, node 4 on it at the bottom
+	p := nav.Vec3{64, 64, 20}
+	if id := g.Localize(p, 64); id != 3 {
+		t.Fatalf("Localize %d", id)
+	}
+	spawn := g.SpawnStates() // the plat starts at the bottom
+	if id := g.LocalizeIn(p, 64, spawn, nil); id == 3 {
+		t.Errorf("LocalizeIn returned the node on the plat top while the plat is at the bottom")
+	}
+	if id := g.LocalizeIn(nav.Vec3{64, 64, -70}, 64, spawn, nil); id != 4 {
+		t.Errorf("LocalizeIn at the bottom: %d", id)
+	}
+	if id := g.LocalizeIn(p, 64, nil, nil); id != 3 {
+		t.Errorf("nil states: %d", id)
+	}
+	if id := g.LocalizeIn(p, 64, nil, func(id nav.NodeID, n *nav.Node) bool { return !n.OnMover() }); id == 3 || id == 4 {
+		t.Errorf("ok filter ignored: %d", id)
+	}
+	if id := g.LocalizeIn(nav.Vec3{5000, 0, 0}, 64, spawn, nil); id != nav.NoNode {
+		t.Errorf("far: %d", id)
+	}
+}
+
+func TestEdgeDoneAndPoses(t *testing.T) {
+	g := testGraph(t)
+	touch, walk := &g.Edges[3], &g.Edges[0]
+	var out navsim.Outcome
+	rest := navsim.State{Ground: navsim.WorldEnt}
+	rest.PM.Origin = navsim.SnapOrigin(g.Nodes[2].Origin)
+	if g.Touched(touch, &out) || g.EdgeDone(touch, &rest, &out) {
+		t.Error("touch edge done without touching")
+	}
+	out.Touched = []navsim.Contact{{ID: 9, Step: 3}}
+	if !g.Touched(touch, &out) || !g.EdgeDone(touch, &rest, &out) {
+		t.Error("button touched and at rest: not done")
+	}
+	moving := rest
+	moving.PM.Velocity = [3]int16{300 * 8, 0, 0}
+	if g.EdgeDone(touch, &moving, &out) {
+		t.Error("touch edge done while still moving")
+	}
+	at := navsim.State{Ground: navsim.WorldEnt}
+	at.PM.Origin = navsim.SnapOrigin(g.Nodes[1].Origin)
+	if !g.EdgeDone(walk, &at, &out) || g.EdgeDone(walk, &rest, &out) {
+		t.Error("walk edge arrival")
+	}
+	// an item on the plat counts only at the pose the edge's conditions allow
+	item := nav.Edge{From: 3, To: 3, Kind: nav.EdgeTouch, Target: 13, Reqs: []nav.Req{{Blocker: 1, States: nav.Pose(1)}},
+		Effects: []nav.Effect{{Kind: nav.EffItem, Entity: 13, Pose: 0, Blocker: 1}}}
+	in := navsim.Outcome{Volumes: []navsim.VolumeHit{{ID: 1}}}
+	if g.Touched(&item, &in) {
+		t.Error("item at the plat top counted although the edge needs the plat at the bottom")
+	}
+	item.Reqs[0].States = nav.Pose(0)
+	if !g.Touched(&item, &in) {
+		t.Error("item at the plat top not counted")
+	}
+
+	// EdgePoses pins blockers a condition allows in one pose only
+	poses := g.EdgePoses(&g.Edges[2]) // needs the door open and the plat at its top
+	if poses[0] != 1 || poses[1] != 0 || poses[2] != -1 {
+		t.Errorf("poses %v", poses)
+	}
+	if poses := g.EdgePoses(&g.Edges[6]); poses[1] != 1 || poses[2] != -1 { // laser gone: out of the way
+		t.Errorf("poses %v", poses)
+	}
+}
+
+func TestLookups(t *testing.T) {
+	g := testGraph(t)
+	if e := g.EffectEdges(14); len(e) != 1 || e[0] != 0 {
+		t.Errorf("EffectEdges(14) %v", e)
+	}
+	if e := g.EffectEdges(13); len(e) != 1 || e[0] != 4 {
+		t.Errorf("EffectEdges(13) %v", e)
+	}
+	if g.EffectEdges(999) != nil || g.MoverNodes(0, -1) != nil || g.BlockerOf(12) != 2 {
+		t.Error("empty lookups")
+	}
+	// the indexes are built once and shared by concurrent readers
+	done := make(chan bool)
+	for i := 0; i < 4; i++ {
+		go func() { done <- len(g.MoverNodes(1, 0)) == 1 && g.BlockerOf(10) == 0 }()
+	}
+	for i := 0; i < 4; i++ {
+		if !<-done {
+			t.Error("concurrent lookup")
+		}
 	}
 }

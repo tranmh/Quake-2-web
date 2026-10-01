@@ -10,6 +10,16 @@
 // the skills they spawn at, and ForSkill (applied by Store.Load) resolves
 // the conditions for one skill. A Graph is immutable after construction
 // and safe for concurrent use.
+//
+// Running an edge: step Plan(e).Executor() from the start node until
+// EdgeDone (a touch edge coasts to rest once Touched, see navsim.Coast).
+// Every edge was validated from rest at From; the jump, drop and ladder
+// executors walk back to From and stop there first, so they also work
+// when a follower switches to them at full speed. Other edges marked
+// EdgeFromRest need the follower to stop at From first (navsim.StopAt);
+// EdgeFragile edges only work from the exact validated start and should
+// be avoided. FallDamage is judged at the worst server frame phase, and
+// EdgeHazard edges also take Damage.
 package nav
 
 import (
@@ -28,8 +38,13 @@ type Vec3 = shared.Vec3
 const FormatVersion = 1
 
 // BuildVersion is bumped whenever the builder (navbuild) produces a
-// different graph for the same input; it is part of the cache key.
-const BuildVersion = 1
+// different graph for the same input; it is part of the cache key. (The
+// map data the builder derives the scene from is covered by Graph.Scene.)
+//
+// 2: fall damage at the worst frame phase, running-entry and fragility
+// flags, touch edges that coast to rest, crawlspace nodes, hazards, train
+// loops and needs-use rides, scene digests.
+const BuildVersion = 2
 
 // AllSkills is the skill mask of something present at every skill.
 const AllSkills = 0x0f
@@ -121,7 +136,8 @@ const (
 	// EdgeTeleport: walk into a teleporter.
 	EdgeTeleport
 	// EdgeTouch: walk at Aim until the player touches a button (or enters
-	// a small trigger); To is where that leaves the player.
+	// a trigger, or picks up an item), then coast to rest; To is where that
+	// leaves the player (see Graph.EdgeDone).
 	EdgeTouch
 )
 
@@ -170,10 +186,15 @@ const (
 	// EdgeHazard: the swept positions are in slime or lava, or inside a
 	// trigger_hurt; Damage estimates the damage taken on the way.
 	EdgeHazard
+	// EdgeFragile: the edge fails from rest a fraction of a unit away from
+	// From (inside navsim.StopRadius): it only works from the exact start
+	// it was validated from, which a real player does not reproduce. A
+	// planner should avoid it (or expect to retry).
+	EdgeFragile
 )
 
-func edgeFlagNames() [8]string {
-	return [8]string{"fast", "step", "board", "spawnworld", "pushes", "fromrest", "needsuse", "hazard"}
+func edgeFlagNames() [9]string {
+	return [9]string{"fast", "step", "board", "spawnworld", "pushes", "fromrest", "needsuse", "hazard", "fragile"}
 }
 
 // String lists the flags.
@@ -289,8 +310,8 @@ type Edge struct {
 	// slime, lava and trigger_hurt, per server frame inside them.
 	Damage int16
 	// Target is the lump index of what a touch edge walks at (a button, a
-	// trigger, an item) or of a teleporter; 0 for other edges (worldspawn
-	// is never a target).
+	// trigger, an item), of a teleporter, or of the mover an EdgeNeedsUse
+	// ride needs used; 0 for other edges (worldspawn is never a target).
 	Target  int32
 	Reqs    []Req
 	Effects []Effect
@@ -366,6 +387,10 @@ type Blocker struct {
 	Mins, Maxs Vec3
 	// Solid: it blocks movement at its poses (not water, not a laser).
 	Solid bool
+	// Team is the lump index of the mover's team master (the entity itself
+	// when it is not teamed): using or opening one door of a team moves
+	// them all.
+	Team int32
 }
 
 // Volume is a box whose entry is an effect: a trigger (absmin/absmax), a
@@ -402,6 +427,10 @@ type Ent struct {
 	Class  string
 	Model  string
 	Skills uint8
+	// Disabled: it starts switched off and something must use it first
+	// before a touch sets it off (a TRIGGERED trigger, a START_OFF
+	// trigger_hurt, an ITEM_TRIGGER_SPAWN item).
+	Disabled bool
 }
 
 // Spawn is an info_player_start and the node it puts the player on.
@@ -426,6 +455,9 @@ type Graph struct {
 	Checksum    uint32
 	PhysicsHash string
 	Params      Params
+	// Scene holds the SceneDigest of the map data of each skill (0..3) the
+	// graph was built from.
+	Scene [4]string
 	// Skill is the skill ForSkill resolved the conditions for, or -1 for
 	// the skill-independent graph a build produces.
 	Skill    int
@@ -442,10 +474,12 @@ type Graph struct {
 	Pushes    []navsim.Push
 	Teleports []navsim.Teleport
 
-	once  sync.Once
-	index *spatial
-	inMu  sync.Once
-	in    [][]int32
+	once     sync.Once
+	index    *spatial
+	inMu     sync.Once
+	in       [][]int32
+	lookOnce sync.Once
+	looks    *lookups
 }
 
 // New assembles a graph from nodes and edges (sorted by From as Finish
@@ -610,10 +644,8 @@ func (g *Graph) ArriveMode(id NodeID) navsim.ArriveMode {
 
 // BlockerOf returns the index of the blocker for lump entity ent, or -1.
 func (g *Graph) BlockerOf(ent int) int32 {
-	for i := range g.Blockers {
-		if int(g.Blockers[i].Entity) == ent {
-			return int32(i)
-		}
+	if b, ok := g.lookup().blockerOf[int32(ent)]; ok {
+		return b
 	}
 	return -1
 }
@@ -703,7 +735,7 @@ func (g *Graph) ForSkill(skill int) *Graph {
 		}
 	}
 	out := &Graph{
-		Format: g.Format, Map: g.Map, Checksum: g.Checksum, PhysicsHash: g.PhysicsHash, Params: g.Params,
+		Format: g.Format, Map: g.Map, Checksum: g.Checksum, PhysicsHash: g.PhysicsHash, Params: g.Params, Scene: g.Scene,
 		Skill: skill, Blockers: g.Blockers, Ents: g.Ents, Solids: g.Solids, Volumes: g.Volumes, Pushes: g.Pushes, Teleports: g.Teleports,
 	}
 	out.Nodes = append([]Node(nil), g.Nodes...)

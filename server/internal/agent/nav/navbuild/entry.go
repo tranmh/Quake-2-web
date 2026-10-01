@@ -7,14 +7,19 @@ import (
 	"quake2web/server/internal/agent/nav/navsim"
 )
 
-// Running entries. Every edge is validated from rest at its start node,
-// but a follower pursuing a path does not stop between edges: it switches
-// to the next edge as soon as it arrives (within the arrival tolerance) at
-// full speed. The entry stage replays that for every simulated edge: it
-// runs a walk edge into the start node from rest, then the edge right
-// away from the moving state, once per incoming direction. When one of
-// these chains does not arrive the edge gets nav.EdgeFromRest, which tells
-// the follower to stop at From first.
+// Running entries and fragility. Every edge is validated from rest exactly
+// at its start node, but a follower pursuing a path does not stop between
+// edges: it switches to the next edge as soon as it arrives (within the
+// arrival tolerance) at full speed, and it is never exactly on a node.
+// The entry stage replays both for every simulated edge:
+//   - it runs a walk edge into the start node from rest, then the edge
+//     right away from the moving state, once per incoming direction; when
+//     one of these chains does not arrive the edge gets nav.EdgeFromRest,
+//     which tells the follower to stop at From first (navsim.StopAt);
+//   - it runs the edge from rest a fraction of a unit away from From in
+//     four directions; when one of them does not arrive the edge gets
+//     nav.EdgeFragile (it only works from an exact start, which a real
+//     player does not reproduce: a planner should avoid it).
 
 // entrySectors splits the incoming directions; one in-edge per sector is
 // replayed.
@@ -46,7 +51,8 @@ func entryFeeder(e *nav.Edge, nodes []bnode) bool {
 }
 
 // checkEntries caps the degree (so the in-edges replayed are the final
-// ones) and flags the edges that fail from a running entry.
+// ones) and flags the edges that fail from a running entry (EdgeFromRest)
+// or from a start a fraction of a unit off (EdgeFragile).
 func (b *builder) checkEntries() (int, error) {
 	b.capDegree()
 	in := make([][]int32, len(b.nodes))
@@ -57,19 +63,21 @@ func (b *builder) checkEntries() (int, error) {
 	}
 	var jobs []int
 	for i := range b.edges {
-		if e := &b.edges[i]; entryChecked(e, &b.nodes[e.From]) && len(in[e.From]) > 0 {
+		if e := &b.edges[i]; entryChecked(e, &b.nodes[e.From]) {
 			jobs = append(jobs, i)
 		}
 	}
-	// 0: fine, 1: from rest, 2: not even after stopping at From
-	verdict := make([]uint8, len(jobs))
+	type verdict struct{ fragile, fromRest, stopFails bool }
+	res := make([]verdict, len(jobs))
 	err := b.parallel(len(jobs), func(wk *worker, k int) {
 		out := &b.edges[jobs[k]]
+		v := &res[k]
+		v.fragile = wk.fragile(out)
 		for _, j := range b.entrySources(out, in[out.From]) {
 			if ok, ran := wk.chain(&b.edges[j], out, false); ran && !ok {
-				verdict[k] = 1
+				v.fromRest = true
 				if ok, ran := wk.chain(&b.edges[j], out, true); ran && !ok {
-					verdict[k] = 2
+					v.stopFails = true
 					return
 				}
 			}
@@ -78,16 +86,21 @@ func (b *builder) checkEntries() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	for k, v := range verdict {
-		if v > 0 {
-			b.edges[jobs[k]].Flags |= nav.EdgeFromRest
+	for k, v := range res {
+		e := &b.edges[jobs[k]]
+		if v.fragile {
+			e.Flags |= nav.EdgeFragile
+			b.rep.Fragile++
+		}
+		if v.fromRest {
+			e.Flags |= nav.EdgeFromRest
 			b.rep.FromRest++
 		}
-		if v > 1 {
+		if v.stopFails {
 			b.rep.StopFails++
 		}
 	}
-	return b.rep.FromRest, nil
+	return b.rep.FromRest + b.rep.Fragile, nil
 }
 
 // entrySources picks the in-edges to replay before out: per incoming
@@ -122,6 +135,40 @@ func (b *builder) entrySources(out *nav.Edge, in []int32) []int32 {
 	return srcs
 }
 
+// fragileOffset is how far from From the fragility test starts an edge:
+// inside navsim.StopRadius, so a follower that stopped at From can be
+// that far off.
+const fragileOffset = 0.75
+
+// fragile reports whether edge e fails from rest at a point within
+// fragileOffset of its start (four points around it; the ones where the
+// hull does not fit are skipped).
+func (wk *worker) fragile(e *nav.Edge) bool {
+	b := wk.b
+	a, m := &b.nodes[e.From], &b.nodes[e.To]
+	wk.setWorld(supports(a, m)...)
+	p := b.plan(e)
+	limit := navsim.TimeLimitMsec(dist3(a.o, m.o)) + p.BackupMsec
+	maxs := navsim.StandMaxs()
+	if a.crouch() {
+		maxs = navsim.DuckMaxs()
+	}
+	for _, d := range [4][2]float32{{fragileOffset, 0}, {-fragileOffset, 0}, {0, fragileOffset}, {0, -fragileOffset}} {
+		o := Vec3{a.o[0] + d[0], a.o[1] + d[1], a.o[2]}
+		if !wk.w.Fits(o, navsim.StandMins(), maxs) {
+			continue
+		}
+		wk.b.sims.Add(1)
+		n := *a
+		n.o = o
+		wk.place(&n)
+		if !runToArrival(wk.r, p.Executor(), m.o, m.arrive(), limit, &wk.out) {
+			return true
+		}
+	}
+	return false
+}
+
 // plan returns the executor plan of a builder edge (as nav.Graph.Plan does
 // for a graph edge).
 func (b *builder) plan(e *nav.Edge) navsim.Plan {
@@ -154,7 +201,7 @@ func (wk *worker) chain(in, out *nav.Edge, stop bool) (ok, ran bool) {
 	}
 	if stop {
 		wk.r.Run(navsim.StopAt(a.o, b.p.StepMsec), func(s *navsim.State, _ *navsim.StepResult) bool {
-			return navsim.Stopped(s, a.o) || !s.OnGround()
+			return navsim.Stopped(s, a.o)
 		}, 2000, &wk.out)
 		if !navsim.Stopped(wk.r.StatePtr(), a.o) {
 			return false, true

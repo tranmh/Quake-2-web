@@ -22,7 +22,7 @@ type Vec3 = shared.Vec3
 
 // Version changes whenever a change in this package changes simulation
 // results; it is part of the nav cache key.
-const Version = 1
+const Version = 2 // 2: executors stop at the start, Run judges falls at every frame phase
 
 // Player hull (PM_CheckDuck): 32 units wide, mins.z -24, maxs.z 32 standing
 // and 4 ducked.

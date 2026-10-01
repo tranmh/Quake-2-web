@@ -25,11 +25,20 @@ func synthMap(t testing.TB) *mapdata.Map {
 	return md
 }
 
-// counting returns a build function that counts its calls.
+// counting returns a build function that counts its calls. Like navbuild
+// it records the scene digest of every skill.
 func counting(t testing.TB, n *atomic.Int32) nav.BuildFunc {
 	return func(ctx context.Context, md *mapdata.Map, p nav.Params) (*nav.Graph, error) {
 		n.Add(1)
-		return testGraph(t), nil
+		g := testGraph(t)
+		for s := range g.Scene {
+			ms, err := mapdata.Load("synthetic", bsp.Encode(bsp.SyntheticFloorMap()), mapdata.Options{Skill: s})
+			if err != nil {
+				return nil, err
+			}
+			g.Scene[s] = nav.SceneDigest(ms)
+		}
+		return g, nil
 	}
 }
 
@@ -243,5 +252,52 @@ func TestWorldHelpers(t *testing.T) {
 	g.Place(r, 0)
 	if st := r.State(); !st.OnGround() || st.Origin() != g.Nodes[0].Origin || st.PM.PmFlags&q2const.PMF_ON_GROUND == 0 {
 		t.Errorf("placed state %+v", st)
+	}
+}
+
+// TestStoreRebuildsChangedScene: a cached graph whose scene digest does not
+// match the map data (mapdata now derives the movers differently) is
+// rebuilt, without a BuildVersion bump.
+func TestStoreRebuildsChangedScene(t *testing.T) {
+	dir := t.TempDir()
+	md := synthMap(t)
+	p := nav.DefaultParams()
+	var n atomic.Int32
+	s := nav.NewStore(dir, counting(t, &n))
+	g, err := s.Load(context.Background(), md, p)
+	if err != nil || n.Load() != 1 {
+		t.Fatal(err)
+	}
+	if g.Scene[1] != nav.SceneDigest(md) || len(g.Scene[1]) != 16 {
+		t.Fatalf("scene %v", g.Scene)
+	}
+	stale, err := nav.ReadFile(s.Path(md, p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.Scene[1] = "0000000000000000"
+	if err := stale.Matches(md, p); !errors.Is(err, nav.ErrMismatch) {
+		t.Fatalf("changed scene matches: %v", err)
+	}
+	if err := stale.WriteFile(s.Path(md, p)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nav.NewStore(dir, counting(t, &n)).Load(context.Background(), md, p); err != nil || n.Load() != 2 {
+		t.Fatalf("stale scene not rebuilt: %v, %d builds", err, n.Load())
+	}
+	// the digest follows the map data
+	moved := *md
+	moved.Movers = append([]mapdata.Mover{{Entity: 1, Classname: "func_door"}}, md.Movers...)
+	if nav.SceneDigest(&moved) == nav.SceneDigest(md) {
+		t.Error("the digest ignores the movers")
+	}
+	// map data with deathmatch options is not compared (the builder only
+	// loads single-player maps)
+	dm, err := mapdata.Load("synthetic", bsp.Encode(bsp.SyntheticFloorMap()), mapdata.Options{Skill: 1, Deathmatch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.Matches(dm, p); err != nil {
+		t.Errorf("deathmatch map data: %v", err)
 	}
 }

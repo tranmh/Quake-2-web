@@ -138,6 +138,9 @@ func (b *builder) reachable() []bool {
 func (b *builder) graph() (*nav.Graph, error) {
 	g := &nav.Graph{Format: nav.FormatVersion, Map: b.name, Checksum: b.geo.cm.Checksum, PhysicsHash: b.p.PhysicsHash(),
 		Params: b.p, Skill: -1, Blockers: b.sc.blockers, Ents: b.sc.ents, Solids: b.sc.statics, Pushes: b.sc.pushes}
+	for s, md := range b.sc.maps {
+		g.Scene[s] = nav.SceneDigest(md)
+	}
 	for _, v := range b.sc.vols {
 		g.Volumes = append(g.Volumes, nav.Volume{Kind: v.kind, Entity: v.entity, Pose: v.pose, Blocker: v.blocker, Min: v.min, Max: v.max})
 	}

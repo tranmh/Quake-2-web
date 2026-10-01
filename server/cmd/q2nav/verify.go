@@ -28,7 +28,8 @@ func runVerify(args []string, stdout io.Writer) error {
 	pakFile := fs.String("pak", "", "pak file holding the map")
 	name := fs.String("map", "", "level name (e.g. demo1)")
 	sample := fs.Int("sample", 300, "edges to re-simulate with navsim (0: all)")
-	liveN := fs.Int("live", 40, "edges to execute on the live lockstep server (0: none)")
+	liveN := fs.Int("live", 40, "edges to execute on the live lockstep server in the level as it starts (0: none)")
+	posedN := fs.Int("posed", 20, "conditional and touch edges to execute on the live server, each on a fresh level with the blockers posed to satisfy the edge (0: none)")
 	seed := fs.Int64("seed", 1, "sampling and server seed")
 	dir := fs.String("nav", "", "nav cache directory (default <repo>/assets/nav)")
 	routes := fs.String("routes", "", "route table directory for the coverage check (default fixtures/agent/routes, skipped when absent)")
@@ -84,6 +85,15 @@ func runVerify(args []string, stdout io.Writer) error {
 		}
 		if res.total > 0 && float64(res.pass) < liveGate*float64(res.total) {
 			failed = append(failed, fmt.Sprintf("live %d/%d", res.pass, res.total))
+		}
+	}
+	if *posedN > 0 {
+		res, err := verifyPosed(stdout, src, g, md, *posedN, *seed, *skill, *verbose)
+		if err != nil {
+			return err
+		}
+		if res.total > 0 && float64(res.pass) < liveGate*float64(res.total) {
+			failed = append(failed, fmt.Sprintf("live posed %d/%d", res.pass, res.total))
 		}
 	}
 
@@ -235,6 +245,14 @@ func verifyLive(stdout io.Writer, src *mapSource, g *nav.Graph, md *mapdata.Map,
 		fmt.Fprintln(stdout, "live: no eligible edges")
 		return liveResult{}, nil
 	}
+	elig := liveEligible(g, g.SpawnStates())
+	n0 := 0
+	for i := range g.Edges {
+		if elig(&g.Edges[i]) {
+			n0++
+		}
+	}
+	fmt.Fprintf(stdout, "live: %d of %d edges (%.0f%%) are eligible in the level as it starts\n", n0, len(g.Edges), 100*float64(n0)/float64(max(len(g.Edges), 1)))
 	park := parkNode(g, idx)
 	start := func() (*liveServer, error) {
 		ls, err := startLive(ctx, src.p, g.Map, skill, uint32(seed))
@@ -363,4 +381,208 @@ func shortDist(a, b [3]int16) float64 {
 		d += x * x
 	}
 	return math.Sqrt(d)
+}
+
+// exitEntities returns the entities whose activation ends the level (a
+// chain reaching a target_changelevel): an edge setting one of them off
+// cannot be compared with the simulation.
+func exitEntities(g *nav.Graph, md *mapdata.Map) map[int32]bool {
+	out := map[int32]bool{}
+	check := func(ent int32) {
+		if _, done := out[ent]; done {
+			return
+		}
+		out[ent] = false
+		for _, r := range md.Reach(int(ent)) {
+			if r.Response == mapdata.RespExit {
+				out[ent] = true
+			}
+		}
+	}
+	for _, v := range g.Volumes {
+		check(v.Entity)
+	}
+	for _, e := range g.Ents {
+		check(e.Entity)
+	}
+	return out
+}
+
+// posedEligible: the edges the level-as-it-starts mode leaves out that a
+// fresh level with the right blocker states can run: conditional edges
+// and touch edges (not rides, teleports, edges brushing a barrel, or edges
+// that end the level).
+func posedEligible(g *nav.Graph, spawn []nav.StateMask, exits map[int32]bool) func(*nav.Edge) bool {
+	return func(e *nav.Edge) bool {
+		switch e.Kind {
+		case nav.EdgeRide, nav.EdgeTeleport:
+			return false
+		}
+		if e.Flags&nav.EdgePushes != 0 {
+			return false
+		}
+		for _, f := range e.Effects {
+			if exits[f.Entity] {
+				return false
+			}
+		}
+		return e.Kind == nav.EdgeTouch || !nav.Holds(e, spawn)
+	}
+}
+
+// freeNode returns a standing node outside every volume (a player resting
+// in a trigger keeps setting it off), or nil.
+func freeNode(g *nav.Graph) *nav.Node {
+	for i := range g.Nodes {
+		n := &g.Nodes[i]
+		if n.Flags&(nav.NodeWater|nav.NodeLadder|nav.NodeMover|nav.NodeCrouch) != 0 || n.Flags&nav.NodeSpawn == 0 && i > 0 && len(g.Out(nav.NodeID(i))) == 0 {
+			continue
+		}
+		if !inVolume(g, n) {
+			return n
+		}
+	}
+	return nil
+}
+
+func inVolume(g *nav.Graph, n *nav.Node) bool {
+	lo := navsim.Vec3{n.Origin[0] - 17, n.Origin[1] - 17, n.Origin[2] - 25}
+	hi := navsim.Vec3{n.Origin[0] + 17, n.Origin[1] + 17, n.Origin[2] + 33}
+	for _, v := range g.Volumes {
+		if !(lo[0] > v.Max[0] || lo[1] > v.Max[1] || lo[2] > v.Max[2] || hi[0] < v.Min[0] || hi[1] < v.Min[1] || hi[2] < v.Min[2]) {
+			return true
+		}
+	}
+	return false
+}
+
+// posedStates picks the state of every blocker for edge e: the spawn state
+// where e allows it, else the first pose e allows, else gone. It returns
+// the poses for Graph.SetWorld (-1: gone) and the blockers it changed.
+func posedStates(g *nav.Graph, e *nav.Edge) (poses []int, changed []int32) {
+	poses = g.SpawnPoses()
+	for _, r := range e.Reqs {
+		b := &g.Blockers[r.Blocker]
+		if r.States&b.SpawnState() != 0 {
+			continue
+		}
+		k := -1
+		for p := range b.Poses {
+			if r.States&nav.Pose(p) != 0 {
+				k = p
+				break
+			}
+		}
+		poses[r.Blocker] = k
+		changed = append(changed, r.Blocker)
+	}
+	return poses, changed
+}
+
+// verifyPosed executes a sample of conditional and touch edges on the live
+// server, each on a fresh level: the blockers the edge needs in another
+// state are written into it (posedStates), the player is put at the start
+// node, and the edge's commands run as in verifyLive. A touch edge also
+// has to set its target off on the server.
+func verifyPosed(stdout io.Writer, src *mapSource, g *nav.Graph, md *mapdata.Map, n int, seed int64, skill int, verbose bool) (liveResult, error) {
+	ctx := context.Background()
+	elig := posedEligible(g, g.SpawnStates(), exitEntities(g, md))
+	park := freeNode(g)
+	if park == nil {
+		return liveResult{}, fmt.Errorf("live posed: %s has no node outside the trigger volumes to park at", g.Map)
+	}
+	total := 0
+	for i := range g.Edges {
+		if elig(&g.Edges[i]) {
+			total++
+		}
+	}
+	idx := sampleEdges(g, n, seed+2, elig)
+	if len(idx) > n {
+		rng := rand.New(rand.NewSource(seed + 3))
+		rng.Shuffle(len(idx), func(i, j int) { idx[i], idx[j] = idx[j], idx[i] })
+		idx = idx[:n]
+		sort.Ints(idx)
+	}
+	fmt.Fprintf(stdout, "live posed: %d of %d edges (%.0f%%) are conditional or touch edges this mode can run; sampling %d\n", total, len(g.Edges), 100*float64(total)/float64(max(len(g.Edges), 1)), len(idx))
+	if len(idx) == 0 {
+		return liveResult{}, nil
+	}
+	v := navbuild.NewVerifier(g, md.CM)
+	var res liveResult
+	byKind := map[string][2]int{}
+	failures := 0
+	for _, i := range idx {
+		e := &g.Edges[i]
+		why, err := runPosed(ctx, src, g, v, i, park, skill, seed)
+		if err != nil {
+			return res, err
+		}
+		res.total++
+		k := kindKey(e)
+		if e.Conditional() {
+			k += "/cond"
+		}
+		c := byKind[k]
+		c[1]++
+		if why == "" {
+			res.pass++
+			c[0]++
+		} else if verbose || failures < 10 {
+			failures++
+			fmt.Fprintf(stdout, "  live posed FAIL edge %d %s %v -> %v: %s\n", i, kindKey(e), g.Nodes[e.From].Origin, g.Nodes[e.To].Origin, why)
+		}
+		byKind[k] = c
+	}
+	fmt.Fprintf(stdout, "live posed: %d/%d edges reproduce on the server (%s)\n", res.pass, res.total, kindSummary(byKind))
+	return res, nil
+}
+
+// runPosed runs edge i on a fresh live server with its blockers posed; it
+// returns why it failed ("" when it passed).
+func runPosed(ctx context.Context, src *mapSource, g *nav.Graph, v *navbuild.Verifier, i int, park *nav.Node, skill int, seed int64) (string, error) {
+	e := &g.Edges[i]
+	from := g.Node(e.From)
+	ls, err := startLive(ctx, src.p, g.Map, skill, uint32(seed))
+	if err != nil {
+		return "", err
+	}
+	defer ls.Close()
+	if err := ls.quiesce(ctx, g, park); err != nil {
+		return "", err
+	}
+	poses, changed := posedStates(g, e)
+	for _, b := range changed {
+		if err := ls.setBlocker(g, b, poses[b]); err != nil {
+			return err.Error(), nil
+		}
+	}
+	start, err := ls.place(ctx, from)
+	if err != nil {
+		return "", err
+	}
+	g.SetWorld(v.World(), poses)
+	sim := v.EdgeIn(i, stateOf(start, v.World()), poses)
+	if !sim.OK {
+		return "offline re-simulation from the server state fails: " + sim.Reason, nil
+	}
+	hold := nav.HoldCmd(g.Node(e.To))
+	frames, err := ls.run(ctx, sim.Cmds, hold)
+	if err != nil {
+		return "", err
+	}
+	r := v.Runner()
+	for k := len(sim.Cmds); k%4 != 0; k++ {
+		r.Step(hold)
+	}
+	off, on := r.State().PM.Origin, frames[len(frames)-1].Origin
+	if d := shortDist(off, on); d > 1 {
+		return fmt.Sprintf("server ended at %v, simulation at %v (%.1f units apart)", shortVec(on), shortVec(off), d), nil
+	}
+	if e.Kind == nav.EdgeTouch {
+		if ok, checked := ls.fired(g, e); checked && !ok {
+			return fmt.Sprintf("the server did not set off target #%d", e.Target), nil
+		}
+	}
+	return "", nil
 }

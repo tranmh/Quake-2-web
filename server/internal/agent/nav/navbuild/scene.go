@@ -43,6 +43,14 @@ type blockerGeo struct {
 	// lowTrigger: a plat with PLAT_LOW_TRIGGER (its center trigger only
 	// covers the bottom, so it goes down with a rider)
 	lowTrigger bool
+	// act is how the mover is set off, wait its wait (doors return by
+	// themselves after a wait >= 0)
+	act  mapdata.Activation
+	wait float32
+	// trains: the wait of each corner (pose), and the pose the last corner
+	// leads back to (-1: the path ends there, train_next stops)
+	cornerWait []float32
+	loopTo     int
 }
 
 // vol is a box edges report entering.
@@ -53,6 +61,8 @@ type vol struct {
 	blocker int32
 	min     Vec3
 	max     Vec3
+	// hurt is the damage per second of a trigger_hurt (0 for others)
+	hurt float32
 }
 
 type spawnInfo struct {
@@ -135,7 +145,7 @@ func newScene(maps [4]*mapdata.Map, f *fileGeo) (*scene, error) {
 	for _, id := range sortedKeys(lasers) {
 		l := lasers[id]
 		b := nav.Blocker{Entity: int32(l.l.Entity), Class: "target_laser", Kind: nav.BlockLaser, Gone: true,
-			Poses: []nav.BlockerPose{{Name: "on", Origin: l.l.Start}}, Skills: l.skills, Start: l.l.Start, End: l.l.End}
+			Poses: []nav.BlockerPose{{Name: "on", Origin: l.l.Start}}, Skills: l.skills, Start: l.l.Start, End: l.l.End, Team: int32(l.l.Entity)}
 		if !l.l.StartOn {
 			b.Spawn = -1
 		}
@@ -174,15 +184,29 @@ func newScene(maps [4]*mapdata.Map, f *fileGeo) (*scene, error) {
 	}
 	for _, id := range sortedKeys(trig) {
 		t := trig[id].t
+		if t.NotPlayer {
+			continue // Touch_Multi ignores clients
+		}
+		v := vol{kind: nav.EffTrigger, entity: int32(t.Entity), pose: -1, blocker: -1, min: t.Box.Min, max: t.Box.Max}
 		switch t.Classname {
 		case "trigger_monsterjump":
 			continue // monsters only
 		case "trigger_push":
 			sc.pushes = append(sc.pushes, navsim.Push{ID: t.Entity, Min: t.Box.Min, Max: t.Box.Max,
 				Velocity: shared.VectorScale(t.Movedir, float32(float64(t.Speed)*10)), Once: t.Spawnflags&mapdata.PushOnce != 0})
+		case "trigger_hurt":
+			// C: game/g_trigger.c:470 hurt_touch (dmg every frame, or
+			// every second with SLOW)
+			v.hurt = float32(t.Dmg) * 10
+			if t.Spawnflags&hurtSlow != 0 {
+				v.hurt = float32(t.Dmg)
+			}
 		}
-		sc.vols = append(sc.vols, vol{kind: nav.EffTrigger, entity: int32(t.Entity), pose: -1, blocker: -1, min: t.Box.Min, max: t.Box.Max})
+		sc.vols = append(sc.vols, v)
 		sc.addEnt(t.Entity, t.Classname, t.Model, trig[id].skills)
+		if !t.StartsEnabled {
+			sc.disable(t.Entity)
+		}
 	}
 	// door and plat triggers
 	for _, id := range ids {
@@ -231,6 +255,25 @@ func killtargeted(m *mapdata.Map, ent int) bool {
 	return false
 }
 
+// hurtSlow is trigger_hurt's SLOW spawnflag (damage once a second).
+const hurtSlow = 16
+
+// item spawnflags.
+// C: game/g_local.h:563 ITEM_TRIGGER_SPAWN, ITEM_NO_TOUCH
+const (
+	itemTriggerSpawn = 1
+	itemNoTouch      = 2
+)
+
+// disable marks entity ent as starting switched off (nav.Ent.Disabled).
+func (sc *scene) disable(ent int) {
+	for i := range sc.ents {
+		if int(sc.ents[i].Entity) == ent {
+			sc.ents[i].Disabled = true
+		}
+	}
+}
+
 func (sc *scene) addEnt(ent int, class, model string, skills uint8) {
 	for i := range sc.ents {
 		if int(sc.ents[i].Entity) == ent {
@@ -259,9 +302,9 @@ func (sc *scene) addBlocker(b nav.Blocker, g blockerGeo) {
 // addMover classifies a mover as a condition blocker or a static solid.
 func (sc *scene) addMover(mv *mapdata.Mover, skills uint8, killed bool) error {
 	b := nav.Blocker{Entity: int32(mv.Entity), Class: mv.Classname, Model: mv.Model, Skills: skills, Gone: killed,
-		Headnode: mv.Headnode, Mins: mv.Mins, Maxs: mv.Maxs, Solid: true}
+		Headnode: mv.Headnode, Mins: mv.Mins, Maxs: mv.Maxs, Solid: true, Team: int32(mv.TeamMaster)}
 	g := blockerGeo{solidID: mv.Entity, headnode: mv.Headnode, mins: mv.Mins, maxs: mv.Maxs, mask: q2const.MASK_PLAYERSOLID, solid: true,
-		travel: mv.TravelTime, speed: mv.Speed}
+		travel: mv.TravelTime, speed: mv.Speed, act: mv.Activation, wait: mv.Wait, loopTo: -1}
 	pose := func(name string, o, a Vec3) {
 		b.Poses = append(b.Poses, nav.BlockerPose{Name: name, Origin: o, Angles: a})
 	}
@@ -306,10 +349,13 @@ func (sc *scene) addMover(mv *mapdata.Mover, skills uint8, killed bool) error {
 				name = fmt.Sprintf("corner%d", i)
 			}
 			pose(name, p.Origin, mv.Angles)
+			g.cornerWait = append(g.cornerWait, p.Wait)
 		}
 		if len(b.Poses) == 0 {
 			pose("spawn", mv.Origin, mv.Angles)
+			g.cornerWait = append(g.cornerWait, 0)
 		}
+		g.loopTo = sc.trainLoop(mv, len(b.Poses))
 		g.tops = mv.Angles == (Vec3{})
 	case mapdata.MoverWall:
 		if mv.Activation&mapdata.ActUse == 0 && mv.Solid && !killed {
@@ -347,6 +393,33 @@ func (sc *scene) addMover(mv *mapdata.Mover, skills uint8, killed bool) error {
 	}
 	sc.addBlocker(b, g)
 	return nil
+}
+
+// trainLoop returns the pose (path index below n) the last corner of a
+// train's path targets, or -1 when it targets nothing on the path (the
+// train stops there for good).
+// C: game/g_func.c:1529 train_next
+func (sc *scene) trainLoop(mv *mapdata.Mover, n int) int {
+	if len(mv.Path) == 0 || n == 0 {
+		return -1
+	}
+	for _, m := range sc.maps {
+		last := m.Entity(mv.Path[min(len(mv.Path), n)-1].Corner)
+		if last == nil || !last.Present() {
+			continue
+		}
+		ts := m.Targets(last.Target)
+		if len(ts) == 0 {
+			return -1
+		}
+		for k := 0; k < n; k++ {
+			if mv.Path[k].Corner == ts[0].Index {
+				return k
+			}
+		}
+		return -1
+	}
+	return -1
 }
 
 func closestPose(poses []nav.BlockerPose, o, a Vec3) int8 {
@@ -413,11 +486,13 @@ func (sc *scene) addPointSolids(f *fileGeo) {
 }
 
 // addItems adds the item touch boxes: droptofloor's box after the drop,
-// one per pose of the mover the item rests on.
+// one per pose of the mover the item rests on. ITEM_NO_TOUCH items are
+// solid boxes instead; ITEM_TRIGGER_SPAWN items start disabled.
 // C: game/g_items.c:1050 droptofloor
 func (sc *scene) addItems(f *fileGeo) {
 	type itemAt struct {
 		it     mapdata.Item
+		flags  int32
 		skills uint8
 	}
 	items := map[int]*itemAt{}
@@ -425,6 +500,9 @@ func (sc *scene) addItems(f *fileGeo) {
 		for _, it := range m.Items {
 			if items[it.Entity] == nil {
 				items[it.Entity] = &itemAt{it: it}
+				if e := m.Entity(it.Entity); e != nil {
+					items[it.Entity].flags = e.Spawnflags
+				}
 			}
 			items[it.Entity].skills |= skillBit(s)
 		}
@@ -440,6 +518,11 @@ func (sc *scene) addItems(f *fileGeo) {
 		w.AddSolid(navsim.Solid{ID: g.solidID, Headnode: g.headnode, Origin: p.Origin, Angles: p.Angles, Mins: g.mins, Maxs: g.maxs})
 	}
 	mins, maxs := Vec3{-15, -15, -15}, Vec3{15, 15, 15}
+	var noTouch []navsim.Solid
+	defer func() {
+		sc.statics = append(sc.statics, noTouch...)
+		sort.SliceStable(sc.statics, func(a, b int) bool { return sc.statics[a].ID < sc.statics[b].ID })
+	}()
 	for _, id := range sortedKeys(items) {
 		it := items[id]
 		o := it.it.Origin
@@ -451,7 +534,18 @@ func (sc *scene) addItems(f *fileGeo) {
 		}
 		o = tr.EndPos
 		mn, mx := navsim.LinkBox(false, o, Vec3{}, mins, maxs)
+		if it.flags&itemNoTouch != 0 {
+			// a solid box that cannot be picked up (SOLID_NOT until used
+			// when it is also trigger-spawned)
+			if it.flags&itemTriggerSpawn == 0 {
+				noTouch = append(noTouch, navsim.Solid{ID: id, Box: true, Origin: o, Mins: mins, Maxs: maxs})
+			}
+			continue
+		}
 		sc.addEnt(id, it.it.Classname, "", it.skills)
+		if it.flags&itemTriggerSpawn != 0 {
+			sc.disable(id) // invisible and SOLID_NOT until used
+		}
 		if bi, ok := sc.blockerByID[tr.Ent]; ok && tr.Fraction < 1 && sc.geo[bi].tops {
 			b := &sc.blockers[bi]
 			sp := b.Poses[max8(b.Spawn, 0)].Origin
@@ -466,29 +560,44 @@ func (sc *scene) addItems(f *fileGeo) {
 	}
 }
 
-// addTeleporters adds misc_teleporter triggers and their destinations.
+// addTeleporters adds misc_teleporter triggers and their destinations,
+// merged over the skills like the other entities.
 // C: game/g_misc.c:1820 SP_misc_teleporter
 func (sc *scene) addTeleporters() {
-	m := sc.maps[1]
-	for i := range m.Entities {
-		e := &m.Entities[i]
-		if !e.Present() || e.Classname != "misc_teleporter" || e.Target == "" {
-			continue
-		}
-		var dest *mapdata.Entity
-		for _, t := range m.Targets(e.Target) {
-			if t.Classname == "misc_teleporter_dest" {
-				dest = t
-				break
+	type teleAt struct {
+		info   teleInfo
+		skills uint8
+	}
+	teles := map[int]*teleAt{}
+	for s, m := range sc.maps {
+		for i := range m.Entities {
+			e := &m.Entities[i]
+			if !e.Present() || e.Classname != "misc_teleporter" || e.Target == "" {
+				continue
 			}
+			if t := teles[i]; t != nil {
+				t.skills |= skillBit(s)
+				continue
+			}
+			var dest *mapdata.Entity
+			for _, t := range m.Targets(e.Target) {
+				if t.Classname == "misc_teleporter_dest" {
+					dest = t
+					break
+				}
+			}
+			if dest == nil {
+				continue
+			}
+			mn, mx := navsim.LinkBox(false, e.Origin, Vec3{}, Vec3{-8, -8, 8}, Vec3{8, 8, 24})
+			teles[i] = &teleAt{info: teleInfo{entity: int32(i), min: mn, max: mx, dest: dest.Origin, angles: dest.Angles}, skills: skillBit(s)}
 		}
-		if dest == nil {
-			continue
-		}
-		mn, mx := navsim.LinkBox(false, e.Origin, Vec3{}, Vec3{-8, -8, 8}, Vec3{8, 8, 24})
-		sc.teles = append(sc.teles, teleInfo{entity: int32(i), min: mn, max: mx, dest: dest.Origin, angles: dest.Angles})
-		sc.vols = append(sc.vols, vol{kind: nav.EffTrigger, entity: int32(i), pose: -1, blocker: -1, min: mn, max: mx})
-		sc.addEnt(i, e.Classname, "", nav.AllSkills)
+	}
+	for _, id := range sortedKeys(teles) {
+		t := teles[id]
+		sc.teles = append(sc.teles, t.info)
+		sc.vols = append(sc.vols, vol{kind: nav.EffTrigger, entity: t.info.entity, pose: -1, blocker: -1, min: t.info.min, max: t.info.max})
+		sc.addEnt(id, "misc_teleporter", "", t.skills)
 	}
 }
 

@@ -52,23 +52,43 @@ func settleOffsets() [9][2]float32 {
 	return [9][2]float32{{0, 0}, {8, 0}, {-8, 0}, {0, 8}, {0, -8}, {8, 8}, {-8, 8}, {8, -8}, {-8, -8}}
 }
 
-// settle turns a floor point into a standing node: a hull trace from 42
-// above down to 6 above (standing hull, else ducked), a walkable plane, one
-// idle pmove step that ends on ground. With want > 0 the ground must be
-// that solid.
+// settleStarts are the hull trace starts above a floor point: 42 up
+// catches floors a little above the sample, 26 up (the hull bottom 2 above
+// the floor) fits under low ceilings: standing to 58 above the floor,
+// ducked to 30 (a crawlspace).
+func settleStarts() [4]struct {
+	dz     float32
+	ducked bool
+} {
+	return [4]struct {
+		dz     float32
+		ducked bool
+	}{{42, false}, {26, false}, {42, true}, {26, true}}
+}
+
+// settle turns a floor point into a standing node: a hull trace from above
+// the point down to 6 above it (standing hull, else ducked; see
+// settleStarts), a walkable plane, one idle pmove step that ends on
+// ground. With want > 0 the ground must be that solid.
 func (wk *worker) settle(p Vec3, want int) (bnode, bool) {
 	mins, smax, dmax := navsim.StandMins(), navsim.StandMaxs(), navsim.DuckMaxs()
 	for _, off := range settleOffsets() {
-		start := Vec3{p[0] + off[0], p[1] + off[1], p[2] + 42}
-		end := Vec3{start[0], start[1], p[2] + 6}
-		ducked := false
-		tr := wk.w.Trace(start, mins, smax, end, q2const.MASK_PLAYERSOLID)
-		if tr.StartSolid || tr.AllSolid {
-			tr = wk.w.Trace(start, mins, dmax, end, q2const.MASK_PLAYERSOLID)
-			if tr.StartSolid || tr.AllSolid {
-				continue
+		var tr shared.Trace
+		ducked, found := false, false
+		for _, st := range settleStarts() {
+			start := Vec3{p[0] + off[0], p[1] + off[1], p[2] + st.dz}
+			end := Vec3{start[0], start[1], p[2] + 6}
+			maxs := smax
+			if st.ducked {
+				maxs = dmax
 			}
-			ducked = true
+			if tr = wk.w.Trace(start, mins, maxs, end, q2const.MASK_PLAYERSOLID); !tr.StartSolid && !tr.AllSolid {
+				ducked, found = st.ducked, true
+				break
+			}
+		}
+		if !found {
+			continue
 		}
 		if tr.Fraction >= 1 || tr.Plane.Normal[2] < 0.7 || (want > 0 && tr.Ent != want) {
 			continue
@@ -91,6 +111,9 @@ func (wk *worker) settle(p Vec3, want int) (bnode, bool) {
 		if dist3(o, tr.EndPos) > 4 {
 			continue // slid away
 		}
+		if !wk.mobile(o, st.Ducked()) {
+			continue // jammed: the hull fits but pmove cannot move it
+		}
 		n := bnode{o: o, blocker: -1, ladder: -1, spawn: -1, prio: prioGround}
 		if st.Ducked() {
 			n.flags |= nav.NodeCrouch
@@ -104,6 +127,31 @@ func (wk *worker) settle(p Vec3, want int) (bnode, bool) {
 		return n, true
 	}
 	return bnode{}, false
+}
+
+// mobile reports whether a player standing at o can walk away in one of
+// the four axis directions (one command moves it at all): a hull wedged in
+// a crevice fits there, but pmove cannot move it, and a node there would
+// be a trap.
+func (wk *worker) mobile(o Vec3, ducked bool) bool {
+	r := wk.r
+	hold := navsim.Cmd{}
+	if ducked {
+		hold.Up = -400
+	}
+	for _, yaw := range [4]float32{0, 90, 180, 270} {
+		r.Reset(o, ducked)
+		r.Step(hold)
+		from := r.StatePtr().Origin()
+		c := hold
+		c.Forward, c.Yaw = 400, yaw
+		r.Step(c)
+		r.Step(c)
+		if dist3(r.StatePtr().Origin(), from) > 0.5 {
+			return true
+		}
+	}
+	return false
 }
 
 func dist3(a, b Vec3) float32 {
@@ -234,8 +282,10 @@ func (b *builder) buildNodes() (int, error) {
 }
 
 // dropBlocked removes nodes that a blocker overlaps in every one of its
-// states (a spot inside a sliding door's panel both closed and open): no
-// edge from or to them can ever hold. A mover node's own mover is exempt.
+// states (a spot inside a sliding door's panel both closed and open, the
+// bottom of a pit a func_water fills at every pose): no edge from or to
+// them can ever hold (conds treats a water blocker's volume like a solid),
+// so they could only be traps. A mover node's own mover is exempt.
 func (b *builder) dropBlocked(all []bnode) ([]bnode, error) {
 	blocked := make([]bool, len(all))
 	err := b.parallel(len(all), func(wk *worker, i int) {
@@ -245,7 +295,7 @@ func (b *builder) dropBlocked(all []bnode) ([]bnode, error) {
 		lo, hi := shared.VectorAdd(n.o, mins), shared.VectorAdd(n.o, maxs)
 		for bi := range b.sc.geo {
 			g, bl := &b.sc.geo[bi], &b.sc.blockers[bi]
-			if bl.Gone || int32(bi) == n.blocker || !g.solid || !boxesOverlap(lo, hi, g.umin, g.umax) {
+			if bl.Gone || int32(bi) == n.blocker || g.laser || !boxesOverlap(lo, hi, g.umin, g.umax) {
 				continue
 			}
 			all := true

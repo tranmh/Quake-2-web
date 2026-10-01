@@ -24,6 +24,7 @@ type fileGraph struct {
 	Checksum uint32        `json:"checksum"`
 	Physics  string        `json:"physics"`
 	Params   Params        `json:"params"`
+	Scene    [4]string     `json:"scene"`
 	Blockers []fileBlocker `json:"blockers"`
 	Ents     []fileEnt     `json:"ents"`
 	Spawns   []fileSpawn   `json:"spawns"`
@@ -86,13 +87,15 @@ type fileBlocker struct {
 	Mins   Vec3          `json:"mins"`
 	Maxs   Vec3          `json:"maxs"`
 	Solid  bool          `json:"solid,omitempty"`
+	Team   int32         `json:"team"`
 }
 
 type fileEnt struct {
-	Entity int32  `json:"entity"`
-	Class  string `json:"class"`
-	Model  string `json:"model,omitempty"`
-	Skills uint8  `json:"skills"`
+	Entity   int32  `json:"entity"`
+	Class    string `json:"class"`
+	Model    string `json:"model,omitempty"`
+	Skills   uint8  `json:"skills"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 type fileSpawn struct {
@@ -150,14 +153,14 @@ func vecPtr(v Vec3) *Vec3 {
 
 func (g *Graph) toFile() *fileGraph {
 	f := &fileGraph{
-		Format: g.Format, Map: g.Map, Checksum: g.Checksum, Physics: g.PhysicsHash, Params: g.Params,
+		Format: g.Format, Map: g.Map, Checksum: g.Checksum, Physics: g.PhysicsHash, Params: g.Params, Scene: g.Scene,
 		Blockers: make([]fileBlocker, len(g.Blockers)), Ents: make([]fileEnt, len(g.Ents)),
 		Spawns: make([]fileSpawn, len(g.Spawns)), Nodes: make([]fileNode, len(g.Nodes)), Edges: make([]fileEdge, len(g.Edges)),
 	}
 	for i, b := range g.Blockers {
 		f.Blockers[i] = fileBlocker{Entity: b.Entity, Class: b.Class, Model: b.Model, Kind: b.Kind, Poses: b.Poses,
 			Gone: b.Gone, Spawn: b.Spawn, Skills: b.Skills, Start: vecPtr(b.Start), End: vecPtr(b.End),
-			Head: b.Headnode, Mins: b.Mins, Maxs: b.Maxs, Solid: b.Solid}
+			Head: b.Headnode, Mins: b.Mins, Maxs: b.Maxs, Solid: b.Solid, Team: b.Team}
 	}
 	f.Solids = make([]fileSolid, len(g.Solids))
 	for i, s := range g.Solids {
@@ -202,7 +205,7 @@ func (f *fileGraph) toGraph() (*Graph, error) {
 	if f.Format != FormatVersion {
 		return nil, fmt.Errorf("nav: file format %d, want %d", f.Format, FormatVersion)
 	}
-	g := &Graph{Format: f.Format, Map: f.Map, Checksum: f.Checksum, PhysicsHash: f.Physics, Params: f.Params, Skill: -1,
+	g := &Graph{Format: f.Format, Map: f.Map, Checksum: f.Checksum, PhysicsHash: f.Physics, Params: f.Params, Scene: f.Scene, Skill: -1,
 		Blockers: make([]Blocker, len(f.Blockers)), Ents: make([]Ent, len(f.Ents)), Spawns: make([]Spawn, len(f.Spawns)),
 		Nodes: make([]Node, len(f.Nodes)), Edges: make([]Edge, len(f.Edges))}
 	for i, b := range f.Blockers {
@@ -213,7 +216,7 @@ func (f *fileGraph) toGraph() (*Graph, error) {
 			return nil, fmt.Errorf("nav: blocker %d: bad spawn state %d", i, b.Spawn)
 		}
 		nb := Blocker{Entity: b.Entity, Class: b.Class, Model: b.Model, Kind: b.Kind, Poses: b.Poses, Gone: b.Gone, Spawn: b.Spawn, Skills: b.Skills,
-			Headnode: b.Head, Mins: b.Mins, Maxs: b.Maxs, Solid: b.Solid}
+			Headnode: b.Head, Mins: b.Mins, Maxs: b.Maxs, Solid: b.Solid, Team: b.Team}
 		if b.Start != nil {
 			nb.Start = *b.Start
 		}

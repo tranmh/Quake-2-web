@@ -69,16 +69,16 @@ type Report struct {
 	// simulations run, Fast the edges accepted by the fast path.
 	Candidates, Sims, Fast int64
 	Nodes, Edges           int
-	// FromRest is the number of edges (before pruning) flagged
-	// nav.EdgeFromRest; StopFails those of them that also fail when the
-	// player first stops at the start (navsim.StopAt) after a running
-	// entry.
-	FromRest, StopFails int
+	// FromRest and Fragile are the numbers of edges (before pruning)
+	// flagged nav.EdgeFromRest and nav.EdgeFragile; StopFails the FromRest
+	// edges that also fail when the player first stops at the start
+	// (navsim.StopAt) after a running entry.
+	FromRest, Fragile, StopFails int
 }
 
 func (r *Report) String() string {
-	s := fmt.Sprintf("%s: %d nodes, %d edges in %v (%d workers; %d candidates, %d sims, %d fast; %d from rest, %d of them fail after stopping)\n",
-		r.Map, r.Nodes, r.Edges, r.Total.Round(time.Millisecond), r.Workers, r.Candidates, r.Sims, r.Fast, r.FromRest, r.StopFails)
+	s := fmt.Sprintf("%s: %d nodes, %d edges in %v (%d workers; %d candidates, %d sims, %d fast; %d from rest (%d fail after stopping), %d fragile)\n",
+		r.Map, r.Nodes, r.Edges, r.Total.Round(time.Millisecond), r.Workers, r.Candidates, r.Sims, r.Fast, r.FromRest, r.StopFails, r.Fragile)
 	for _, st := range r.Stages {
 		s += fmt.Sprintf("  %-10s %8v  %d\n", st.Name, st.Took.Round(time.Millisecond), st.Count)
 	}
