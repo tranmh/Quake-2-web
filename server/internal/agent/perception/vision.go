@@ -30,6 +30,12 @@ const (
 type ViewOptions struct {
 	FovX   float32 // degrees; 0 uses the player state's fov (DefaultFov if 0)
 	Aspect float32 // width/height; 0 means DefaultAspect
+	// NoOcclusion makes a Vision without a collision map treat every line
+	// of sight as clear and every point as inside the PVS and PHS. It
+	// exists for synthetic tests of the field of view. Without it a Vision
+	// with no map fails closed: it sees nothing (sounds are still heard).
+	// It has no effect when a map is set.
+	NoOcclusion bool
 }
 
 // BrushPose is the pose of a brush entity (inline model "*N") in a frame.
@@ -51,8 +57,10 @@ type brushOcc struct {
 // sight against the world and the brush entities of the frame, and the
 // server's PVS/PHS and area culling. It owns its collision state on the
 // shared immutable cmodel.Map, so each bot has its own Vision. Begin sets
-// the frame; the queries are valid until the next Begin. A nil map means
-// no geometry: every line of sight is clear and everything is in the PVS.
+// the frame; the queries are valid until the next Begin. Without a map the
+// Vision is blind (no line of sight, nothing in the PVS or PHS) unless
+// ViewOptions.NoOcclusion asks for the opposite; the field of view works
+// either way.
 type Vision struct {
 	cm  *cmodel.Map
 	st  *cmodel.State
@@ -72,7 +80,8 @@ type Vision struct {
 	leafs          [128]int32
 }
 
-// NewVision returns a Vision on map cm (nil: no geometry).
+// NewVision returns a Vision on map cm (nil: blind, or without occlusion
+// when opt.NoOcclusion is set).
 func NewVision(cm *cmodel.Map, opt ViewOptions) *Vision {
 	v := &Vision{cm: cm, opt: opt}
 	if cm != nil {
@@ -83,6 +92,9 @@ func NewVision(cm *cmodel.Map, opt ViewOptions) *Vision {
 
 // Map returns the collision map (nil if none).
 func (v *Vision) Map() *cmodel.Map { return v.cm }
+
+// open is the answer of the geometry queries without a map.
+func (v *Vision) open() bool { return v.opt.NoOcclusion }
 
 // Begin sets up the frame: the eye position, the view angles, the frame's
 // fov (player_state_t.fov; overridden by ViewOptions.FovX), the area bits
@@ -238,6 +250,19 @@ func (v *Vision) SeesPoint(p Vec3) bool { return v.InFOV(p) && v.LOS(p, -1) }
 // the field of view with a line of sight from the eye. It samples the
 // center, near the top and bottom, and for large boxes the inset corners.
 func (v *Vision) SeesBox(absmin, absmax Vec3, ignore int32) bool {
+	_, ok := v.VisiblePoint(absmin, absmax, ignore)
+	return ok
+}
+
+// VisiblePoint returns the first visible sample of the world box [absmin,
+// absmax] in the order SeesBox tries them (the center first), or the eye
+// itself when the eye is inside the box. ok is false when no part of the
+// box is visible. Aiming at the returned point keeps every query inside
+// the view frustum.
+func (v *Vision) VisiblePoint(absmin, absmax Vec3, ignore int32) (p Vec3, ok bool) {
+	if v.cm == nil && !v.open() {
+		return Vec3{}, false
+	}
 	inside := true
 	for i := 0; i < 3; i++ {
 		if v.eye[i] < absmin[i] || v.eye[i] > absmax[i] {
@@ -245,14 +270,14 @@ func (v *Vision) SeesBox(absmin, absmax Vec3, ignore int32) bool {
 		}
 	}
 	if inside {
-		return true
+		return v.eye, true
 	}
 	for _, p := range boxSamples(absmin, absmax) {
 		if v.InFOV(p) && v.LOS(p, ignore) {
-			return true
+			return p, true
 		}
 	}
-	return false
+	return Vec3{}, false
 }
 
 func boxSamples(lo, hi Vec3) []Vec3 {
@@ -297,7 +322,7 @@ func (v *Vision) SeesSegment(a, b Vec3, n int, ignore int32) bool {
 // a surface is visible.
 func (v *Vision) clear(a, b Vec3, mask int32, ignore int32) bool {
 	if v.cm == nil {
-		return true
+		return v.open()
 	}
 	length := shared.VectorLength(shared.VectorSubtract(b, a))
 	if length < 1 {
@@ -367,7 +392,7 @@ func (v *Vision) areaOpen(area int32) bool {
 // C: server/sv_ents.c:527 SV_BuildClientFrame
 func (v *Vision) InPVS(absmin, absmax Vec3) bool {
 	if v.cm == nil {
-		return true
+		return v.open()
 	}
 	for i := 0; i < 3; i++ {
 		absmin[i]--
@@ -405,7 +430,7 @@ func (v *Vision) PointInPVS(p Vec3) bool {
 // point, against the PHS).
 func (v *Vision) InPHS(p Vec3) bool {
 	if v.cm == nil {
-		return true
+		return v.open()
 	}
 	leaf := int(v.st.PointLeafnum(p))
 	if !v.areaOpen(v.cm.LeafArea(leaf)) {

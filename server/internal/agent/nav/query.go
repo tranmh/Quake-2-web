@@ -45,15 +45,25 @@ func (g *Graph) Nearby(p Vec3, radius float32) []Candidate {
 	s := g.spatialIndex()
 	r2 := radius * radius
 	var out []Candidate
-	for cx := cellOf(p[0] - radius); cx <= cellOf(p[0]+radius); cx++ {
-		for cy := cellOf(p[1] - radius); cy <= cellOf(p[1]+radius); cy++ {
-			for _, id := range s.cells[cellKey(cx, cy)] {
-				o := g.Nodes[id].Origin
-				dx, dy, dz := o[0]-p[0], o[1]-p[1], (o[2]-p[2])*ZWeight
-				if dx*dx+dy*dy > r2 || dz*dz > r2 {
-					continue
-				}
-				out = append(out, Candidate{id, dx*dx + dy*dy + dz*dz})
+	add := func(ids []NodeID) {
+		for _, id := range ids {
+			o := g.Nodes[id].Origin
+			dx, dy, dz := o[0]-p[0], o[1]-p[1], (o[2]-p[2])*ZWeight
+			if dx*dx+dy*dy > r2 || dz*dz > r2 {
+				continue
+			}
+			out = append(out, Candidate{id, dx*dx + dy*dy + dz*dz})
+		}
+	}
+	x0, x1, y0, y1 := cellOf(p[0]-radius), cellOf(p[0]+radius), cellOf(p[1]-radius), cellOf(p[1]+radius)
+	if span := (int64(x1) - int64(x0) + 1) * (int64(y1) - int64(y0) + 1); span > int64(len(s.cells)) || !finite(radius) {
+		for _, ids := range s.cells { // a radius larger than the level: scan it all
+			add(ids)
+		}
+	} else {
+		for cx := x0; cx <= x1; cx++ {
+			for cy := y0; cy <= y1; cy++ {
+				add(s.cells[cellKey(cx, cy)])
 			}
 		}
 	}

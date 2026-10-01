@@ -26,6 +26,7 @@ const (
 	SoundPickup              // item taken
 	SoundPlayer              // player noise (pain, jump, fall, breath)
 	SoundAmbient             // world ambience
+	SoundStep                // a monster's footstep: it moves, nothing more
 )
 
 // String returns the kind's name.
@@ -63,6 +64,8 @@ func (k SoundKind) String() string {
 		return "player"
 	case SoundAmbient:
 		return "ambient"
+	case SoundStep:
+		return "step"
 	}
 	return "sound" + strconv.Itoa(int(k))
 }
@@ -133,6 +136,19 @@ func ClassifySound(path string) (SoundKind, string) {
 	case "infatck3.wav": // a soldier or enforcer cocking its gun (C: m_soldier.c soldier_cock)
 		return SoundIdle, fam
 	}
+	switch p {
+	case "boss3/d_hit.wav": // jorg's body hits the floor (C: m_boss31.c jorg_death_hit)
+		return SoundDeath, fam
+	case "makron/bhit.wav": // in makron's death frames (C: m_boss32.c makron_hit)
+		return SoundDeath, fam
+	case "boss3/w_loop.wav": // jorg's guns winding up (C: m_boss31.c jorg_attack)
+		return SoundAttack, fam
+	}
+	// footsteps: tank_footstep, mutant_step, jorg_step_*, makron_step_*
+	// (C: game/m_tank.c, m_mutant.c, m_boss31.c, m_boss32.c)
+	if strings.HasPrefix(file, "step") {
+		return SoundStep, fam
+	}
 	switch {
 	case strings.Contains(file, "deth") || strings.Contains(file, "death") || strings.Contains(file, "dth") ||
 		strings.Contains(file, "die"):
@@ -148,7 +164,8 @@ func ClassifySound(path string) (SoundKind, string) {
 	case strings.Contains(file, "atck") || strings.Contains(file, "attack") || strings.Contains(file, "melee") ||
 		strings.Contains(file, "swing") || strings.Contains(file, "hit") || strings.Contains(file, "punch") ||
 		strings.Contains(file, "slash") || strings.Contains(file, "strike") || strings.Contains(file, "thud") ||
-		strings.Contains(file, "step") || strings.Contains(file, "slam"):
+		strings.Contains(file, "slam") || strings.Contains(file, "fire") || strings.Contains(file, "railgun") ||
+		strings.Contains(file, "rail_up"):
 		return SoundAttack, fam
 	}
 	return SoundOther, fam

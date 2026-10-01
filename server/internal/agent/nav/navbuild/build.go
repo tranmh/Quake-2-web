@@ -13,8 +13,10 @@
 //     player arrives;
 //  4. conditions (which mover poses, walls, lasers an edge's swept hull is
 //     compatible with) and effects (triggers, buttons, items it sets off);
-//  5. pruning to what is reachable from a spawn point, a degree cap and
-//     regions.
+//  5. a degree cap, then running entries: every simulated edge is replayed
+//     right after walking into its start node at full speed, and flagged
+//     nav.EdgeFromRest when that fails;
+//  6. pruning to what is reachable from a spawn point, and regions.
 //
 // The result does not depend on the number of workers: every job is a pure
 // function of the map and the params, and results are merged in a fixed
@@ -44,6 +46,10 @@ type Config struct {
 	Workers int
 	// Logf, when set, reports the stages.
 	Logf func(format string, args ...any)
+	// Clip, when set, builds only the nodes inside the box (Min, Max): a
+	// part of a map, for tests and for debugging one area. The result is
+	// still deterministic, but it is not a full graph (do not cache it).
+	Clip *[2]nav.Vec3
 }
 
 // Stage is the timing of one build stage.
@@ -63,11 +69,16 @@ type Report struct {
 	// simulations run, Fast the edges accepted by the fast path.
 	Candidates, Sims, Fast int64
 	Nodes, Edges           int
+	// FromRest is the number of edges (before pruning) flagged
+	// nav.EdgeFromRest; StopFails those of them that also fail when the
+	// player first stops at the start (navsim.StopAt) after a running
+	// entry.
+	FromRest, StopFails int
 }
 
 func (r *Report) String() string {
-	s := fmt.Sprintf("%s: %d nodes, %d edges in %v (%d workers; %d candidates, %d sims, %d fast)\n",
-		r.Map, r.Nodes, r.Edges, r.Total.Round(time.Millisecond), r.Workers, r.Candidates, r.Sims, r.Fast)
+	s := fmt.Sprintf("%s: %d nodes, %d edges in %v (%d workers; %d candidates, %d sims, %d fast; %d from rest, %d of them fail after stopping)\n",
+		r.Map, r.Nodes, r.Edges, r.Total.Round(time.Millisecond), r.Workers, r.Candidates, r.Sims, r.Fast, r.FromRest, r.StopFails)
 	for _, st := range r.Stages {
 		s += fmt.Sprintf("  %-10s %8v  %d\n", st.Name, st.Took.Round(time.Millisecond), st.Count)
 	}
@@ -215,6 +226,7 @@ func Build(ctx context.Context, name string, raw []byte, cfg Config) (*nav.Graph
 		{"touch", b.buildTouchEnds},
 		{"ledges", b.findLedges},
 		{"edges", b.buildEdges},
+		{"entry", b.checkEntries},
 		{"finish", b.finish},
 	}
 	for _, st := range stages {

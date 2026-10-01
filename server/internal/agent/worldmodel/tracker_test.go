@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"quake2web/server/internal/agent/perception"
 	"quake2web/server/internal/fakeclient"
 	"quake2web/server/internal/q2const"
 	"quake2web/server/internal/qcommon/shared"
@@ -356,5 +357,157 @@ func TestActorsBounded(t *testing.T) {
 	s.step()
 	if tr := s.track(id); tr.Pos[0] != 160 {
 		t.Fatalf("binding after compaction: %+v", tr)
+	}
+}
+
+// TestUnpositionedSoundsNeedEarshot: a sound or flash of an entity outside
+// the frame comes without a position (the server sends it to its whole
+// PHS); it counts only when the emitter's last perceived position is in
+// earshot, and even then it does not refresh the track's position or
+// confidence.
+func TestUnpositionedSoundsNeedEarshot(t *testing.T) {
+	type got struct {
+		life       LifeState
+		aware      Awareness
+		lastUpdate int64
+		lastHeard  int64
+		sounds     int
+	}
+	run := func(x float32, atten float32) (before, after got, conf float32) {
+		s := newSim(t)
+		s.ents = []shared.EntityState{soldierAt(20, Vec3{x, 0, 24})}
+		s.step()
+		s.ents = nil // it leaves the packet
+		s.ps.ViewAngles[q2const.YAW] = 180
+		for i := 0; i < 20; i++ {
+			s.step()
+		}
+		snap := func() got {
+			tr := s.track("e1")
+			return got{tr.Life, tr.Awareness, tr.LastUpdate, tr.LastHeard, len(s.w.Belief().Sounds)}
+		}
+		before = snap()
+		s.ev.Sounds = []fakeclient.Sound{{SoundNum: sDeath, Ent: 20, Volume: 1, Attenuation: atten}}
+		s.ev.MuzzleFlashes = []fakeclient.MuzzleFlash{{Ent: 20, Weapon: q2const.MZ2_SOLDIER_BLASTER_1, Monster: true}}
+		s.step()
+		after = snap()
+		return before, after, s.track("e1").Confidence
+	}
+
+	// last seen 3000 units away: out of earshot, nothing changes
+	before, after, conf := run(3000, q2const.ATTN_NORM)
+	if after.life != LifeAlive || after.aware != Idle || after.lastHeard != 0 || after.lastUpdate != before.lastUpdate ||
+		after.sounds != before.sounds {
+		t.Fatalf("far: %+v -> %+v", before, after)
+	}
+	if want := decay(2100); math.Abs(float64(conf-want)) > 1e-3 {
+		t.Fatalf("far: confidence %v, want %v (no refresh)", conf, want)
+	}
+	// 300 units: heard, the cry and the shot count, the position does not
+	before, after, conf = run(300, q2const.ATTN_NORM)
+	if after.life != LifeDying || after.lastHeard != 2200 || after.lastUpdate != before.lastUpdate ||
+		after.sounds != before.sounds+1 {
+		t.Fatalf("near: %+v -> %+v", before, after)
+	}
+	if conf >= 0.9 {
+		t.Fatalf("near: an unpositioned sound refreshed the confidence to %v", conf)
+	}
+	// an idle-attenuated sound fades sooner: 1500 units is too far
+	if _, after, _ = run(1500, q2const.ATTN_IDLE); after.life != LifeAlive {
+		t.Fatalf("idle attenuation at 1500: %+v", after)
+	}
+	// ATTN_NONE is heard everywhere
+	if _, after, _ = run(3000, q2const.ATTN_NONE); after.life != LifeDying {
+		t.Fatalf("ATTN_NONE: %+v", after)
+	}
+
+	// an entity never perceived makes no track and no sound event
+	s := newSim(t)
+	s.sound(sDeath, 77)
+	s.ev.MuzzleFlashes = []fakeclient.MuzzleFlash{{Ent: 77, Weapon: q2const.MZ2_SOLDIER_BLASTER_1, Monster: true}}
+	if b := s.step(); len(b.Tracks) != 0 || len(b.Sounds) != 0 {
+		t.Fatalf("unknown emitter: tracks %+v sounds %+v", b.Tracks, b.Sounds)
+	}
+}
+
+// TestFootstepsAndLoginFlashes: a tank's footsteps place it but are no
+// attack; a login or respawn flash is no shot.
+func TestFootstepsAndLoginFlashes(t *testing.T) {
+	s := newSim(t)
+	s.cs[q2const.CS_SOUNDS+5] = "tank/step.wav"
+	s.ents = []shared.EntityState{soldierAt(20, Vec3{200, 0, 24}), soldierAt(21, Vec3{-200, 0, 24})}
+	s.step()
+	for i := 0; i < 5; i++ {
+		s.sound(5, 20)
+		s.sound(5, 21) // behind: heard at its origin
+		s.ev.MuzzleFlashes = []fakeclient.MuzzleFlash{{Ent: 20, Weapon: q2const.MZ_LOGIN}, {Ent: 22, Weapon: q2const.MZ_RESPAWN}}
+		s.step()
+	}
+	b := s.w.Belief()
+	if len(b.Tracks) != 2 {
+		t.Fatalf("tracks %+v", b.Tracks)
+	}
+	for _, tr := range b.Tracks {
+		if tr.Awareness != Idle || tr.LastAttack != 0 || tr.Weapon != "" {
+			t.Errorf("track %s after footsteps and a login flash: %+v", tr.ID, tr)
+		}
+	}
+	if tr := s.track("e2"); tr.Num != 21 || !tr.Heard || tr.Pos != (Vec3{-200, 0, 24}) {
+		t.Fatalf("heard tank steps %+v", tr)
+	}
+	// heard walking behind the bot is no combat (a soldier in view is)
+	s.ents = s.ents[1:]
+	for i := 0; i < 31; i++ {
+		s.sound(5, 21)
+		s.step()
+	}
+	if s.w.Belief().Self.InCombat {
+		t.Fatal("footsteps are no combat")
+	}
+	if k, _ := perception.ClassifySound("tank/step.wav"); b.Sounds[len(b.Sounds)-1].Kind != perception.SoundStep.String() || k != perception.SoundStep {
+		t.Fatalf("sound kinds %+v", b.Sounds)
+	}
+}
+
+// TestOccludedInFOVNotTracked: in the field of view and the PVS but hidden
+// by the slab: no track.
+func TestOccludedInFOVNotTracked(t *testing.T) {
+	s := newSim(t)
+	s.ps.ViewAngles[q2const.PITCH] = 30
+	s.ents = []shared.EntityState{soldierAt(20, Vec3{100, 0, -100})}
+	for i := 0; i < 5; i++ {
+		s.step()
+	}
+	if v := s.w.Percept().Vision(); !v.InFOV(Vec3{100, 0, -96}) {
+		t.Fatal("the soldier is not in the fov")
+	}
+	if b := s.w.Belief(); len(b.Tracks) != 0 {
+		t.Fatalf("occluded soldier tracked: %+v", b.Tracks)
+	}
+}
+
+// TestProjectileOldOriginOnlyWhenVisible: a new projectile's old_origin
+// (one frame back) gives its velocity only when that point is in view, as
+// the client draws it from there; otherwise its angles and the class speed
+// do.
+func TestProjectileOldOriginOnlyWhenVisible(t *testing.T) {
+	for _, tc := range []struct {
+		old  Vec3
+		want Vec3
+	}{
+		{Vec3{165, 0, 40}, Vec3{-650, 0, 0}},  // in view: displacement 65 per frame
+		{Vec3{-100, 0, 40}, Vec3{-650, 0, 0}}, // behind the bot: the angles (yaw 180) say -x
+	} {
+		s := newSim(t)
+		s.ents = []shared.EntityState{{Number: 50, ModelIndex: mRocket, Origin: Vec3{100, 0, 40}, OldOrigin: tc.old,
+			Angles: Vec3{0, 180, 0}, Solid: 4129}}
+		b := s.step()
+		if len(b.Projectiles) != 1 {
+			t.Fatalf("projectiles %+v", b.Projectiles)
+		}
+		v := b.Projectiles[0].Vel
+		if math.Abs(float64(v[0]-tc.want[0])) > 1 || math.Abs(float64(v[1])) > 1 || math.Abs(float64(v[2])) > 1 {
+			t.Errorf("old origin %v: velocity %v, want %v", tc.old, v, tc.want)
+		}
 	}
 }

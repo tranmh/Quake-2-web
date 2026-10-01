@@ -40,6 +40,9 @@ type blockerGeo struct {
 	// travel is the mover's Pos1 -> Pos2 time (s), speed its move speed
 	// (units/s for trains)
 	travel, speed float32
+	// lowTrigger: a plat with PLAT_LOW_TRIGGER (its center trigger only
+	// covers the bottom, so it goes down with a rider)
+	lowTrigger bool
 }
 
 // vol is a box edges report entering.
@@ -78,17 +81,18 @@ type scene struct {
 	buttons  map[int]bool
 	// touchButtons are the buttons a touch presses (button_touch)
 	touchButtons map[int]bool
+	// pushable are the solids a touch moves (barrels)
+	pushable map[int]bool
 	ents     []nav.Ent
 	spawns   []spawnInfo
-	// moverByID maps a solid ID (entity) of a blocker to its index.
+	// blockerByID maps a blocker's solid ID (its entity) to its index.
 	blockerByID map[int]int32
 }
 
 func skillBit(s int) uint8 { return 1 << uint(s) }
 
 func newScene(maps [4]*mapdata.Map, f *fileGeo) (*scene, error) {
-	sc := &scene{maps: maps, buttons: map[int]bool{}, touchButtons: map[int]bool{}, blockerByID: map[int]int32{}}
-	base := maps[1]
+	sc := &scene{maps: maps, buttons: map[int]bool{}, touchButtons: map[int]bool{}, pushable: map[int]bool{}, blockerByID: map[int]int32{}}
 
 	// movers and lasers, union over skills in entity order
 	type moverAt struct {
@@ -97,11 +101,11 @@ func newScene(maps [4]*mapdata.Map, f *fileGeo) (*scene, error) {
 		killed bool
 	}
 	movers := map[int]*moverAt{}
-	lasers := map[int]*struct {
+	type laserAt struct {
 		l      *mapdata.Laser
 		skills uint8
-		killed bool
-	}{}
+	}
+	lasers := map[int]*laserAt{}
 	for s, m := range maps {
 		for i := range m.Movers {
 			mv := &m.Movers[i]
@@ -116,11 +120,7 @@ func newScene(maps [4]*mapdata.Map, f *fileGeo) (*scene, error) {
 		for i := range m.Lasers {
 			l := &m.Lasers[i]
 			if lasers[l.Entity] == nil {
-				lasers[l.Entity] = &struct {
-					l      *mapdata.Laser
-					skills uint8
-					killed bool
-				}{l: l}
+				lasers[l.Entity] = &laserAt{l: l}
 			}
 			lasers[l.Entity].skills |= skillBit(s)
 		}
@@ -219,9 +219,6 @@ func newScene(maps [4]*mapdata.Map, f *fileGeo) (*scene, error) {
 		sc.spawns = append(sc.spawns, *sp[id])
 	}
 	sort.Slice(sc.ents, func(i, j int) bool { return sc.ents[i].Entity < sc.ents[j].Entity })
-	if base == nil {
-		return nil, fmt.Errorf("navbuild: no skill 1 map data")
-	}
 	return sc, nil
 }
 
@@ -265,7 +262,9 @@ func (sc *scene) addMover(mv *mapdata.Mover, skills uint8, killed bool) error {
 		Headnode: mv.Headnode, Mins: mv.Mins, Maxs: mv.Maxs, Solid: true}
 	g := blockerGeo{solidID: mv.Entity, headnode: mv.Headnode, mins: mv.Mins, maxs: mv.Maxs, mask: q2const.MASK_PLAYERSOLID, solid: true,
 		travel: mv.TravelTime, speed: mv.Speed}
-	pose := func(name string, o, a Vec3) { b.Poses = append(b.Poses, nav.BlockerPose{Name: name, Origin: o, Angles: a}) }
+	pose := func(name string, o, a Vec3) {
+		b.Poses = append(b.Poses, nav.BlockerPose{Name: name, Origin: o, Angles: a})
+	}
 	static := func() {
 		if mv.Solid && strings.HasPrefix(mv.Model, "*") {
 			sc.statics = append(sc.statics, navsim.Solid{ID: mv.Entity, Headnode: mv.Headnode, Origin: mv.Origin, Angles: mv.Angles, Mins: mv.Mins, Maxs: mv.Maxs})
@@ -295,6 +294,7 @@ func (sc *scene) addMover(mv *mapdata.Mover, skills uint8, killed bool) error {
 		pose("top", mv.Pos1, mv.Angles)
 		pose("bottom", mv.Pos2, mv.Angles)
 		g.tops = true
+		g.lowTrigger = mv.Spawnflags&mapdata.PlatLowTrigger != 0
 	case mapdata.MoverTrain:
 		b.Kind = nav.BlockTrain
 		for i, p := range mv.Path {
@@ -402,7 +402,11 @@ func (sc *scene) addPointSolids(f *fileGeo) {
 				continue
 			}
 			seen[i] = true
-			sc.statics = append(sc.statics, navsim.Solid{ID: i, Box: true, Origin: origin, Mins: mins, Maxs: maxs})
+			sc.statics = append(sc.statics, navsim.Solid{ID: i, Box: true, Origin: origin, Mins: mins, Maxs: maxs,
+				Pushable: e.Classname == "misc_explobox"})
+			if e.Classname == "misc_explobox" {
+				sc.pushable[i] = true
+			}
 		}
 	}
 	sort.SliceStable(sc.statics, func(a, b int) bool { return sc.statics[a].ID < sc.statics[b].ID })

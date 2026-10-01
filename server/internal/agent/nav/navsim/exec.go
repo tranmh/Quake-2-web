@@ -15,7 +15,10 @@ const (
 	// RecipeCrouch is RecipeWalk ducked (upmove -400, speed 100).
 	RecipeCrouch
 	// RecipeJump runs towards the target (after an optional back-up for a
-	// run-up) and presses jump for one command at the takeoff point.
+	// run-up) and presses jump for one command at the takeoff point. Like
+	// RecipeDrop and RecipeLadder it first walks a player that is not at
+	// rest at the start back there and stops it (see StopAt): they were
+	// validated from rest.
 	RecipeJump
 	// RecipeDrop walks off a ledge slowly (forwardmove 200) so the fall is
 	// steep.
@@ -32,19 +35,21 @@ const (
 	RecipeRide
 )
 
-var recipeNames = [...]string{"none", "walk", "crouch", "jump", "drop", "ladder", "swim", "waterjump", "ride"}
+func recipeNames() [9]string {
+	return [9]string{"none", "walk", "crouch", "jump", "drop", "ladder", "swim", "waterjump", "ride"}
+}
 
 // String returns the lower-case recipe name.
 func (r Recipe) String() string {
-	if int(r) < len(recipeNames) {
-		return recipeNames[r]
+	if names := recipeNames(); int(r) < len(names) {
+		return names[r]
 	}
 	return "?"
 }
 
 // ParseRecipe is the inverse of String.
 func ParseRecipe(s string) (Recipe, bool) {
-	for i, n := range recipeNames {
+	for i, n := range recipeNames() {
 		if n == s {
 			return Recipe(i), true
 		}
@@ -96,14 +101,14 @@ func (p Plan) Executor() Executor {
 		if fwd == 0 {
 			fwd = 200
 		}
-		return &walker{target: p.Target, fwd: fwd, msec: msec}
+		return &walker{target: p.Target, fwd: fwd, msec: msec, stop: &stopper{target: p.From}}
 	case RecipeJump:
 		if fwd == 0 {
 			fwd = 400
 		}
 		return newJumper(p, fwd, msec)
 	case RecipeLadder:
-		return &climber{target: p.Target, yaw: p.Yaw, msec: msec}
+		return &climber{target: p.Target, yaw: p.Yaw, msec: msec, stop: stopper{target: p.From}}
 	case RecipeSwim:
 		return &swimmer{target: p.Target, msec: msec}
 	case RecipeWaterJump:
@@ -150,14 +155,127 @@ func (h *heading) to(a, b Vec3) float32 {
 	return h.yaw
 }
 
+// Stopping. The jump, drop and ladder executors were validated from rest
+// at the start node, but a follower switches to them at full speed. They
+// therefore begin by steering the player back to the start and stopping
+// it there (a no-op for a player already at rest there, so runs from rest
+// are unchanged); StopAt offers the same to followers for other edges.
+const (
+	// StopRadius and StopSpeed: a player within StopRadius (horizontally)
+	// of the stop point and slower than StopSpeed is at rest there.
+	StopRadius = 1
+	StopSpeed  = 10
+	// stopTau is the time constant of the approach (the wanted velocity is
+	// the remaining distance / stopTau), stopMaxMsec the time it gets.
+	stopTau     = 0.1
+	stopMaxMsec = 2000
+)
+
+// Stopped reports whether s is at rest at p (see StopRadius).
+func Stopped(s *State, p Vec3) bool {
+	o := s.Origin()
+	return math.Hypot(float64(o[0]-p[0]), float64(o[1]-p[1])) <= StopRadius && s.HSpeed() <= StopSpeed
+}
+
+// StopAt returns an executor that walks the player to p and stops it there
+// (Stopped), for a follower that must start an edge flagged from rest.
+// After Stopped holds, or 2 s, or when the player is not on the ground, it
+// returns idle commands.
+func StopAt(p Vec3, msec int) Executor {
+	if msec <= 0 {
+		msec = 25
+	}
+	return &stopExec{st: stopper{target: p}, msec: msec}
+}
+
+type stopExec struct {
+	st   stopper
+	msec int
+}
+
+func (e *stopExec) Next(_ *World, s *State) Cmd {
+	if c, ok := e.st.next(s, e.msec); ok {
+		return c
+	}
+	c := Cmd{Msec: uint8(e.msec), Yaw: s.ViewYaw}
+	if s.Ducked() {
+		c.Up = -400
+	}
+	return c
+}
+
+// stopper steers to target and stops there: each command asks pmove for
+// the velocity that closes the remaining distance within stopTau, given
+// what ground friction leaves of the current one (PM_Friction, then
+// PM_Accelerate along the velocity error).
+type stopper struct {
+	target  Vec3
+	elapsed int
+	done    bool
+}
+
+// next returns the command, or ok=false once the player is at rest at the
+// target, in the air or in water, or the time is up; from then on it
+// always reports false.
+func (e *stopper) next(s *State, msec int) (c Cmd, ok bool) {
+	if e.done {
+		return Cmd{}, false
+	}
+	if Stopped(s, e.target) || !s.OnGround() || s.WaterLevel >= 2 || e.elapsed >= stopMaxMsec {
+		e.done = true
+		return Cmd{}, false
+	}
+	e.elapsed += msec
+	o, v := s.Origin(), s.Velocity()
+	dt := float64(msec) / 1000
+	// velocity after friction (pm_friction 6, pm_stopspeed 100)
+	vx, vy := float64(v[0]), float64(v[1])
+	if full := math.Sqrt(vx*vx + vy*vy + float64(v[2])*float64(v[2])); full >= 1 {
+		f := math.Max(full-math.Max(full, 100)*6*dt, 0) / full
+		vx, vy = vx*f, vy*f
+	} else {
+		vx, vy = 0, 0
+	}
+	maxSpeed := 300.0
+	if s.Ducked() {
+		maxSpeed = 100
+	}
+	wx, wy := float64(e.target[0]-o[0])/stopTau, float64(e.target[1]-o[1])/stopTau
+	if l := math.Hypot(wx, wy); l > maxSpeed {
+		wx, wy = wx*maxSpeed/l, wy*maxSpeed/l
+	}
+	ex, ey := wx-vx, wy-vy
+	c = Cmd{Msec: uint8(msec), Yaw: s.ViewYaw}
+	if s.Ducked() {
+		c.Up = -400
+	}
+	if el := math.Hypot(ex, ey); el >= 0.5 {
+		// pm_accelerate 10: one command adds 10*wishspeed*dt along wishdir
+		c.Forward = int16(math.Min(el/(10*dt), maxSpeed) + 0.5)
+		yaw := math.Atan2(ey, ex) * 180 / math.Pi
+		if yaw < 0 {
+			yaw += 360
+		}
+		c.Yaw = float32(yaw)
+	}
+	return c, true
+}
+
 type walker struct {
 	target  Vec3
 	fwd, up int16
 	msec    int
 	h       heading
+	// stop: come to rest at the start first (drops)
+	stop *stopper
 }
 
 func (e *walker) Next(_ *World, s *State) Cmd {
+	if e.stop != nil {
+		if c, ok := e.stop.next(s, e.msec); ok {
+			return c
+		}
+	}
 	return Cmd{Msec: uint8(e.msec), Forward: e.fwd, Up: e.up, Yaw: e.h.to(s.Origin(), e.target)}
 }
 
@@ -169,10 +287,11 @@ type jumper struct {
 	elapsed, ground int
 	jumped          bool
 	h               heading
+	stop            stopper
 }
 
 func newJumper(p Plan, fwd int16, msec int) *jumper {
-	e := &jumper{target: p.Target, takeoff: p.Takeoff, fwd: fwd, backup: p.BackupMsec, msec: msec}
+	e := &jumper{target: p.Target, takeoff: p.Takeoff, fwd: fwd, backup: p.BackupMsec, msec: msec, stop: stopper{target: p.From}}
 	dx, dy := float64(p.Target[0]-p.From[0]), float64(p.Target[1]-p.From[1])
 	if l := math.Hypot(dx, dy); l > 0 {
 		e.dir = [2]float32{float32(dx / l), float32(dy / l)}
@@ -181,6 +300,9 @@ func newJumper(p Plan, fwd int16, msec int) *jumper {
 }
 
 func (e *jumper) Next(_ *World, s *State) Cmd {
+	if c, ok := e.stop.next(s, e.msec); ok {
+		return c
+	}
 	o := s.Origin()
 	c := Cmd{Msec: uint8(e.msec), Yaw: e.h.to(o, e.target)}
 	if e.elapsed < e.backup {
@@ -211,9 +333,13 @@ type climber struct {
 	yaw    float32
 	msec   int
 	h      heading
+	stop   stopper
 }
 
 func (e *climber) Next(w *World, s *State) Cmd {
+	if c, ok := e.stop.next(s, e.msec); ok {
+		return c
+	}
 	o := s.Origin()
 	c := Cmd{Msec: uint8(e.msec), Yaw: e.yaw}
 	dz := e.target[2] - o[2]
@@ -361,7 +487,13 @@ type Outcome struct {
 	TookOff      bool
 	Takeoff      Vec3
 	TakeoffSpeed float32
-	// FallDamage is the falling damage summed over the run.
+	// FallDamage is the falling damage of the run, judged the way
+	// P_FallingDamage does at server frame boundaries, at the worst of the
+	// possible phases of those boundaries relative to the run's start (the
+	// server's frame phase is not known in advance), and including the
+	// frame the run ends in: when the done predicate stops a run, it looks
+	// ahead with an idle command until every phase has judged that frame,
+	// then restores the runner.
 	FallDamage int
 	// Touched are the solids touched, in order of first contact.
 	Touched []Contact
@@ -384,6 +516,8 @@ func (r *Runner) Run(ex Executor, done func(s *State, res *StepResult) bool, max
 	out.Samples = append(out.Samples, sampleOf(st))
 	start := st.Msec
 	step := 0
+	var fall fallJudge
+	fall.reset(r.Phys, st.Velocity())
 	for st.Msec-start < maxMsec {
 		wasGround := st.OnGround()
 		before := st.Origin()
@@ -396,7 +530,7 @@ func (r *Runner) Run(ex Executor, done func(s *State, res *StepResult) bool, max
 		if wasGround && !st.OnGround() && !out.TookOff {
 			out.TookOff, out.Takeoff, out.TakeoffSpeed = true, before, speed
 		}
-		out.FallDamage += res.FallDamage
+		fall.observe(st)
 		for _, id := range res.Touched {
 			if !out.HasTouched(id) {
 				out.Touched = append(out.Touched, Contact{ID: id, Step: step})
@@ -419,6 +553,70 @@ func (r *Runner) Run(ex Executor, done func(s *State, res *StepResult) bool, max
 		}
 	}
 	out.Msec = st.Msec - start
+	if out.Done && len(out.Cmds) > 0 {
+		r.lookahead(idleCmd(out.Cmds[len(out.Cmds)-1]), fall.pending(), func(s *State) { fall.observe(s) })
+	}
+	out.FallDamage = fall.worst()
+}
+
+// idleCmd is the command that holds still after c: no movement, the same
+// view, still ducked when c ducked.
+func idleCmd(c Cmd) Cmd {
+	h := Cmd{Msec: c.Msec, Yaw: c.Yaw, Pitch: c.Pitch}
+	if c.Up < 0 {
+		h.Up = c.Up
+	}
+	return h
+}
+
+// maxPhases bounds the frame phases fallJudge tracks (FrameMsec/StepMsec).
+const maxPhases = 10
+
+// fallJudge runs P_FallingDamage at every phase the server frame
+// boundaries can have relative to a run: phase k judges after the steps s
+// (counted from 1) with (s+k) % phases == 0, each with its own
+// oldvelocity, and sums the damage.
+type fallJudge struct {
+	phases, step int
+	old          [maxPhases]Vec3
+	dmg          [maxPhases]int
+}
+
+func (f *fallJudge) reset(p Physics, vel Vec3) {
+	*f = fallJudge{phases: 1}
+	if p.StepMsec > 0 && p.FrameMsec > p.StepMsec {
+		f.phases = min(p.FrameMsec/p.StepMsec, maxPhases)
+	}
+	for k := range f.old {
+		f.old[k] = vel
+	}
+}
+
+// observe judges the state after the next step at the phases whose frame
+// ends there.
+func (f *fallJudge) observe(s *State) {
+	f.step++
+	v := s.Velocity()
+	for k := 0; k < f.phases; k++ {
+		if (f.step+k)%f.phases != 0 {
+			continue
+		}
+		f.dmg[k] += FallingDamage(v, f.old[k], s.OnGround(), s.WaterLevel)
+		f.old[k] = v
+	}
+}
+
+// pending is the number of further steps in which every phase that did
+// not judge the last observed step judges once: the frame each of them is
+// in when the run ends.
+func (f *fallJudge) pending() int { return f.phases - 1 }
+
+func (f *fallJudge) worst() int {
+	w := 0
+	for k := 0; k < f.phases; k++ {
+		w = max(w, f.dmg[k])
+	}
+	return w
 }
 
 // Contact is the first step of a run at which the player touched a solid.

@@ -465,3 +465,21 @@ func (w *World) Categorize(s *State) {
 		}
 	}
 }
+
+// lookahead steps c n times, calling fn after each step, and then puts the
+// runner back as it was (state, snap request, frame phase, used pushes),
+// so a caller can see where the player would go without moving it. The
+// StepResult of the last Step is not restored.
+func (r *Runner) lookahead(c Cmd, n int, fn func(s *State)) {
+	if n <= 0 {
+		return
+	}
+	st, snap, acc := r.st, r.snap, r.frameAcc
+	used := append([]bool(nil), r.usedPush...)
+	for i := 0; i < n; i++ {
+		r.Step(c)
+		fn(&r.st)
+	}
+	r.st, r.snap, r.frameAcc = st, snap, acc
+	r.usedPush = append(r.usedPush[:0], used...)
+}

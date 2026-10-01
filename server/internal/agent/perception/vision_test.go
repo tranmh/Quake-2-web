@@ -243,3 +243,65 @@ func TestVisionBrushOccludes(t *testing.T) {
 }
 
 func itoaTest(n int) string { return strconv.Itoa(n) }
+
+// TestVisionWithoutMap: a Vision without a collision map fails closed (it
+// sees nothing; a level loaded without its map must not hand the bot the
+// server's PVS), unless NoOcclusion asks for the test-only open world.
+func TestVisionWithoutMap(t *testing.T) {
+	p := Vec3{100, 0, 0}
+	lo, hi := Vec3{90, -10, -10}, Vec3{110, 10, 10}
+	blind := NewVision(nil, ViewOptions{})
+	blind.Begin(Vec3{}, Vec3{}, 90, area1, nil)
+	if !blind.InFOV(p) {
+		t.Fatal("the field of view does not need a map")
+	}
+	if blind.LOS(p, -1) || blind.Shootable(p, -1) || blind.SeesPoint(p) || blind.SeesBox(lo, hi, -1) ||
+		blind.InPVS(lo, hi) || blind.PointInPVS(p) || blind.InPHS(p) || blind.SeesSegment(p, Vec3{100, 50, 0}, 4, -1) {
+		t.Fatal("a Vision without a map sees")
+	}
+	if _, ok := blind.VisiblePoint(Vec3{-1, -1, -1}, Vec3{1, 1, 1}, -1); ok {
+		t.Fatal("blind but inside a box")
+	}
+	open := NewVision(nil, ViewOptions{NoOcclusion: true})
+	open.Begin(Vec3{}, Vec3{}, 90, area1, nil)
+	if !open.LOS(p, -1) || !open.SeesBox(lo, hi, -1) || !open.InPVS(lo, hi) || !open.InPHS(p) {
+		t.Fatal("NoOcclusion without a map must see everything in the fov")
+	}
+	if open.SeesPoint(Vec3{-100, 0, 0}) {
+		t.Fatal("NoOcclusion ignores the fov")
+	}
+	// the perceiver: an in-fov soldier is not seen without a map, its cry
+	// is still heard
+	in := floorInput()
+	pc := NewPerceiver(nil, NewClassifier(NewClassTable()), nil, Options{}).Perceive(&in)
+	if len(pc.Seen) != 0 || len(pc.Heard) == 0 {
+		t.Fatalf("blind perceiver: seen %d heard %d", len(pc.Seen), len(pc.Heard))
+	}
+	pc = NewPerceiver(nil, NewClassifier(NewClassTable()), nil, Options{View: ViewOptions{NoOcclusion: true}}).Perceive(&in)
+	if pc.Sighting(20) == nil || pc.Sighting(23) != nil {
+		t.Fatal("open perceiver: the in-fov soldier must be seen, the one outside the fov not")
+	}
+}
+
+// TestSightingAim: Shootable is traced to the visible part of the box, so
+// the answer never depends on geometry outside the view.
+func TestSightingAim(t *testing.T) {
+	p := newFloorPerceiver(t)
+	in := floorInput()
+	in.Events = Events{}
+	// a soldier standing below the slab edge: only its top shows
+	in.Entities = []shared.EntityState{{Number: 30, ModelIndex: 4, Origin: Vec3{100, 0, -30}, Solid: solidStd}}
+	pc := p.Perceive(&in)
+	s := pc.Sighting(30)
+	if s == nil {
+		t.Fatal("the soldier's top is visible")
+	}
+	if s.Aim == s.Center() || !pc.Vision().SeesPoint(s.Aim) || !s.Shootable {
+		t.Fatalf("aim %v center %v shootable %v", s.Aim, s.Center(), s.Shootable)
+	}
+	// in the open the center is the aim point
+	in.Entities[0].Origin = Vec3{200, 0, 24}
+	if s := p.Perceive(&in).Sighting(30); s == nil || s.Aim != s.Center() {
+		t.Fatalf("open sighting %+v", s)
+	}
+}

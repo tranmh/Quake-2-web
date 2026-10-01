@@ -7,9 +7,9 @@ import (
 	"quake2web/server/internal/agent/nav/navsim"
 )
 
-// finish caps the out degree and prunes what no spawn point reaches.
+// finish prunes what no spawn point reaches (checkEntries capped the out
+// degree before).
 func (b *builder) finish() (int, error) {
-	b.capDegree()
 	keep := b.reachable()
 	b.final = make([]nav.NodeID, len(b.nodes))
 	next := nav.NodeID(0)

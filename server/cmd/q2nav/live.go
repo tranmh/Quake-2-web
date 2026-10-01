@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"quake2web/server/internal/agent/control"
 	"quake2web/server/internal/agent/nav"
@@ -29,6 +30,17 @@ type liveServer struct {
 	// barrels move when touched (barrel_touch); they are put back before
 	// every sample so each edge runs in the level as it starts
 	barrels []barrelAt
+	// movers (MOVETYPE_PUSH/STOP edicts) at the start, and the number of
+	// edicts in use: a sample that set something off (a button brushed
+	// while coasting to a stop, a trigger_once that freed itself) changes
+	// them, and the server is restarted
+	movers []moverAt
+	inUse  int
+}
+
+type moverAt struct {
+	e              *game.Edict
+	origin, angles shared.Vec3
 }
 
 type barrelAt struct {
@@ -72,19 +84,116 @@ func startLive(ctx context.Context, p *pak.Pak, name string, skill int, seed uin
 			ls.freed++
 		}
 	}
-	// two more frames: barrels drop to the floor two frames after spawning
-	for i := 0; i < 2; i++ {
-		if err := l.Step(ctx, nil); err != nil {
-			_ = l.Close()
-			return nil, err
+	return ls, nil
+}
+
+// solidMover: a brush entity that moves and blocks (not a decoration
+// like misc_strogg_ship, which flies around non-solid).
+func solidMover(e *game.Edict) bool {
+	return e.InUse && e.Solid != q2const.SOLID_NOT && (e.Movetype == game.MOVETYPE_PUSH || e.Movetype == game.MOVETYPE_STOP)
+}
+
+// moving reports whether a solid mover translates, or rotates without
+// spinning for good (func_rotating keeps its avelocity).
+func moving(e *game.Edict, angles0 shared.Vec3) bool {
+	return e.Velocity != (shared.Vec3{}) || (e.Avelocity == (shared.Vec3{}) && e.S.Angles != angles0)
+}
+
+// quiesce parks the player at node n and steps until the level is as it
+// starts: every mover of the graph back at its spawn pose and at rest
+// (doors the monsters or the spawn spot opened close again; at most a
+// minute of game time). Then it takes the snapshot changed compares with.
+func (ls *liveServer) quiesce(ctx context.Context, g *nav.Graph, n *nav.Node) error {
+	if _, err := ls.place(ctx, n); err != nil {
+		return err
+	}
+	hold := nav.HoldCmd(n)
+	eds := ls.g.Edicts()
+	spawn := map[string]nav.BlockerPose{}
+	for _, b := range g.Blockers {
+		if b.Spawn >= 0 && b.Model != "" {
+			spawn[b.Model] = b.Poses[b.Spawn]
 		}
 	}
+	still := 0
+	for f := 0; f < 600 && still < 10; f++ {
+		if err := ls.l.Step(ctx, cmdFunc(func() navsim.Cmd { return hold })); err != nil {
+			return err
+		}
+		home := true
+		for i := range eds {
+			e := &eds[i]
+			if !solidMover(e) {
+				continue
+			}
+			if e.Velocity != (shared.Vec3{}) {
+				home = false
+			}
+			if p, ok := spawn[e.Model]; ok && (e.S.Origin != p.Origin || (e.Avelocity == (shared.Vec3{}) && e.S.Angles != p.Angles)) {
+				home = false
+			}
+		}
+		if home {
+			still++
+		} else {
+			still = 0
+		}
+	}
+	ls.barrels, ls.movers, ls.inUse = nil, nil, ls.counted()
 	for i := range eds {
-		if e := &eds[i]; e.InUse && e.Classname == "misc_explobox" {
+		e := &eds[i]
+		if !e.InUse {
+			continue
+		}
+		if e.Classname == "misc_explobox" {
 			ls.barrels = append(ls.barrels, barrelAt{e, e.S.Origin})
 		}
+		if solidMover(e) {
+			ls.movers = append(ls.movers, moverAt{e, e.S.Origin, e.S.Angles})
+		}
 	}
-	return ls, nil
+	return nil
+}
+
+// changed reports whether the level is no longer as it was at the
+// snapshot: a solid mover moved or is moving, or edicts were freed or
+// spawned. Spinning func_rotating movers are expected to turn.
+func (ls *liveServer) changed() string {
+	if n := ls.counted(); n != ls.inUse {
+		return fmt.Sprintf("%d entities in use, %d at the start", n, ls.inUse)
+	}
+	for _, m := range ls.movers {
+		if !m.e.InUse || m.e.S.Origin != m.origin || moving(m.e, m.angles) {
+			return fmt.Sprintf("%s %s moved", m.e.Classname, m.e.Model)
+		}
+	}
+	return ""
+}
+
+// counted is the number of edicts in use that matter for movement: all
+// but the items (picked up on the way, which frees them), the player and
+// the DelayedUse helpers func_timers keep spawning (G_UseTargets with a
+// delay).
+func (ls *liveServer) counted() int {
+	n := 0
+	eds := ls.g.Edicts()
+	for i := range eds {
+		e := &eds[i]
+		if !e.InUse || e.Client != nil || isItem(e.Classname) || e.Classname == "DelayedUse" {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func isItem(c string) bool {
+	for _, p := range []string{"item_", "weapon_", "ammo_", "key_"} {
+		if strings.HasPrefix(c, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // restore puts pushed barrels back.

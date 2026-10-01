@@ -3,6 +3,7 @@ package perception
 import (
 	"strconv"
 	"strings"
+	"sync"
 
 	"quake2web/server/internal/assets/md2"
 )
@@ -155,10 +156,11 @@ func stateOf(seq string) AnimState {
 }
 
 // AnimCache loads model animations on demand from game data and keeps them.
-// It is not safe for concurrent use; the ModelAnims it returns are
-// immutable.
+// It is safe for concurrent use, so the bots of one process can share one
+// cache (and parse each MD2 once); the ModelAnims it returns are immutable.
 type AnimCache struct {
 	read   func(name string) ([]byte, error)
+	mu     sync.Mutex
 	models map[string]*ModelAnims
 }
 
@@ -169,7 +171,12 @@ func NewAnimCache(read func(name string) ([]byte, error)) *AnimCache {
 }
 
 // Set records the animations of a model path (replacing what was loaded).
-func (c *AnimCache) Set(path string, m *ModelAnims) { c.models[path] = m }
+// m must not be modified afterwards.
+func (c *AnimCache) Set(path string, m *ModelAnims) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.models[path] = m
+}
 
 // Model returns the animations of an MD2 model path, or nil when the file
 // is missing or not an MD2 (the result is remembered either way).
@@ -177,6 +184,10 @@ func (c *AnimCache) Model(path string) *ModelAnims {
 	if c == nil || path == "" || !strings.HasSuffix(path, ".md2") {
 		return nil
 	}
+	// loading under the lock parses each model once; it happens once per
+	// model and process
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if m, ok := c.models[path]; ok {
 		return m
 	}

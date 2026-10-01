@@ -30,7 +30,13 @@
 // the line of sight; brush entities do (an occluding brush is by definition
 // visible where the line of sight hits it); entity numbers identify an
 // entity across frames, which stands for a player's visual re-identification;
-// sounds are positioned where the client's mixer positions them.
+// sounds are positioned where the client's mixer positions them. A sound or
+// muzzle flash whose emitter is not in the packet arrives without a
+// position (the mixer would use a stale origin the Perceiver cannot know):
+// it is passed on with PosKnown false, and the consumer must gate it with
+// Percept.Audible at the position it last perceived the emitter at. Without
+// a collision map the Perceiver fails closed: nothing is seen, sounds are
+// still heard.
 //
 // Nothing here imports the server or the game: the import guard test keeps
 // the package on the client side of the wire.

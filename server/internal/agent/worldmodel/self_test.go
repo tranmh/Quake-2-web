@@ -14,16 +14,23 @@ import (
 func quantKick(a float64) float32 { return float32(int8(int32(a*4))) * 0.25 }
 
 // damageKick returns P_DamageFeedback's view kick (pitch, roll) for a hit
-// from world yaw theta (degrees) with kick strength k, seen by a player
-// looking at yaw viewYaw (pitch 0).
+// from world yaw theta (degrees, a horizontal direction) with kick
+// strength k, seen by a player looking at yaw viewYaw (pitch 0).
 // C: game/p_view.c:71 P_DamageFeedback
 func damageKick(theta, viewYaw, k float64) (pitch, roll float32) {
-	th, y := theta*math.Pi/180, viewYaw*math.Pi/180
-	v := [2]float64{math.Cos(th), math.Sin(th)}
-	fwd := [2]float64{math.Cos(y), math.Sin(y)}
-	right := [2]float64{math.Sin(y), -math.Cos(y)}
-	side := v[0]*right[0] + v[1]*right[1]
-	front := v[0]*fwd[0] + v[1]*fwd[1]
+	return damageKickPitched(theta, viewYaw, 0, k)
+}
+
+// damageKickPitched is damageKick for a view pitched by viewPitch degrees
+// (positive looks down): the game dots the direction with the pitched
+// forward vector of AngleVectors(v_angle).
+func damageKickPitched(theta, viewYaw, viewPitch, k float64) (pitch, roll float32) {
+	th, y, p := theta*math.Pi/180, viewYaw*math.Pi/180, viewPitch*math.Pi/180
+	v := [3]float64{math.Cos(th), math.Sin(th), 0}
+	fwd := [3]float64{math.Cos(p) * math.Cos(y), math.Cos(p) * math.Sin(y), -math.Sin(p)}
+	right := [3]float64{math.Sin(y), -math.Cos(y), 0}
+	side := v[0]*right[0] + v[1]*right[1] + v[2]*right[2]
+	front := v[0]*fwd[0] + v[1]*fwd[1] + v[2]*fwd[2]
 	return quantKick(k * -front * 0.3), quantKick(k * side * 0.3)
 }
 
@@ -65,6 +72,37 @@ func TestDamageBearingFromKick(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestDamageBearingPitched: looking up or down shrinks the forward part of
+// the kick by cos(pitch); the bearing undoes it. Beyond 70 degrees the
+// bearing is unknown.
+func TestDamageBearingPitched(t *testing.T) {
+	for _, viewPitch := range []float64{-60, -30, 30, 60, 340} {
+		for theta := -180.0; theta < 180; theta += 45 {
+			for _, k := range []float64{30, 50} {
+				s := newSim(t)
+				s.ps.ViewAngles = Vec3{float32(viewPitch), 30, 0}
+				s.step()
+				p, r := damageKickPitched(theta, 30, viewPitch, k)
+				d := s.hit(90, p, r).Damage[0]
+				tol := 3.0
+				if math.Abs(float64(angleDiff(float32(viewPitch), 0))) > 45 {
+					tol = 5 // the forward part is halved: twice the quantization error
+				}
+				if !d.BearingKnown || math.Abs(float64(angleDiff(d.Bearing, float32(theta)))) > tol {
+					t.Errorf("pitch %v hit from %v kick %v: bearing %v known %v", viewPitch, theta, k, d.Bearing, d.BearingKnown)
+				}
+			}
+		}
+	}
+	s := newSim(t)
+	s.ps.ViewAngles = Vec3{80, 0, 0}
+	s.step()
+	p, r := damageKickPitched(45, 0, 80, 50)
+	if d := s.hit(90, p, r).Damage[0]; d.BearingKnown {
+		t.Fatalf("bearing looking straight down: %+v", d)
 	}
 }
 

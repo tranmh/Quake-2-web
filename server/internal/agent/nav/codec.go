@@ -43,6 +43,7 @@ type fileSolid struct {
 	Angles   Vec3  `json:"angles"`
 	Mins     Vec3  `json:"mins"`
 	Maxs     Vec3  `json:"maxs"`
+	Pushable bool  `json:"pushable,omitempty"`
 }
 
 type fileVolume struct {
@@ -125,6 +126,7 @@ type fileEdge struct {
 	B int16         `json:"b,omitempty"`
 	Y float32       `json:"y,omitempty"`
 	D int16         `json:"d,omitempty"`
+	H int16         `json:"h,omitempty"` // hazard damage
 	G int32         `json:"g,omitempty"` // target entity
 	Q [][2]uint32   `json:"q,omitempty"` // blocker, state mask
 	E []fileEffect  `json:"e,omitempty"`
@@ -159,7 +161,7 @@ func (g *Graph) toFile() *fileGraph {
 	}
 	f.Solids = make([]fileSolid, len(g.Solids))
 	for i, s := range g.Solids {
-		f.Solids[i] = fileSolid{ID: s.ID, Headnode: s.Headnode, Box: s.Box, Origin: s.Origin, Angles: s.Angles, Mins: s.Mins, Maxs: s.Maxs}
+		f.Solids[i] = fileSolid{ID: s.ID, Headnode: s.Headnode, Box: s.Box, Origin: s.Origin, Angles: s.Angles, Mins: s.Mins, Maxs: s.Maxs, Pushable: s.Pushable}
 	}
 	f.Volumes = make([]fileVolume, len(g.Volumes))
 	for i, v := range g.Volumes {
@@ -184,7 +186,7 @@ func (g *Graph) toFile() *fileGraph {
 	for i := range g.Edges {
 		e := &g.Edges[i]
 		fe := fileEdge{F: e.From, T: e.To, K: e.Kind, R: e.Recipe, X: e.Flags, C: e.Cost, A: vecPtr(e.Aim), O: vecPtr(e.Takeoff),
-			S: e.TakeoffSpeed, W: e.Forward, B: e.BackupMsec, Y: e.Yaw, D: e.FallDamage, G: e.Target}
+			S: e.TakeoffSpeed, W: e.Forward, B: e.BackupMsec, Y: e.Yaw, D: e.FallDamage, H: e.Damage, G: e.Target}
 		for _, r := range e.Reqs {
 			fe.Q = append(fe.Q, [2]uint32{uint32(r.Blocker), uint32(r.States)})
 		}
@@ -233,7 +235,7 @@ func (f *fileGraph) toGraph() (*Graph, error) {
 		if s.ID <= 0 {
 			return nil, fmt.Errorf("nav: solid id %d", s.ID)
 		}
-		g.Solids = append(g.Solids, navsim.Solid{ID: s.ID, Headnode: s.Headnode, Box: s.Box, Origin: s.Origin, Angles: s.Angles, Mins: s.Mins, Maxs: s.Maxs})
+		g.Solids = append(g.Solids, navsim.Solid{ID: s.ID, Headnode: s.Headnode, Box: s.Box, Origin: s.Origin, Angles: s.Angles, Mins: s.Mins, Maxs: s.Maxs, Pushable: s.Pushable})
 	}
 	for i, v := range f.Volumes {
 		if v.Kind < EffTrigger || v.Kind > EffItem || v.Blocker < -1 || int(v.Blocker) >= len(g.Blockers) {
@@ -253,7 +255,7 @@ func (f *fileGraph) toGraph() (*Graph, error) {
 			return nil, fmt.Errorf("nav: edge %d: bad kind %d / recipe %d", i, fe.K, fe.R)
 		}
 		e := Edge{From: fe.F, To: fe.T, Kind: fe.K, Recipe: fe.R, Flags: fe.X, Cost: fe.C, TakeoffSpeed: fe.S,
-			Forward: fe.W, BackupMsec: fe.B, Yaw: fe.Y, FallDamage: fe.D, Target: fe.G}
+			Forward: fe.W, BackupMsec: fe.B, Yaw: fe.Y, FallDamage: fe.D, Damage: fe.H, Target: fe.G}
 		if fe.A != nil {
 			e.Aim = *fe.A
 		}
@@ -339,6 +341,10 @@ func (g *Graph) WriteFile(path string) (err error) {
 			_ = os.Remove(tmp.Name())
 		}
 	}()
+	if err := tmp.Chmod(0o644); err != nil { // a shared cache (CreateTemp makes it 0600)
+		_ = tmp.Close()
+		return err
+	}
 	bw := bufio.NewWriter(tmp)
 	if err := g.Encode(bw); err != nil {
 		_ = tmp.Close()

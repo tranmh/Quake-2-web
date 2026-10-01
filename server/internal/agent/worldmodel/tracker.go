@@ -70,6 +70,8 @@ type itemTrack struct {
 	Item
 	idx   int
 	bound bool
+	// absent counts consecutive frames its spot was in view without it
+	absent int
 }
 
 func (it *itemTrack) setLife(l LifeState, now int64) {
@@ -402,10 +404,13 @@ func (w *World) seeProjectile(s *perception.Sighting, pc *perception.Percept) {
 		p.ID = w.newID('p')
 		p.Class, p.Weapon = s.Class.Name, s.Class.Weapon.String()
 		p.FirstSeen = w.now
-		// the server sends old_origin with a new entity: one frame back
+		// the server sends old_origin with a new entity: one frame back.
+		// The client draws the projectile from there (CL_DeltaEntity lerps
+		// a new entity from old_origin), so it counts only when that point
+		// is in view; otherwise the flight direction comes from the angles.
 		d := shared.VectorSubtract(pos, s.State.OldOrigin)
 		speed := shared.VectorLength(d) * 10
-		if s.State.OldOrigin != (Vec3{}) && speed > 100 && speed < 2500 {
+		if s.State.OldOrigin != (Vec3{}) && speed > 100 && speed < 2500 && pc.Vision().SeesPoint(s.State.OldOrigin) {
 			p.Vel = shared.VectorScale(d, 10)
 		} else {
 			var fwd Vec3
@@ -512,6 +517,13 @@ func (w *World) observeHearings(pc *perception.Percept) {
 				a = w.actorFor(h.Num, nil, h.Family, h.Pos, true, 0)
 			}
 		}
+		if !h.PosKnown && !audibleAt(pc, a, h.Volume, h.Attenuation) {
+			// the server sends a sound to its whole PHS, and the mixer
+			// would play this one at the emitter's stale origin: heard
+			// only if that is within earshot of where the bot last
+			// perceived the emitter
+			continue
+		}
 		if a != nil {
 			w.hearActor(a, h)
 			ev.Track = a.ID
@@ -522,11 +534,27 @@ func (w *World) observeHearings(pc *perception.Percept) {
 	}
 }
 
+// audibleAt reports whether a sound (or flash) that came without a position
+// is audible: an ATTN_NONE sound always, any other one when the emitter's
+// track a has a position the mixer would play it audibly at. The position
+// is the track's last admitted one, standing for the client's stale origin
+// of an entity outside the frame.
+func audibleAt(pc *perception.Percept, a *actor, volume, attenuation float32) bool {
+	if attenuation == q2const.ATTN_NONE {
+		return pc.Audible(pc.Eye, volume, attenuation)
+	}
+	if a == nil || !a.PosKnown {
+		return false
+	}
+	return pc.Audible(a.Pos, volume, attenuation)
+}
+
+// hearActor folds a sound of track a. Only a sound from the emitter's
+// origin in this frame moves the track and refreshes its confidence; one
+// without a position only says it is still around.
 func (w *World) hearActor(a *actor, h *perception.Hearing) {
 	if h.FromEntity {
 		a.observe(h.Pos, w.now)
-	} else {
-		a.LastUpdate = w.now
 	}
 	a.Heard, a.LastHeard = true, w.now
 	switch h.Kind {
@@ -554,10 +582,13 @@ func (w *World) hearActor(a *actor, h *perception.Hearing) {
 func (w *World) observeFlashes(pc *perception.Percept) {
 	for i := range pc.Flashes {
 		f := &pc.Flashes[i]
+		// MZ_LOGIN, MZ_LOGOUT, MZ_RESPAWN, MZ_ITEMRESPAWN: a teleport-like
+		// effect, not a shot
+		attack := f.Weapon != perception.WeaponNone
 		var a *actor
 		if b, ok := w.bind[f.Num]; ok && b.kind == bindActor {
 			a = w.actors[b.idx]
-		} else if f.PosKnown {
+		} else if f.PosKnown && attack {
 			fam := "" // svc_muzzleflash2: some monster
 			if !f.Monster {
 				fam = "player"
@@ -567,10 +598,16 @@ func (w *World) observeFlashes(pc *perception.Percept) {
 		if a == nil {
 			continue
 		}
+		if !f.PosKnown && !audibleAt(pc, a, f.Volume, q2const.ATTN_NORM) {
+			continue // as for a sound without a position
+		}
+		a.Heard, a.LastHeard = true, w.now
+		if !attack {
+			continue
+		}
 		if f.PosKnown {
 			a.observe(f.Pos, w.now)
 		}
-		a.Heard, a.LastHeard = true, w.now
 		if a.Life == LifeAlive {
 			a.Awareness, a.LastAttack, a.Weapon = Attacking, w.now, f.Weapon.String()
 		}
@@ -642,14 +679,25 @@ func (w *World) checkAbsences(pc *perception.Percept) {
 	}
 	for _, it := range w.items {
 		if it.Visible || it.Life != LifeAlive {
+			it.absent = 0
 			continue
 		}
 		lo := shared.VectorAdd(it.Pos, Vec3{-8, -8, -8})
 		hi := shared.VectorAdd(it.Pos, Vec3{8, 8, 8})
-		if it.Remembered || !v.SeesBox(lo, hi, -1) {
+		if !v.SeesBox(lo, hi, -1) {
+			it.absent = 0
 			continue
 		}
-		if w.now-w.b.Self.PickupAt <= 1000 && dist(it.Pos, w.b.Self.Origin) <= 2*pickupRadius {
+		it.absent++
+		// a remembered item (from an earlier attempt) may not be back in
+		// this one: dropped by a monster still alive, taken before a later
+		// save, on a mover. Two frames of an empty spot in view, so the
+		// first frame of a level does not decide it; the memory keeps it
+		// for the next reload.
+		if it.Remembered && it.absent < 2 {
+			continue
+		}
+		if p := w.b.Self.PickupAt; p > 0 && w.now-p <= 1000 && dist(it.Pos, w.b.Self.Origin) <= 2*pickupRadius {
 			it.setLife(LifeTaken, w.now)
 			if it.Lump >= 0 {
 				w.effect(EffectItemTaken, it.Lump, it.ID)

@@ -19,7 +19,7 @@ const (
 
 // Options configure a Perceiver.
 type Options struct {
-	View ViewOptions
+	View ViewOptions // field of view (and the test-only NoOcclusion)
 }
 
 // Sighting is an entity in the field of view with a line of sight from the
@@ -35,9 +35,14 @@ type Sighting struct {
 	// AbsMax the world box. Beams span State.Origin to State.OldOrigin.
 	Mins, Maxs     Vec3
 	AbsMin, AbsMax Vec3
-	Inline         int  // N of a brush model "*N", else 0
-	Shootable      bool // a shot from the eye reaches the box center
-	Dist           float32
+	Inline         int // N of a brush model "*N", else 0
+	// Aim is the first visible point of the box (the center when it is
+	// visible; the eye when inside the box). Beams leave it zero.
+	Aim Vec3
+	// Shootable: a shot from the eye reaches Aim (glass stops shots, not
+	// sight). Set for monsters, neutrals, players and barrels.
+	Shootable bool
+	Dist      float32 // from the eye to the box center
 }
 
 // Center returns the world box center.
@@ -55,8 +60,12 @@ type Hearing struct {
 	Kind    SoundKind
 	Family  string // monster family of a monster voice
 	// Pos is where the mixer places the sound; PosKnown is false when the
-	// emitter is not in the frame and the message carried no position
-	// (the client would use a stale origin).
+	// emitter is not in the frame and the message carried no position.
+	// The client mixer would then play it at the emitter's stale origin,
+	// so the Perceiver cannot tell whether it is audible: the consumer
+	// must check Percept.Audible at the position it believes the emitter
+	// is at (from earlier admitted data) and drop the sound otherwise.
+	// ATTN_NONE sounds are audible anywhere.
 	Pos      Vec3
 	PosKnown bool
 	// FromEntity: Pos is the emitter's origin in this frame, so hearing it
@@ -70,14 +79,22 @@ type Hearing struct {
 	Loop        bool
 }
 
-// Flash is an audible muzzle flash of another entity.
+// Flash is an audible muzzle flash of another entity. Its sound plays at
+// Volume with ATTN_NORM (C: client/cl_fx.c CL_ParseMuzzleFlash). Weapon
+// is WeaponNone for the non-weapon flashes (MZ_LOGIN, MZ_LOGOUT,
+// MZ_RESPAWN, MZ_ITEMRESPAWN): no attack.
 type Flash struct {
 	Num      int32
 	Monster  bool  // svc_muzzleflash2 (MZ2_*), else a player's (MZ_*)
 	Raw      int32 // the MZ_ / MZ2_ byte
 	Weapon   Weapon
 	Silenced bool
-	Pos      Vec3 // the shooter's origin in this frame
+	Volume   float32 // 1, or 0.2 when silenced
+	// Pos is the shooter's origin in this frame. PosKnown false: the
+	// shooter is not in the frame and, as for a Hearing without a
+	// position, the consumer must check Percept.Audible at the position it
+	// believes the shooter is at.
+	Pos      Vec3
 	PosKnown bool
 }
 
@@ -131,6 +148,20 @@ func (p *Percept) Vision() *Vision { return p.vision }
 // Classifier returns the level's classifier.
 func (p *Percept) Classifier() *Classifier { return p.cls }
 
+// Audible reports whether the client's mixer plays a one-shot sound at pos
+// with volume (0..1, as in Hearing.Volume) and attenuation (ATTN_*) above
+// zero volume this frame. It is the gate for the sounds and flashes whose
+// position the frame does not carry: pos must come from what the consumer
+// admitted earlier. Like Vision, it is valid until the next Perceive of the
+// same Perceiver.
+// C: client/snd_dma.c:425 S_SpatializeOrigin, :566 S_IssuePlaysound
+func (p *Percept) Audible(pos Vec3, volume, attenuation float32) bool {
+	if p.vision == nil {
+		return false
+	}
+	return audible(p.vision, pos, volume*255, soundDistMult(attenuation))
+}
+
 // Sighting returns the sighting of entity num (nil if not seen).
 func (p *Percept) Sighting(num int32) *Sighting {
 	i := sort.Search(len(p.Seen), func(i int) bool { return p.Seen[i].Num >= num })
@@ -178,9 +209,10 @@ type Perceiver struct {
 	vision *Vision
 }
 
-// NewPerceiver returns a Perceiver for a level with collision map cm (nil:
-// no occlusion), classifying with cls and reading animations from anims
-// (nil: none).
+// NewPerceiver returns a Perceiver for a level with collision map cm,
+// classifying with cls and reading animations from anims (nil: none).
+// Without a map the Perceiver sees nothing and only hears (see
+// ViewOptions.NoOcclusion for the test-only alternative).
 func NewPerceiver(cm *cmodel.Map, cls *Classifier, anims *AnimCache, opt Options) *Perceiver {
 	return &Perceiver{cls: cls, anims: anims, vision: NewVision(cm, opt.View)}
 }
@@ -289,15 +321,19 @@ func (p *Perceiver) sight(e *shared.EntityState) (Sighting, bool) {
 		if s.Inline != 0 {
 			ignore = e.Number
 		}
-		if !v.SeesBox(s.AbsMin, s.AbsMax, ignore) {
+		aim, ok := v.VisiblePoint(s.AbsMin, s.AbsMax, ignore)
+		if !ok {
 			return Sighting{}, false
 		}
+		s.Aim = aim
 	}
 	c := s.Center()
 	s.Dist = shared.VectorLength(shared.VectorSubtract(c, v.Eye()))
 	switch cl.Class.Kind {
 	case KindMonster, KindNeutral, KindPlayer, KindBarrel:
-		s.Shootable = v.Shootable(c, -1)
+		// towards the visible part: a shot at a hidden center would ask
+		// about geometry the player cannot see
+		s.Shootable = v.Shootable(s.Aim, -1)
 	}
 	switch cl.Class.Kind {
 	case KindMonster, KindNeutral, KindPlayer:
@@ -310,10 +346,10 @@ func (p *Perceiver) sight(e *shared.EntityState) (Sighting, bool) {
 
 // audible reports whether the client's mixer plays a sound at pos with
 // master volume master (0..255) and distance multiplier distMult with a
-// non-zero volume on either channel.
+// non-zero volume on either channel, for the listener of vision v.
 // C: client/snd_dma.c:425 S_SpatializeOrigin
-func (p *Perceiver) audible(pos Vec3, master, distMult float32) bool {
-	d := shared.VectorSubtract(pos, p.vision.Eye())
+func audible(v *Vision, pos Vec3, master, distMult float32) bool {
+	d := shared.VectorSubtract(pos, v.Eye())
 	dist := shared.VectorNormalize(&d) - soundFullVolume
 	if dist < 0 {
 		dist = 0
@@ -322,7 +358,7 @@ func (p *Perceiver) audible(pos Vec3, master, distMult float32) bool {
 	if distMult == 0 {
 		return int32(master) > 0
 	}
-	_, right, _ := p.vision.Axes()
+	_, right, _ := v.Axes()
 	dot := shared.DotProduct(right, d)
 	r, l := 0.5*(1+dot), 0.5*(1-dot)
 	return int32(master*(1-dist)*r) > 0 || int32(master*(1-dist)*l) > 0
@@ -375,7 +411,7 @@ func (p *Perceiver) hear(pc *Percept, in *FrameInput, byNum map[int32]*shared.En
 		case e != nil:
 			h.Pos, h.PosKnown, h.FromEntity = e.Origin, true, true
 		}
-		if h.PosKnown && !p.audible(h.Pos, s.Volume*255, soundDistMult(s.Attenuation)) {
+		if h.PosKnown && !audible(p.vision, h.Pos, s.Volume*255, soundDistMult(s.Attenuation)) {
 			continue
 		}
 		h.Mover = p.brushPose(e)
@@ -386,7 +422,7 @@ func (p *Perceiver) hear(pc *Percept, in *FrameInput, byNum map[int32]*shared.En
 		if e.Sound == 0 || e.Number == own {
 			continue
 		}
-		if !p.audible(e.Origin, 255, soundLoopAttenuate) {
+		if !audible(p.vision, e.Origin, 255, soundLoopAttenuate) {
 			continue
 		}
 		path := p.soundName(e.Sound, in.CS)
@@ -405,20 +441,19 @@ func (p *Perceiver) flashes(pc *Percept, in *FrameInput, byNum map[int32]*shared
 			pc.OwnFlashes++
 			continue
 		}
-		fl := Flash{Num: f.Ent, Monster: f.Monster, Raw: f.Weapon}
-		vol := float32(1)
+		fl := Flash{Num: f.Ent, Monster: f.Monster, Raw: f.Weapon, Volume: 1}
 		if f.Monster {
 			fl.Weapon = MonsterFlashWeapon(f.Weapon)
 		} else {
 			fl.Silenced = f.Weapon&q2const.MZ_SILENCED != 0
 			fl.Weapon = PlayerFlashWeapon(f.Weapon &^ q2const.MZ_SILENCED)
 			if fl.Silenced {
-				vol = 0.2
+				fl.Volume = 0.2
 			}
 		}
 		if e := byNum[f.Ent]; e != nil {
 			fl.Pos, fl.PosKnown = e.Origin, true
-			if !p.audible(fl.Pos, vol*255, soundDistMult(q2const.ATTN_NORM)) {
+			if !audible(p.vision, fl.Pos, fl.Volume*255, soundDistMult(q2const.ATTN_NORM)) {
 				continue
 			}
 		}
@@ -437,7 +472,7 @@ func (p *Perceiver) tempEnts(pc *Percept, in *FrameInput) {
 			q2const.TE_EXPLOSION1_NP, q2const.TE_PLASMA_EXPLOSION, q2const.TE_BFG_BIGEXPLOSION,
 			q2const.TE_PLAIN_EXPLOSION, q2const.TE_TRACKER_EXPLOSION, q2const.TE_NUKEBLAST, q2const.TE_BOSSTPORT,
 			q2const.TE_BLASTER, q2const.TE_BLASTER2, q2const.TE_FLECHETTE, q2const.TE_RAILTRAIL:
-			ev.Heard = p.audible(t.Pos, 255, soundDistMult(q2const.ATTN_NORM))
+			ev.Heard = audible(p.vision, t.Pos, 255, soundDistMult(q2const.ATTN_NORM))
 		}
 		switch t.Type {
 		case q2const.TE_RAILTRAIL, q2const.TE_BUBBLETRAIL, q2const.TE_BUBBLETRAIL2, q2const.TE_DEBUGTRAIL,

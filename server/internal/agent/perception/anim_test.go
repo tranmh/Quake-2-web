@@ -1,6 +1,10 @@
 package perception
 
-import "testing"
+import (
+	"errors"
+	"sync"
+	"testing"
+)
 
 func TestModelAnimsSequences(t *testing.T) {
 	names := []string{"stand101", "stand102", "stand301", "walk01", "walk02", "run01", "runs01", "runs02",
@@ -89,5 +93,43 @@ func TestPakMonsterAnims(t *testing.T) {
 	}
 	if cache.Model("*3") != nil || cache.Model("sprites/s_bfg1.sp2") != nil {
 		t.Error("non-MD2 has animations")
+	}
+}
+
+// TestAnimCacheConcurrent: bots share one cache; concurrent lookups load
+// each model once (run with -race).
+func TestAnimCacheConcurrent(t *testing.T) {
+	var mu sync.Mutex
+	reads := map[string]int{}
+	cache := NewAnimCache(func(name string) ([]byte, error) {
+		mu.Lock()
+		reads[name]++
+		mu.Unlock()
+		return nil, errors.New("not in the pak")
+	})
+	cache.Set("models/monsters/soldier/tris.md2", NewModelAnims([]string{"stand101", "stand102"}))
+	paths := []string{"models/monsters/soldier/tris.md2", "models/monsters/infantry/tris.md2",
+		"models/monsters/gunner/tris.md2", "players/male/tris.md2"}
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				m := cache.Model(paths[(g+i)%len(paths)])
+				if (g+i)%len(paths) == 0 && m.At(1).Sequence != "stand1" {
+					t.Error("soldier animations lost")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	for _, p := range paths[1:] {
+		if reads[p] != 1 {
+			t.Errorf("%s read %d times", p, reads[p])
+		}
+	}
+	if reads[paths[0]] != 0 {
+		t.Error("a Set model was read")
 	}
 }

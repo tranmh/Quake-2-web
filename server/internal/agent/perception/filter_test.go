@@ -33,7 +33,7 @@ func floorInput() FrameInput {
 	in.Entities = []shared.EntityState{
 		{Number: 1, ModelIndex: 255, Origin: Vec3{0, 0, 24}, Solid: solidStd},
 		{Number: 20, ModelIndex: 4, SkinNum: 2, Origin: Vec3{200, 0, 24}, Solid: solidStd, Frame: 146}, // in view
-		{Number: 21, ModelIndex: 4, Origin: Vec3{0, 0, -60}, Solid: solidStd},                          // under the slab
+		{Number: 21, ModelIndex: 4, Origin: Vec3{0, 0, -60}, Solid: solidStd},                          // under the slab (and below the view)
 		{Number: 22, ModelIndex: 4, Origin: Vec3{-200, 0, 24}, Solid: solidStd},                        // behind
 		{Number: 23, ModelIndex: 4, Origin: Vec3{200, 230, 24}, Solid: solidStd},                       // outside the fov
 		{Number: 24, ModelIndex: 7, Origin: Vec3{150, 40, 16}},                                         // item in view
@@ -88,7 +88,8 @@ func TestObservationFilter(t *testing.T) {
 	}
 	seen := nums(pc.Seen, func(s *Sighting) int32 { return s.Num })
 	if !reflect.DeepEqual(seen, []int32{20, 24}) {
-		t.Fatalf("seen %v, want [20 24] (21 occluded, 22 behind, 23 outside the fov)", seen)
+		t.Fatalf("seen %v, want [20 24] (21 under the slab, 22 behind, 23 outside the fov; "+
+			"TestFilterOccludedInFOV covers occlusion inside the fov)", seen)
 	}
 	s := pc.Sighting(20)
 	if s.Class.Name != "soldier" || !s.Shootable || s.Mins != (Vec3{-16, -16, -24}) || s.Dist < 190 || s.Dist > 210 {
@@ -180,5 +181,29 @@ func TestFilterFOVEdge(t *testing.T) {
 		if got := len(pc.Seen) == 1; got != tc.seen {
 			t.Errorf("y=%v: seen %v, want %v", tc.y, got, tc.seen)
 		}
+	}
+}
+
+// TestFilterOccludedInFOV: a monster inside the view frustum and in the
+// PVS, hidden by the slab, is not admitted; without the slab (a map-less
+// open vision) the same frame shows it.
+func TestFilterOccludedInFOV(t *testing.T) {
+	in := floorInput()
+	in.Events = Events{}
+	in.PlayerState.ViewAngles[q2const.PITCH] = 30 // looking down past the slab edge
+	in.Entities = []shared.EntityState{{Number: 30, ModelIndex: 4, Origin: Vec3{100, 0, -100}, Solid: solidStd}}
+	p := newFloorPerceiver(t)
+	pc := p.Perceive(&in)
+	v := pc.Vision()
+	lo, hi := Vec3{84, -16, -124}, Vec3{116, 16, -68}
+	if !v.InFOV(Vec3{100, 0, -96}) || !v.InPVS(lo, hi) {
+		t.Fatal("the soldier must be in the fov and the PVS")
+	}
+	if pc.Sighting(30) != nil || len(pc.Admitted()) != 0 {
+		t.Fatalf("occluded soldier admitted: %v", pc.Admitted())
+	}
+	open := NewPerceiver(nil, NewClassifier(NewClassTable()), nil, Options{View: ViewOptions{NoOcclusion: true}})
+	if open.Perceive(&in).Sighting(30) == nil {
+		t.Fatal("without the slab it is visible")
 	}
 }

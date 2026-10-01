@@ -58,8 +58,9 @@ type LevelKey struct {
 // enters.
 type Level struct {
 	Key LevelKey
-	// CM is the collision model (nil: Map.CM; both nil: no occlusion,
-	// which is only meant for tests).
+	// CM is the collision model (nil: Map.CM). Without one the bot sees
+	// nothing on the level and only hears (fail closed); synthetic tests
+	// that want an open world set perception.ViewOptions.NoOcclusion.
 	CM *cmodel.Map
 	// Map is the level's static knowledge (optional): lump entities to tie
 	// to entity numbers, laser segments, mover spawn poses.
@@ -78,6 +79,12 @@ type Config struct {
 	Perception perception.Options
 	// Classes is the class table (nil: perception.NewClassTable()).
 	Classes *perception.ClassTable
+	// LoadLevel returns the static data of a map (its Key is ignored) for
+	// a level the caller did not Reset for: a changelevel that reaches
+	// Update first. Without it the World loads only the collision model
+	// with ReadFile ("maps/<name>.bsp"); when that fails too, the level is
+	// entered blind.
+	LoadLevel func(mapName string) (Level, error)
 }
 
 // World is the bot's world model.
@@ -94,6 +101,7 @@ type World struct {
 	now       int64
 
 	memories map[LevelKey]*LevelMemory
+	visits   map[string]int // next unused visit index of each map
 	mem      *LevelMemory
 	match    lumpMatch
 
@@ -130,10 +138,11 @@ type explosion struct {
 	at  int64
 }
 
-// New returns a World with no level; call Reset before the first Update
-// of a level.
+// New returns a World with no level. Call Reset at each level entry; a
+// first frame without one is entered like an unannounced changelevel
+// (Config.LoadLevel).
 func New(cfg Config) *World {
-	w := &World{cfg: cfg, classes: cfg.Classes, memories: map[LevelKey]*LevelMemory{}}
+	w := &World{cfg: cfg, classes: cfg.Classes, memories: map[LevelKey]*LevelMemory{}, visits: map[string]int{}}
 	if w.classes == nil {
 		w.classes = perception.NewClassTable()
 	}
@@ -172,6 +181,9 @@ func (w *World) Reset(lv Level) {
 	if lv.Key.Map == "" {
 		w.mem = &LevelMemory{}
 		return
+	}
+	if lv.Key.Visit >= w.visits[lv.Key.Map] {
+		w.visits[lv.Key.Map] = lv.Key.Visit + 1
 	}
 	mem := w.memories[lv.Key]
 	if mem == nil {
@@ -212,7 +224,9 @@ func (w *World) Update(in perception.FrameInput, now int64) {
 		return
 	}
 	if w.gen != in.Level.Gen {
-		if w.gen != -1 {
+		// a new generation the caller did not Reset for, or the first
+		// frame of a World that was never given a level
+		if w.gen != -1 || w.level.Key.Map == "" && in.Level.MapName != "" {
 			w.autoEnter(in.Level)
 		}
 		w.gen = in.Level.Gen
@@ -240,20 +254,47 @@ func (w *World) Update(in perception.FrameInput, now int64) {
 }
 
 // autoEnter handles a level generation the caller did not Reset for: a
-// reload of the same map keeps the level, anything else enters a level
-// without static data.
+// reload of the same map keeps the level; another map is a new visit of
+// it (the next visit index of that map), with the static data LoadLevel
+// gives, or at least its collision model.
 func (w *World) autoEnter(ls *perception.LevelStatic) {
 	lv := w.level
 	if ls.MapName != lv.Key.Map {
-		lv = Level{Key: LevelKey{Map: ls.MapName}}
+		lv = w.loadLevel(ls.MapName)
+		lv.Key = LevelKey{Map: ls.MapName, Visit: w.visits[ls.MapName]}
 	}
 	w.Reset(lv)
+}
+
+// loadLevel returns the static data of a map for autoEnter (a zero Level
+// when nothing can be loaded: the bot is blind there).
+func (w *World) loadLevel(name string) Level {
+	if name == "" {
+		return Level{}
+	}
+	if w.cfg.LoadLevel != nil {
+		if lv, err := w.cfg.LoadLevel(name); err == nil {
+			return lv
+		}
+	}
+	if w.cfg.ReadFile != nil {
+		file := "maps/" + name + ".bsp"
+		if raw, err := w.cfg.ReadFile(file); err == nil {
+			if cm, err := cmodel.LoadMapBytes(file, raw); err == nil {
+				return Level{CM: cm}
+			}
+		}
+	}
+	return Level{}
 }
 
 // bindLevel ties the level's lump entities to entity numbers and restores
 // the remembered items.
 func (w *World) bindLevel(in *perception.FrameInput) {
 	ls := in.Level
+	// the client keeps the last svc_inventory across levels and reloads:
+	// only one parsed from now on describes this attempt
+	w.refresh.invSeq = in.InventorySeq
 	if w.mem.Key.Map != "" && (w.mem.Entries == 0 || w.mem.gen != ls.Gen) {
 		w.mem.Entries++
 		w.mem.gen = ls.Gen

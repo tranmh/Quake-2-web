@@ -153,3 +153,79 @@ func TestRefreshSignals(t *testing.T) {
 		t.Fatal("intermission")
 	}
 }
+
+// TestInventoryNotCarriedAcrossReset: the client keeps its last
+// svc_inventory across a reload or level change, but the level-entry save
+// restores another one; only an inventory parsed after the entry counts.
+func TestInventoryNotCarriedAcrossReset(t *testing.T) {
+	s := newSim(t)
+	s.inv[3], s.invSeq = 50, 4 // an inventory from before the level: not this level's
+	if b := s.step(); b.Inventory.Known {
+		t.Fatalf("an inventory parsed before the level entry: %+v", b.Inventory)
+	}
+	s.invSeq++ // the answer to this level's "inven"
+	b := s.step()
+	if !b.Inventory.Known || b.Inventory.Count("Shells") != 50 {
+		t.Fatalf("before: %+v", b.Inventory)
+	}
+	s.w.Reset(Level{Key: LevelKey{Map: "floor"}, CM: floorCM(t)})
+	s.level = &perception.LevelStatic{Gen: 2, MapName: "floor"}
+	for i := 0; i < 3; i++ {
+		b = s.step() // the client still holds the old message
+	}
+	if b.Inventory.Known || b.Inventory.Count("Shells") != 0 || !s.w.WantsInventoryRefresh() {
+		t.Fatalf("after the reload: %+v wants %v", b.Inventory, s.w.WantsInventoryRefresh())
+	}
+	s.w.NoteInventoryRequested()
+	s.inv[3], s.invSeq = 20, 6
+	if b = s.step(); !b.Inventory.Known || b.Inventory.Count("Shells") != 20 || s.w.WantsInventoryRefresh() {
+		t.Fatalf("the new inventory: %+v", b.Inventory)
+	}
+	// an unannounced reload (a new generation without Reset) forgets it too
+	s.level = &perception.LevelStatic{Gen: 3, MapName: "floor"}
+	if b = s.step(); b.Inventory.Known {
+		t.Fatalf("after an unannounced reload: %+v", b.Inventory)
+	}
+}
+
+// TestRememberedItemGone: an item remembered from an earlier attempt whose
+// spot is in view and empty is gone for this attempt (two frames, so the
+// first frame of a level does not decide it), but stays in the memory for
+// the next reload.
+func TestRememberedItemGone(t *testing.T) {
+	s := newSim(t)
+	key := LevelKey{Map: "floor"}
+	s.ents = []shared.EntityState{{Number: 40, ModelIndex: mStim, Origin: Vec3{100, 30, 16}}}
+	s.step()
+	reload := func(gen int) {
+		s.w.Reset(Level{Key: key, CM: floorCM(t)})
+		s.level = &perception.LevelStatic{Gen: gen, MapName: "floor"}
+	}
+	reload(2)
+	s.ents = nil // not there in this attempt
+	if b := s.step(); len(b.Items) != 1 || b.Items[0].Life != LifeAlive || !b.Items[0].Remembered {
+		t.Fatalf("first frame: %+v", b.Items)
+	}
+	b := s.step()
+	if len(b.Items) != 1 || b.Items[0].Life != LifeGone || b.Items[0].LifeAt != s.now {
+		t.Fatalf("an empty spot in view: %+v", b.Items)
+	}
+	if len(s.w.Memory().Items) != 1 {
+		t.Fatalf("memory lost the item: %+v", s.w.Memory().Items)
+	}
+	// it shows up at its spot after all: present again, same track
+	s.ents = []shared.EntityState{{Number: 41, ModelIndex: mStim, Origin: Vec3{100, 30, 16}}}
+	if b := s.step(); len(b.Items) != 1 || b.Items[0].Life != LifeAlive || b.Items[0].Num != 41 || !b.Items[0].Visible {
+		t.Fatalf("seen again: %+v", b.Items)
+	}
+	// looking away it is not judged
+	reload(3)
+	s.ents = nil
+	s.ps.ViewAngles[q2const.YAW] = 180
+	for i := 0; i < 5; i++ {
+		s.step()
+	}
+	if b := s.w.Belief(); len(b.Items) != 1 || b.Items[0].Life != LifeAlive || !b.Items[0].Remembered {
+		t.Fatalf("out of view: %+v", b.Items)
+	}
+}

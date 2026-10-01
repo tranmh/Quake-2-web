@@ -9,9 +9,12 @@ import (
 
 // Conditions and effects of an edge, from the hull positions it sweeps.
 
-// sweepShrink keeps a hull resting on (or sliding along) a blocker from
-// counting as overlapping it.
-const sweepShrink = 1
+// sweepShrink is how much the hull shrinks for the blocker tests: none.
+// The swept positions come from a world without the blocker, so the real
+// hull touching it at all means pmove would collide with it there (pmove's
+// own resting and sliding positions keep a positive gap, and a trace
+// parallel to a face at a positive distance does not hit it).
+const sweepShrink = 0
 
 func sampleHull(s *navsim.Sample, shrink float32) (Vec3, Vec3) {
 	mins, maxs := s.Mins(), s.Maxs()
@@ -86,8 +89,12 @@ func boxesOverlap(amin, amax, bmin, bmax Vec3) bool {
 }
 
 // hitsPose reports whether the swept hull overlaps blocker bi at pose k: a
-// laser segment crossing a hull box, or a hull trace between consecutive
-// samples touching the brush model at that pose.
+// laser segment crossing a hull box, or the brush model at that pose
+// blocking a hull trace between consecutive samples or a position test at
+// a sample. Both are needed: a moving trace that ends exactly touching a
+// face passes (CM_RecursiveHullCheck keeps it on the front side of the
+// node), while the position test PM_SnapPosition runs there calls it solid
+// and leaves the player stuck.
 func (wk *worker) hitsPose(bi, k int, samples []navsim.Sample) bool {
 	b := wk.b
 	g := &b.sc.geo[bi]
@@ -120,6 +127,11 @@ func (wk *worker) hitsPose(bi, k int, samples []navsim.Sample) bool {
 		tr := cs.TransformedBoxTrace(samples[j].Origin, samples[i].Origin, mins, maxs, g.headnode, g.mask, pose.Origin, pose.Angles)
 		if tr.StartSolid || tr.AllSolid || tr.Fraction < 1 {
 			return true
+		}
+		if j != i {
+			if tr := cs.TransformedBoxTrace(samples[i].Origin, samples[i].Origin, mins, maxs, g.headnode, g.mask, pose.Origin, pose.Angles); tr.AllSolid {
+				return true
+			}
 		}
 	}
 	return false

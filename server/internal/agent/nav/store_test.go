@@ -192,9 +192,14 @@ func TestStoreCancel(t *testing.T) {
 }
 
 func TestDefaultDir(t *testing.T) {
+	t.Setenv("Q2_NAV_DIR", "")
 	d := nav.DefaultDir()
 	if filepath.Base(d) != "nav" || filepath.Base(filepath.Dir(d)) != "assets" {
 		t.Errorf("DefaultDir %s", d)
+	}
+	t.Setenv("Q2_NAV_DIR", "/tmp/elsewhere")
+	if d := nav.DefaultDir(); d != "/tmp/elsewhere" {
+		t.Errorf("Q2_NAV_DIR ignored: %s", d)
 	}
 }
 

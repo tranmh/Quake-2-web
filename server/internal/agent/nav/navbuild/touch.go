@@ -22,13 +22,13 @@ const (
 
 // touchable is something touch edges aim at.
 type touchable struct {
-	button  int   // solid id of a button, or 0
-	vol     int   // volume index, or -1
-	sup     []support
-	min     Vec3
-	max     Vec3
-	entity  int32
-	kind    nav.EffectKind
+	button int // solid id of a button, or 0
+	vol    int // volume index, or -1
+	sup    []support
+	min    Vec3
+	max    Vec3
+	entity int32
+	kind   nav.EffectKind
 }
 
 func (b *builder) touchables() []touchable {
@@ -263,6 +263,9 @@ func (wk *worker) touchSimIn(t *touchable, src int32, sup []support) pendingTouc
 	}
 	e := nav.Edge{From: nav.NodeID(src), To: -1, Kind: nav.EdgeTouch, Recipe: plan.Recipe, Aim: aim, Target: t.entity,
 		Cost: float32(wk.out.Msec) / 1000, Reqs: reqs, Effects: wk.outcomeEffects(&wk.out)}
+	if wk.touchesPushable(&wk.out) {
+		e.Flags |= nav.EdgePushes
+	}
 	end := support{-1, 0}
 	if bi, ok := b.sc.blockerByID[st.Ground]; ok {
 		end = support{bi, -1}

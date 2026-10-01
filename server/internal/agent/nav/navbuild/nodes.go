@@ -48,7 +48,9 @@ func (n *bnode) sup() []support {
 // settle offsets tried around a sample: the point itself, then 8 units
 // around it (so a grid point a hull's width from a wall still yields a node
 // in a corridor whose walls are not on the grid)
-var settleOffsets = [...][2]float32{{0, 0}, {8, 0}, {-8, 0}, {0, 8}, {0, -8}, {8, 8}, {-8, 8}, {8, -8}, {-8, -8}}
+func settleOffsets() [9][2]float32 {
+	return [9][2]float32{{0, 0}, {8, 0}, {-8, 0}, {0, 8}, {0, -8}, {8, 8}, {-8, 8}, {8, -8}, {-8, -8}}
+}
 
 // settle turns a floor point into a standing node: a hull trace from 42
 // above down to 6 above (standing hull, else ducked), a walkable plane, one
@@ -56,7 +58,7 @@ var settleOffsets = [...][2]float32{{0, 0}, {8, 0}, {-8, 0}, {0, 8}, {0, -8}, {8
 // that solid.
 func (wk *worker) settle(p Vec3, want int) (bnode, bool) {
 	mins, smax, dmax := navsim.StandMins(), navsim.StandMaxs(), navsim.DuckMaxs()
-	for _, off := range settleOffsets {
+	for _, off := range settleOffsets() {
 		start := Vec3{p[0] + off[0], p[1] + off[1], p[2] + 42}
 		end := Vec3{start[0], start[1], p[2] + 6}
 		ducked := false
@@ -157,6 +159,24 @@ func (b *builder) buildNodes() (int, error) {
 			jobs = append(jobs, faceJob{fc: fc, blocker: int32(bi)})
 		}
 	}
+	if c := b.cfg.Clip; c != nil {
+		// sample only faces near the clip box (mover tops may move into it)
+		kept := jobs[:0]
+		for _, j := range jobs {
+			mn, mx := j.fc.w.bounds()
+			near := true
+			for k := 0; k < 3; k++ {
+				lo, hi := mn[k]+float64(j.offset[k]), mx[k]+float64(j.offset[k])
+				if j.blocker < 0 && (hi < float64(c[0][k])-64 || lo > float64(c[1][k])+64) {
+					near = false
+				}
+			}
+			if near {
+				kept = append(kept, j)
+			}
+		}
+		jobs = kept
+	}
 	g := float64(b.p.Grid)
 	results := make([][]bnode, len(jobs))
 	err := b.parallel(len(jobs), func(wk *worker, i int) {
@@ -205,8 +225,73 @@ func (b *builder) buildNodes() (int, error) {
 	}
 	all = append(all, water...)
 	all = append(all, b.ladderNodes()...)
-	b.setNodes(dedupe(b.dropVoid(all)))
+	all = dedupe(b.clip(b.dropVoid(all)))
+	if all, err = b.dropBlocked(all); err != nil {
+		return 0, err
+	}
+	b.setNodes(all)
 	return len(b.nodes), nil
+}
+
+// dropBlocked removes nodes that a blocker overlaps in every one of its
+// states (a spot inside a sliding door's panel both closed and open): no
+// edge from or to them can ever hold. A mover node's own mover is exempt.
+func (b *builder) dropBlocked(all []bnode) ([]bnode, error) {
+	blocked := make([]bool, len(all))
+	err := b.parallel(len(all), func(wk *worker, i int) {
+		n := &all[i]
+		s := []navsim.Sample{{Origin: n.o, Ducked: n.crouch(), OnGround: true}}
+		mins, maxs := sampleHull(&s[0], 0)
+		lo, hi := shared.VectorAdd(n.o, mins), shared.VectorAdd(n.o, maxs)
+		for bi := range b.sc.geo {
+			g, bl := &b.sc.geo[bi], &b.sc.blockers[bi]
+			if bl.Gone || int32(bi) == n.blocker || !g.solid || !boxesOverlap(lo, hi, g.umin, g.umax) {
+				continue
+			}
+			all := true
+			for k := range bl.Poses {
+				if !wk.hitsPose(bi, k, s) {
+					all = false
+					break
+				}
+			}
+			if all {
+				blocked[i] = true
+				return
+			}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for i, n := range all {
+		if !blocked[i] || n.prio == prioSpawn {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
+
+// clip drops the nodes outside Config.Clip.
+func (b *builder) clip(all []bnode) []bnode {
+	c := b.cfg.Clip
+	if c == nil {
+		return all
+	}
+	out := all[:0]
+	for _, n := range all {
+		in := true
+		for k := 0; k < 3; k++ {
+			if n.o[k] < c[0][k] || n.o[k] > c[1][k] {
+				in = false
+			}
+		}
+		if in {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // dropVoid removes nodes outside the sealed level: their origin is in a
@@ -389,38 +474,54 @@ func (b *builder) waterNodes() ([]bnode, error) {
 // ladderNodes places hanging positions in front of the vertical sides of
 // ladder brushes, every 32 units of height, where the hull fits and pmove's
 // ladder test (a 1-unit forward trace hitting CONTENTS_LADDER) succeeds.
+// Ladder brushes are in the world model or in static brush entities (the
+// demo2 and demo3 ladders are func_walls); the trace reports a static
+// solid's brush contents like the world's, so pmove climbs both.
 func (b *builder) ladderNodes() []bnode {
 	f := b.geo.f
 	wk := b.workers[0]
 	wk.setWorld()
+	type source struct {
+		headnode int32
+		offset   Vec3
+	}
+	srcs := []source{{headnode: f.Models[0].Headnode}}
+	for _, s := range b.sc.statics {
+		if !s.Box && s.Angles == (Vec3{}) {
+			srcs = append(srcs, source{s.Headnode, s.Origin})
+		}
+	}
 	var out []bnode
 	ladder := int32(0)
-	for _, br := range modelBrushes(f, f.Models[0].Headnode) {
-		if f.Brushes[br].Contents&q2const.CONTENTS_LADDER == 0 {
-			continue
-		}
-		for _, fc := range brushFaces(f, br, func(p dplane) bool { return math.Abs(p.n[2]) < 0.1 }, 16) {
-			n := fc.plane.n
-			c := fc.w.centroid()
-			mn, mx := fc.w.bounds()
-			off := 16*(math.Abs(n[0])+math.Abs(n[1])) + 0.5
-			yaw, _ := navsim.YawTo(Vec3{float32(n[0]), float32(n[1]), 0}, Vec3{})
-			found := false
-			for z := mn[2] + 24 + 8; z <= mx[2]+24; z += 32 {
-				p := Vec3{float32(c[0] + n[0]*off), float32(c[1] + n[1]*off), float32(z)}
-				if !wk.w.Fits(p, navsim.StandMins(), navsim.StandMaxs()) {
-					continue
-				}
-				st := navsim.State{Mins: navsim.StandMins(), Maxs: navsim.StandMaxs(), ViewHeight: 22}
-				st.PM.Origin = navsim.SnapOrigin(p)
-				if !wk.w.OnLadder(&st, yaw) {
-					continue
-				}
-				out = append(out, bnode{o: st.Origin(), flags: nav.NodeLadder, blocker: -1, spawn: -1, prio: prioLadder, ladderYaw: yaw, ladder: ladder})
-				found = true
+	for _, src := range srcs {
+		for _, br := range modelBrushes(f, src.headnode) {
+			if f.Brushes[br].Contents&q2const.CONTENTS_LADDER == 0 {
+				continue
 			}
-			if found {
-				ladder++
+			for _, fc := range brushFaces(f, br, func(p dplane) bool { return math.Abs(p.n[2]) < 0.1 }, 16) {
+				n := fc.plane.n
+				c := fc.w.centroid()
+				mn, mx := fc.w.bounds()
+				off := 16*(math.Abs(n[0])+math.Abs(n[1])) + 0.5
+				yaw, _ := navsim.YawTo(Vec3{float32(n[0]), float32(n[1]), 0}, Vec3{})
+				o := src.offset
+				found := false
+				for z := mn[2] + 24 + 8; z <= mx[2]+24; z += 32 {
+					p := Vec3{float32(c[0]+n[0]*off) + o[0], float32(c[1]+n[1]*off) + o[1], float32(z) + o[2]}
+					if !wk.w.Fits(p, navsim.StandMins(), navsim.StandMaxs()) {
+						continue
+					}
+					st := navsim.State{Mins: navsim.StandMins(), Maxs: navsim.StandMaxs(), ViewHeight: 22}
+					st.PM.Origin = navsim.SnapOrigin(p)
+					if !wk.w.OnLadder(&st, yaw) {
+						continue
+					}
+					out = append(out, bnode{o: st.Origin(), flags: nav.NodeLadder, blocker: -1, spawn: -1, prio: prioLadder, ladderYaw: yaw, ladder: ladder})
+					found = true
+				}
+				if found {
+					ladder++
+				}
 			}
 		}
 	}

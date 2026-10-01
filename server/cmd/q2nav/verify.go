@@ -202,6 +202,9 @@ func liveEligible(g *nav.Graph, spawn []nav.StateMask) func(*nav.Edge) bool {
 		case nav.EdgeRide, nav.EdgeTouch, nav.EdgeTeleport:
 			return false
 		}
+		if e.Flags&nav.EdgePushes != 0 {
+			return false // the barrel it brushes moves on the server
+		}
 		if !nav.Holds(e, spawn) {
 			return false
 		}
@@ -228,16 +231,46 @@ func verifyLive(stdout io.Writer, src *mapSource, g *nav.Graph, md *mapdata.Map,
 		idx = idx[:n]
 		sort.Ints(idx)
 	}
-	ls, err := startLive(ctx, src.p, g.Map, skill, uint32(seed))
+	if len(idx) == 0 {
+		fmt.Fprintln(stdout, "live: no eligible edges")
+		return liveResult{}, nil
+	}
+	park := parkNode(g, idx)
+	start := func() (*liveServer, error) {
+		ls, err := startLive(ctx, src.p, g.Map, skill, uint32(seed))
+		if err != nil {
+			return nil, err
+		}
+		if err := ls.quiesce(ctx, g, park); err != nil {
+			ls.Close()
+			return nil, err
+		}
+		return ls, nil
+	}
+	ls, err := start()
 	if err != nil {
 		return liveResult{}, err
 	}
-	defer ls.Close()
+	defer func() { ls.Close() }()
 	fmt.Fprintf(stdout, "live: %s on a lockstep server, %d monsters removed, god+notarget\n", g.Map, ls.freed)
 	v := navbuild.NewVerifier(g, md.CM)
 	var res liveResult
 	var reasons []string
+	restarts := 0
+	prev := idx[0]
 	for _, i := range idx {
+		if why := ls.changed(); why != "" {
+			// the last sample set something off: start over from the level
+			// as it starts
+			if verbose {
+				fmt.Fprintf(stdout, "  live restart: %s (after edge %d %s %v -> %v)\n", why, prev, kindKey(&g.Edges[prev]), g.Nodes[g.Edges[prev].From].Origin, g.Nodes[g.Edges[prev].To].Origin)
+			}
+			ls.Close()
+			if ls, err = start(); err != nil {
+				return res, err
+			}
+			restarts++
+		}
 		e := &g.Edges[i]
 		from := g.Node(e.From)
 		start, err := ls.place(ctx, from)
@@ -284,6 +317,7 @@ func verifyLive(stdout io.Writer, src *mapSource, g *nav.Graph, md *mapdata.Map,
 				why = fmt.Sprintf("server ended at %v, simulation at %v (%.1f units apart)", shortVec(on), shortVec(off), d)
 			}
 		}
+		prev = i
 		if why != "" {
 			msg := fmt.Sprintf("edge %d %s %v -> %v: %s", i, kindKey(e), from.Origin, g.Nodes[e.To].Origin, why)
 			if verbose || len(reasons) < 10 {
@@ -292,8 +326,30 @@ func verifyLive(stdout io.Writer, src *mapSource, g *nav.Graph, md *mapdata.Map,
 			reasons = append(reasons, msg)
 		}
 	}
-	fmt.Fprintf(stdout, "live: %d/%d edges reproduce on the server (%d bit-exact)\n", res.pass, res.total, res.exact)
+	fmt.Fprintf(stdout, "live: %d/%d edges reproduce on the server (%d bit-exact, %d server restarts)\n", res.pass, res.total, res.exact, restarts)
 	return res, nil
+}
+
+// parkNode returns a start node of the sample that touches no volume (a
+// player resting in a door's trigger box keeps the door open, and the
+// level never comes to rest).
+func parkNode(g *nav.Graph, idx []int) *nav.Node {
+	for _, i := range idx {
+		n := g.Node(g.Edges[i].From)
+		free := true
+		for _, v := range g.Volumes {
+			lo := navsim.Vec3{n.Origin[0] - 17, n.Origin[1] - 17, n.Origin[2] - 25}
+			hi := navsim.Vec3{n.Origin[0] + 17, n.Origin[1] + 17, n.Origin[2] + 33}
+			if !(lo[0] > v.Max[0] || lo[1] > v.Max[1] || lo[2] > v.Max[2] || hi[0] < v.Min[0] || hi[1] < v.Min[1] || hi[2] < v.Min[2]) {
+				free = false
+				break
+			}
+		}
+		if free {
+			return n
+		}
+	}
+	return g.Node(g.Edges[idx[0]].From)
 }
 
 func shortVec(o [3]int16) navsim.Vec3 {

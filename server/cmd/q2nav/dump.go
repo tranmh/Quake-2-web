@@ -15,12 +15,12 @@ import (
 // dumpFile is the compact visualization JSON for a dev overlay: positions
 // as [x, y, z] arrays, enums as indexes into the name tables.
 type dumpFile struct {
-	Schema    string       `json:"schema"`
-	Map       string       `json:"map"`
-	Checksum  uint32       `json:"checksum"`
-	Skill     int          `json:"skill"`
-	EdgeKinds []string     `json:"edgeKinds"`
-	NodeFlags []string     `json:"nodeFlags"`
+	Schema    string   `json:"schema"`
+	Map       string   `json:"map"`
+	Checksum  uint32   `json:"checksum"`
+	Skill     int      `json:"skill"`
+	EdgeKinds []string `json:"edgeKinds"`
+	NodeFlags []string `json:"nodeFlags"`
 	// Nodes: [x, y, z, flags, region]
 	Nodes [][5]float32 `json:"nodes"`
 	// Edges: [from, to, kind index, conditional 0/1]

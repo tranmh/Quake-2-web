@@ -135,22 +135,6 @@ func runDemo1(t *testing.T, frames int, onFrame func(w *World, in *perception.Fr
 	return recs, payloads
 }
 
-// mentioned reports whether entity num made a sound or a muzzle flash the
-// percept holds (without a position).
-func mentioned(pc *perception.Percept, num int32) bool {
-	for i := range pc.Heard {
-		if pc.Heard[i].Num == num {
-			return true
-		}
-	}
-	for i := range pc.Flashes {
-		if pc.Flashes[i].Num == num {
-			return true
-		}
-	}
-	return false
-}
-
 // TestDemo1Belief runs the scripted walker on demo1 for 60 s of game time:
 // monsters enter the belief only once perceived, hidden ones in the packet
 // stay out, the soldier that comes hunting is tracked, its hits come with
@@ -179,7 +163,9 @@ func TestDemo1Belief(t *testing.T) {
 			if tr.Visible && !seen[tr.Num] {
 				t.Fatalf("t=%d: track %s visible but not seen", b.Time, tr.ID)
 			}
-			if tr.LastUpdate == b.Time && !admitted[tr.Num] && !mentioned(pc, tr.Num) {
+			// only an admitted position refreshes a track (a sound without
+			// a position does not)
+			if tr.LastUpdate == b.Time && !admitted[tr.Num] {
 				t.Fatalf("t=%d: track %s updated without being perceived", b.Time, tr.ID)
 			}
 			if p, ok := lastPos[tr.ID]; ok && p != tr.Pos && !admitted[tr.Num] {

@@ -240,6 +240,20 @@ func TestClassifySound(t *testing.T) {
 		{"*pain50_1.wav", SoundPlayer, ""},
 		{"world/amb7.wav", SoundAmbient, ""},
 		{"", SoundOther, ""},
+		// footsteps are movement, not attacks
+		{"tank/step.wav", SoundStep, "tank"},
+		{"mutant/step1.wav", SoundStep, "mutant"},
+		{"mutant/step3.wav", SoundStep, "mutant"},
+		{"boss3/step1.wav", SoundStep, "jorg"},
+		{"makron/step2.wav", SoundStep, "makron"},
+		{"mutant/thud1.wav", SoundAttack, "mutant"}, // its jump hits (C: m_mutant.c mutant_jump_touch)
+		{"gladiator/railgun.wav", SoundAttack, "gladiator"},
+		{"makron/bfg_fire.wav", SoundAttack, "makron"},
+		{"makron/rail_up.wav", SoundAttack, "makron"},
+		{"boss3/xfire.wav", SoundAttack, "jorg"},
+		{"boss3/w_loop.wav", SoundAttack, "jorg"},
+		{"boss3/d_hit.wav", SoundDeath, "jorg"},
+		{"makron/bhit.wav", SoundDeath, "makron"},
 	} {
 		k, f := ClassifySound(tc.path)
 		if k != tc.kind || f != tc.fam {
@@ -276,5 +290,92 @@ func TestFlashWeapons(t *testing.T) {
 	}
 	if PlayerFlashWeapon(q2const.MZ_ROCKET) != WeaponRocket || PlayerFlashWeapon(q2const.MZ_SSHOTGUN) != WeaponShotgun {
 		t.Fatal("player flashes")
+	}
+}
+
+// gameSoundPaths returns the .wav literals of the game source files
+// matching glob (relative to server/internal/game).
+func gameSoundPaths(t *testing.T, glob string) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("..", "..", "game", glob))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("game sources not found: %v", err)
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s scanner.Scanner
+		fset := token.NewFileSet()
+		s.Init(fset.AddFile(f, -1, len(src)), src, nil, 0)
+		for {
+			_, tok, lit := s.Scan()
+			if tok == token.EOF {
+				break
+			}
+			if tok != token.STRING {
+				continue
+			}
+			v, err := strconv.Unquote(lit)
+			if err != nil || !strings.HasSuffix(v, ".wav") || seen[v] {
+				continue
+			}
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestMonsterSoundsClassified runs every sound a monster plays (the
+// literals of game/m_*.go) through ClassifySound: a monster directory gives
+// the family, footsteps are never attacks, and the file name words map to
+// their kinds.
+func TestMonsterSoundsClassified(t *testing.T) {
+	paths := gameSoundPaths(t, "m_*.go")
+	if len(paths) < 150 {
+		t.Fatalf("only %d monster sounds found", len(paths))
+	}
+	kinds := map[SoundKind]int{}
+	for _, p := range paths {
+		k, fam := ClassifySound(p)
+		kinds[k]++
+		dir, file, _ := strings.Cut(p, "/")
+		if soundFamily(dir) == "" {
+			continue // misc/, player/, world/: not a monster voice
+		}
+		if fam == "" && p != "infantry/inflies1.wav" {
+			t.Errorf("%s: no family", p)
+		}
+		var want SoundKind
+		switch {
+		case strings.HasPrefix(file, "step"):
+			want = SoundStep
+		case strings.Contains(file, "deth") || strings.Contains(file, "death"):
+			want = SoundDeath
+		case strings.Contains(file, "sght") || strings.Contains(file, "sight"):
+			want = SoundSight
+		case strings.Contains(file, "srch"):
+			want = SoundSearch
+		case strings.Contains(file, "pain"):
+			want = SoundPain
+		case strings.Contains(file, "idle"):
+			want = SoundIdle
+		default:
+			continue
+		}
+		if k != want {
+			t.Errorf("%s: %s, want %s", p, k, want)
+		}
+	}
+	if kinds[SoundStep] < 8 || kinds[SoundAttack] < 40 || kinds[SoundDeath] < 20 {
+		t.Errorf("kinds %v", kinds)
 	}
 }

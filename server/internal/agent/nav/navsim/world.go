@@ -65,6 +65,10 @@ type Solid struct {
 	// Mins and Maxs are the model bounds (ent->mins/maxs) of a BSP solid or
 	// the box bounds, relative to Origin.
 	Mins, Maxs Vec3
+	// Pushable marks a solid the player shoves by touching it
+	// (misc_explobox's barrel_touch moves it a unit per frame); the
+	// simulation treats it as static.
+	Pushable bool
 
 	absMin, absMax Vec3
 }

@@ -33,6 +33,9 @@ const (
 	fuseAngle = 30
 	// fuseMemory: how recent that attacker's flash or sound must be.
 	fuseMemory = 1000
+	// maxBearingPitch: looking further up or down than this, the forward
+	// part of the damage kick is too small to recover the bearing.
+	maxBearingPitch = 70
 )
 
 // kickModel predicts the parts of player_state_t.kick_angles the bot can
@@ -294,21 +297,41 @@ func (st *selfTracker) damage(w *World, pc *perception.Percept, predPitch, predR
 	newKick := math.Hypot(float64(resP-oldP), float64(resR-oldR)) > minKick &&
 		math.Hypot(float64(resP), float64(resR)) > minKick
 	if ev.Cause == "hit" && !fired && !s.Dead && newKick {
-		var fwd, right Vec3
-		shared.AngleVectors(ps.ViewAngles, &fwd, &right, nil)
-		f, r := -resP, resR // dot(dir, forward), dot(dir, right) up to the kick scale
-		dir := Vec3{f*fwd[0] + r*right[0], f*fwd[1] + r*right[1], 0}
-		if dir[0] != 0 || dir[1] != 0 {
-			ev.BearingKnown = true
-			ev.Bearing = float32(math.Atan2(float64(dir[1]), float64(dir[0])) * 180 / math.Pi)
+		// the new kick decays from here (a later knockback-free hit must
+		// not take it for its own), whether or not it gives a bearing
+		st.hit = lastKick{ok: true, frame: pc.ServerFrame, pitch: resP, roll: resR}
+		ev.Bearing, ev.BearingKnown = kickBearing(ps.ViewAngles, resP, resR)
+		if ev.BearingKnown {
 			ev.Relative = angleDiff(ev.Bearing, ps.ViewAngles[q2const.YAW])
 		}
-		st.hit = lastKick{ok: true, frame: pc.ServerFrame, pitch: resP, roll: resR}
 	} else if ev.Cause == "hit" && s.Waterlevel == 3 && !newKick {
 		ev.Cause = "drown"
 	}
 	ev.Source = w.attribute(&ev)
 	w.b.Damage = append(w.b.Damage, ev)
+}
+
+// kickBearing recovers the world yaw a hit came from out of its damage kick
+// (pitch, roll) seen at view angles view. P_DamageFeedback dots the
+// direction with the pitched forward vector: for a horizontal direction
+// that is cos(pitch) times its level forward part, while the right vector
+// is level at roll 0. The direction runs from the origin to the impact
+// point, and assuming it horizontal is the usual case; looking further up
+// or down than maxBearingPitch the forward part is too small to use.
+func kickBearing(view Vec3, pitch, roll float32) (bearing float32, ok bool) {
+	p := float64(angleDiff(view[q2const.PITCH], 0))
+	if math.Abs(p) > maxBearingPitch {
+		return 0, false
+	}
+	var fwd, right Vec3
+	shared.AngleVectors(Vec3{0, view[q2const.YAW], 0}, &fwd, &right, nil)
+	f := -pitch / float32(math.Cos(p*math.Pi/180)) // dot(dir, level forward) up to the kick scale
+	r := roll                                      // dot(dir, right)
+	dir := Vec3{f*fwd[0] + r*right[0], f*fwd[1] + r*right[1], 0}
+	if dir[0] == 0 && dir[1] == 0 {
+		return 0, false
+	}
+	return float32(math.Atan2(float64(dir[1]), float64(dir[0])) * 180 / math.Pi), true
 }
 
 // attribute names the track a hit most likely came from: a recent

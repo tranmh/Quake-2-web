@@ -341,10 +341,12 @@ func (wk *worker) validate(i int32, c cand) (nav.Edge, bool) {
 			add(navsim.RecipeDrop, nil)
 		}
 	}
+	base0 := edge
 	for _, p := range plans {
 		if !wk.simulate(a, m, p) {
 			continue
 		}
+		edge := base0 // each attempt starts clean
 		out := &wk.out
 		edge.Recipe = p.Recipe
 		edge.Kind = kindOf(p.Recipe, out, dz)
@@ -371,9 +373,21 @@ func (wk *worker) validate(i int32, c cand) (nav.Edge, bool) {
 		}
 		edge.Reqs = reqs
 		edge.Effects = wk.outcomeEffects(out)
+		if wk.touchesPushable(out) {
+			edge.Flags |= nav.EdgePushes
+		}
 		return edge, true
 	}
 	return edge, false
+}
+
+func (wk *worker) touchesPushable(out *navsim.Outcome) bool {
+	for _, c := range out.Touched {
+		if wk.b.sc.pushable[c.ID] {
+			return true
+		}
+	}
+	return false
 }
 
 func kindOf(r navsim.Recipe, out *navsim.Outcome, dz float32) nav.EdgeKind {
@@ -697,6 +711,14 @@ func (b *builder) rideEdges() []nav.Edge {
 		for _, pr := range pairs {
 			from, to := at(pr[0]), at(pr[1])
 			if from < 0 || to < 0 {
+				continue
+			}
+			// a plat at its top never goes down with a rider inside its
+			// center trigger (Touch_Plat_Center keeps delaying plat_go_down);
+			// only a LOW_TRIGGER plat, whose trigger covers just the bottom,
+			// carries the rider down. Boarding at the bottom always sends it
+			// up.
+			if bl.Kind == nav.BlockPlat && pr[0] == 0 && !g.lowTrigger {
 				continue
 			}
 			p0, p1 := bl.Poses[pr[0]].Origin, bl.Poses[pr[1]].Origin

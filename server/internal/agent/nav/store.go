@@ -75,7 +75,7 @@ func (s *Store) Load(ctx context.Context, md *mapdata.Map, p Params) (*Graph, er
 	s.mu.Lock()
 	if g := s.mem[name]; g != nil {
 		s.mu.Unlock()
-		return g.ForSkill(md.Skill), nil
+		return s.resolved(name, g, md.Skill), nil
 	}
 	f := s.calls[name]
 	if f == nil || f.ctx.Err() != nil {
@@ -93,7 +93,7 @@ func (s *Store) Load(ctx context.Context, md *mapdata.Map, p Params) (*Graph, er
 		if f.err != nil {
 			return nil, f.err
 		}
-		return f.g.ForSkill(md.Skill), nil
+		return s.resolved(name, f.g, md.Skill), nil
 	case <-ctx.Done():
 		s.mu.Lock()
 		f.waiters--
@@ -103,6 +103,27 @@ func (s *Store) Load(ctx context.Context, md *mapdata.Map, p Params) (*Graph, er
 		s.mu.Unlock()
 		return nil, ctx.Err()
 	}
+}
+
+// resolved returns g resolved for skill, from memory when it was resolved
+// before.
+func (s *Store) resolved(name string, g *Graph, skill int) *Graph {
+	key := fmt.Sprintf("%s#%d", name, skill)
+	s.mu.Lock()
+	r := s.mem[key]
+	s.mu.Unlock()
+	if r != nil {
+		return r
+	}
+	r = g.ForSkill(skill)
+	s.mu.Lock()
+	if old := s.mem[key]; old != nil {
+		r = old
+	} else {
+		s.mem[key] = r
+	}
+	s.mu.Unlock()
+	return r
 }
 
 func (s *Store) run(f *flight, name string, md *mapdata.Map, p Params) {
@@ -176,10 +197,13 @@ func (g *Graph) Matches(md *mapdata.Map, p Params) error {
 	return nil
 }
 
-// DefaultDir returns <repo>/assets/nav for a working directory inside the
-// repository (found by walking up to the directory holding server/go.mod),
-// else "assets/nav".
+// DefaultDir returns the nav cache directory: $Q2_NAV_DIR when set, else
+// <repo>/assets/nav for a working directory inside the repository (found by
+// walking up to the directory holding server/go.mod), else "assets/nav".
 func DefaultDir() string {
+	if d := os.Getenv("Q2_NAV_DIR"); d != "" {
+		return d
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		return filepath.Join("assets", "nav")

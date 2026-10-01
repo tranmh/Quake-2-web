@@ -62,10 +62,15 @@ const (
 	NodeEnd
 )
 
-var nodeFlagNames = [...]string{"crouch", "water", "breath", "ladder", "mover", "ledge", "spawn", "end"}
+func nodeFlagNames() [8]string {
+	return [8]string{"crouch", "water", "breath", "ladder", "mover", "ledge", "spawn", "end"}
+}
 
 // String lists the flags ("water|breath").
-func (f NodeFlags) String() string { return flagString(uint32(f), nodeFlagNames[:]) }
+func (f NodeFlags) String() string {
+	names := nodeFlagNames()
+	return flagString(uint32(f), names[:])
+}
 
 func flagString(f uint32, names []string) string {
 	s := ""
@@ -120,18 +125,20 @@ const (
 	EdgeTouch
 )
 
-var edgeKindNames = [...]string{"", "walk", "crouch", "jump", "drop", "ladder", "swim", "waterjump", "ride", "teleport", "touch"}
+func edgeKindNames() [11]string {
+	return [11]string{"", "walk", "crouch", "jump", "drop", "ladder", "swim", "waterjump", "ride", "teleport", "touch"}
+}
 
 // String returns the kind name.
 func (k EdgeKind) String() string {
-	if int(k) < len(edgeKindNames) && k > 0 {
-		return edgeKindNames[k]
+	if names := edgeKindNames(); int(k) < len(names) && k > 0 {
+		return names[k]
 	}
 	return "?"
 }
 
 // EdgeFlags qualify an edge.
-type EdgeFlags uint8
+type EdgeFlags uint16
 
 const (
 	// EdgeFast: validated by the straight-line fast path (a clear hull
@@ -146,12 +153,34 @@ const (
 	// EdgeSpawnWorld: validated with the other movers in their spawn state
 	// (closed doors) instead of out of the way; see Graph.EdgeWorld.
 	EdgeSpawnWorld
+	// EdgePushes: the simulation touched a pushable solid (a barrel), which
+	// moves when touched, so the real path can differ slightly.
+	EdgePushes
+	// EdgeFromRest: the edge only works from rest at From. Every edge is
+	// validated from rest; the builder also runs each simulated edge right
+	// after walking in from its neighbors at full speed (as a follower
+	// that does not stop between edges would), and sets this flag when one
+	// of those running entries fails. A follower must come to rest at From
+	// before running such an edge.
+	EdgeFromRest
+	// EdgeNeedsUse: a ride that only starts when something uses the mover
+	// (a train waiting at a corner with wait -1, a mover with neither a
+	// touch nor an automatic activation); Target is the mover.
+	EdgeNeedsUse
+	// EdgeHazard: the swept positions are in slime or lava, or inside a
+	// trigger_hurt; Damage estimates the damage taken on the way.
+	EdgeHazard
 )
 
-var edgeFlagNames = [...]string{"fast", "step", "board", "spawnworld"}
+func edgeFlagNames() [8]string {
+	return [8]string{"fast", "step", "board", "spawnworld", "pushes", "fromrest", "needsuse", "hazard"}
+}
 
 // String lists the flags.
-func (f EdgeFlags) String() string { return flagString(uint32(f), edgeFlagNames[:]) }
+func (f EdgeFlags) String() string {
+	names := edgeFlagNames()
+	return flagString(uint32(f), names[:])
+}
 
 // StateMask is a set of blocker states: bit i is pose i, StateGone the
 // state where the blocker is not there (destroyed, removed, switched off,
@@ -191,12 +220,14 @@ const (
 	EffItem
 )
 
-var effectKindNames = [...]string{"", "trigger", "doortrigger", "plattrigger", "button", "item"}
+func effectKindNames() [6]string {
+	return [6]string{"", "trigger", "doortrigger", "plattrigger", "button", "item"}
+}
 
 // String returns the kind name.
 func (k EffectKind) String() string {
-	if int(k) < len(effectKindNames) && k > 0 {
-		return effectKindNames[k]
+	if names := effectKindNames(); int(k) < len(names) && k > 0 {
+		return names[k]
 	}
 	return "?"
 }
@@ -251,8 +282,12 @@ type Edge struct {
 	BackupMsec int16
 	// Yaw is the ladder facing (EdgeLadder).
 	Yaw float32
-	// FallDamage is the falling damage the simulation took.
+	// FallDamage is the falling damage the simulation took, at the worst
+	// phase of the server frames (see navsim.Outcome.FallDamage).
 	FallDamage int16
+	// Damage estimates the other damage taken on the way (EdgeHazard):
+	// slime, lava and trigger_hurt, per server frame inside them.
+	Damage int16
 	// Target is the lump index of what a touch edge walks at (a button, a
 	// trigger, an item) or of a teleporter; 0 for other edges (worldspawn
 	// is never a target).
@@ -289,12 +324,14 @@ const (
 	BlockWater
 )
 
-var blockerKindNames = [...]string{"", "door", "rotating", "secret", "plat", "train", "wall", "explosive", "laser", "water"}
+func blockerKindNames() [10]string {
+	return [10]string{"", "door", "rotating", "secret", "plat", "train", "wall", "explosive", "laser", "water"}
+}
 
 // String returns the kind name.
 func (k BlockerKind) String() string {
-	if int(k) < len(blockerKindNames) && k > 0 {
-		return blockerKindNames[k]
+	if names := blockerKindNames(); int(k) < len(names) && k > 0 {
+		return names[k]
 	}
 	return "?"
 }
