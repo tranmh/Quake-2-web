@@ -102,7 +102,8 @@ type ManagerConfig struct {
 	// (DefaultKeepPerUser) at most are one account's, so that nobody
 	// evicts the others' runs by starting bots in a loop; the runs of
 	// administrators, of the server and of the command line only count
-	// against Keep.
+	// against Keep, and only newer ones of theirs evict them (the other
+	// accounts' runs are kept in the room they leave).
 	Dir         string
 	Keep        int
 	KeepPerUser int
@@ -317,7 +318,7 @@ func (m *Manager) flushLoop() {
 		case <-m.flushStop:
 			return
 		case <-t.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), accountFlushTimeout)
 			if err := m.account.Flush(ctx); err != nil {
 				m.log.Warn("bots: daily spend not persisted", "err", err)
 			}
@@ -723,7 +724,7 @@ func (m *Manager) Close() {
 	}
 	close(m.flushStop)
 	<-m.flushDone
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), accountFlushTimeout)
 	defer cancel()
 	if err := m.account.Flush(ctx); err != nil {
 		m.log.Warn("bots: daily spend not persisted", "err", err)

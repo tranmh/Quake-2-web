@@ -51,20 +51,20 @@ jobs:
           # that many of the seeds reach victory.pcx (docs/AGENT.md, "Nightly"). gate: every run must pass
           # the provenance gate (-min-model-share 0.7 in the run, and again in q2bot validate).
           - { name: scripted, expect: pass, replay: true, args: "-backend scripted -require-complete" }
-          # the jev client against the in-process fake Jev server, 212 ms simulated latency. A fixed seed's
-          # victory is a lottery at the documented demo3 survival (docs/AGENT-EVAL.md), so completion is
-          # judged over six seeds, not required of each one
+          # the jev client against the in-process fake Jev server, 212 ms simulated latency. Which seeds
+          # win moves with any change to the bot, so completion is judged over six seeds: at least 5 of 6,
+          # derived from the pooled wave-8 rates of docs/AGENT-EVAL.md (docs/AGENT.md, "Nightly")
           - name: mock-clean
             expect: pass
             gate: true
             seeds: "1 2 3 4 5 6"
-            min_wins: 3
+            min_wins: 5
             args: "-backend mock -mock-policy scripted -sim-latency 212ms -min-model-share 0.7"
           - name: mock-noisy
             expect: pass
             gate: true
             seeds: "1 2 3 4 5 6"
-            min_wins: 2
+            min_wins: 5
             args: "-backend mock -mock-policy noisy -sim-latency 212ms -min-model-share 0.7"
           # ablations: must be measurably worse than scripted
           - { name: ablate-constant, expect: fail, args: "-backend constant -require-complete" }

@@ -20,7 +20,9 @@ import (
 
 // probeStates are the lane states jev-probe asks about by default: the
 // decide package's golden fast and slow states (four enemies, two
-// projectiles; the slow one with items, objective and events).
+// projectiles; the slow one with items, objective and events), copied
+// from internal/agent/decide/testdata (TestProbeStatesMatchGoldens checks
+// that the copies are current).
 //
 //go:embed probe_fast.json probe_slow.json
 var probeStates embed.FS

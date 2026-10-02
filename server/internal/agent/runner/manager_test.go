@@ -438,12 +438,20 @@ func TestEndStatus(t *testing.T) {
 	}{
 		{sum(OutcomeCompleted, "1 of 1 episodes to victory.pcx"), nil, "", false, api.BotFinished, "1 of 1 episodes to victory.pcx"},
 		{sum(OutcomeCompleted, "x"), ErrIncomplete, "", false, api.BotFinished, "x"},
-		{sum(OutcomeCompleted, "x"), errors.New("trace: disk full"), "", false, api.BotFailed, "trace: disk full"},
+		{sum(OutcomeCompleted, "x"), errors.New("trace: close /data/bots/x/ep-000/trace.jsonl.gz: disk full"), "", false, api.BotFailed, reasonInternal},
 		{sum(OutcomeFailed, "episode 0: death_limit"), nil, "", false, api.BotFailed, "episode 0: death_limit"},
+		{sum(OutcomeFailed, "episode 0: death_limit"), errors.Join(fmt.Errorf("%w: failed (episode 0: death_limit)", ErrIncomplete)), "", false,
+			api.BotFailed, "episode 0: death_limit"},
+		// a reason that is an error's text (a campaign error naming a path)
+		{sum(OutcomeFailed, "episode 0: campaign: demo1 nav graph: open /srv/nav/demo1.nav: permission denied"),
+			errors.Join(errors.New("episode 0: campaign: demo1 nav graph: open /srv/nav/demo1.nav: permission denied")), "", false,
+			api.BotFailed, reasonInternal},
+		{sum(OutcomeFailed, ""), errors.New("daily spend: dial tcp db.internal:5432: refused"), "", false, api.BotFailed, reasonInternal},
 		{sum(OutcomeAborted, "budget: run budget spent"), nil, "", false, api.BotStopped, "budget: run budget spent"},
 		{sum(OutcomeAborted, "context canceled"), nil, "stopped by its owner", false, api.BotStopped, "stopped by its owner"},
 		{sum(OutcomeAborted, "context deadline exceeded"), nil, "", true, api.BotStopped, "its wall-clock limit (1m0s) was reached"},
-		{nil, errors.New("session: handshake: timeout\nmore"), "", false, api.BotFailed, "session: handshake: timeout"},
+		{nil, errors.New("runner: bot run panicked: open /data/bots/x/ep-000/demos: no space left\nmore"), "", false, api.BotFailed, reasonInternal},
+		{nil, nil, "", false, api.BotFailed, reasonInternal},
 	} {
 		st, why := endStatus(tc.sum, tc.err, tc.stop, tc.limit, time.Minute)
 		if st != tc.status || why != tc.reason {
@@ -989,6 +997,63 @@ func TestManagerRetentionPerUser(t *testing.T) {
 	var meta botMeta
 	if err := readJSONFile(filepath.Join(dir, b.ID, BotFile), &meta); err != nil || !meta.OwnerAdmin || meta.OwnerID != admin.ID {
 		t.Fatalf("admin's bot.json %+v %v", meta, err)
+	}
+}
+
+// Accounts that are not administrators cannot evict the runs of
+// administrators, the server or the command line, however many of them
+// start bots: their runs are kept in the room the others leave, and only
+// newer privileged runs evict older ones.
+func TestManagerRetentionPrivileged(t *testing.T) {
+	dir := t.TempDir()
+	t0 := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	n := 0
+	add := func(id string, meta *botMeta) {
+		if meta != nil {
+			meta.Name, meta.Backend, meta.Status = "b", "scripted", api.BotFinished
+		}
+		writeRunDir(t, dir, id, t0.Add(time.Duration(n)*time.Minute), meta)
+		n++
+	}
+	add("admin-0", &botMeta{OwnerID: admin.ID, OwnerAdmin: true})
+	add("server-0", &botMeta{})
+	add("cli-0", nil)
+	for u := int64(1); u <= 5; u++ {
+		for i := 0; i < 10; i++ {
+			add(fmt.Sprintf("user%d-%d", u, i), &botMeta{OwnerID: 100 + u})
+		}
+	}
+	newTestManager(t, func(c *ManagerConfig) { c.Dir = dir; c.Keep = 20; c.KeepPerUser = 10 })
+	left := map[string]bool{}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		left[e.Name()] = true
+	}
+	for _, id := range []string{"admin-0", "server-0", "cli-0"} {
+		if !left[id] {
+			t.Errorf("%s evicted by the accounts' newer runs", id)
+		}
+	}
+	// the accounts' 17 newest runs fill the rest, within their shares
+	if len(left) != 20 || !left["user5-9"] || !left["user4-3"] || left["user4-2"] {
+		t.Fatalf("%d runs left: %v", len(left), left)
+	}
+
+	// privileged runs are evicted by newer privileged runs, oldest first
+	dir = t.TempDir()
+	n = 0
+	for i := 0; i < 4; i++ {
+		add(fmt.Sprintf("admin-%d", i), &botMeta{OwnerID: admin.ID, OwnerAdmin: true})
+	}
+	add("alice-0", &botMeta{OwnerID: alice.ID})
+	newTestManager(t, func(c *ManagerConfig) { c.Dir = dir; c.Keep = 3 })
+	var names []string
+	ents, _ = os.ReadDir(dir)
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	if got := strings.Join(names, ","); got != "admin-1,admin-2,admin-3" {
+		t.Fatalf("after the retention: %s", got)
 	}
 }
 

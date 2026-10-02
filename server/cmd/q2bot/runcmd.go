@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -236,6 +237,78 @@ func writeJSON(w io.Writer, v any) {
 	fmt.Fprintf(w, "%s\n", b)
 }
 
+// configLine is the part of a run's configuration the backend line leaves
+// out: what runs that share a backend, seed and maps can differ in.
+func configLine(c *metrics.RunConfig) string {
+	var parts []string
+	add := func(f string, a ...any) { parts = append(parts, fmt.Sprintf(f, a...)) }
+	if m := c.Mock; m != nil {
+		p := "mock " + cmp.Or(m.Policy, "policy unknown")
+		if n := m.Noise; n != nil {
+			p += fmt.Sprintf(" (noise %g, swap %g, low conf %g)", n.Noise, n.Swap, n.LowConfidence)
+		}
+		if m.Faults != "" {
+			p += ", faults " + m.Faults
+		}
+		parts = append(parts, p)
+	}
+	if c.SimLatency != "" {
+		add("sim latency %s", c.SimLatency)
+	}
+	switch {
+	case c.MaxDeaths < 0:
+		add("no death cap")
+	case c.MaxDeaths > 0:
+		add("max deaths %d", c.MaxDeaths)
+	default:
+		add("max deaths default")
+	}
+	add("level timeout %s", cmp.Or(c.LevelTimeout, "default"))
+	if c.EpisodeTimeout != "" {
+		add("episode timeout %s", c.EpisodeTimeout)
+	}
+	if c.StopAfter > 0 {
+		add("stop after %d", c.StopAfter)
+	}
+	if b := c.Budget; b != nil {
+		var bp []string
+		if b.USD > 0 {
+			bp = append(bp, fmt.Sprintf("$%g", b.USD))
+		}
+		if b.Queries > 0 {
+			bp = append(bp, fmt.Sprintf("%d queries", b.Queries))
+		}
+		if b.MaxQPS > 0 {
+			bp = append(bp, fmt.Sprintf("%g QPS", b.MaxQPS))
+		}
+		if b.OnExhausted != "" {
+			bp = append(bp, "on exhausted "+b.OnExhausted)
+		}
+		add("budget %s", strings.Join(bp, " "))
+	}
+	if c.MinModelShare > 0 {
+		add("min model share %g", c.MinModelShare)
+	}
+	if c.MaxStaleRate > 0 {
+		add("max stale %g", c.MaxStaleRate)
+	}
+	if len(c.EntryCommands) > 0 {
+		add("entry commands %s", strings.Join(c.EntryCommands, ";"))
+	}
+	if c.Trace != "" {
+		add("trace %s", c.Trace)
+	}
+	if c.Record {
+		add("demos")
+	} else {
+		add("no demos")
+	}
+	if c.ReplayTrace != "" {
+		add("replaying %s", c.ReplayTrace)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // printSummary prints the essentials of a run summary.
 func printSummary(w io.Writer, s *metrics.RunSummary, dir string) {
 	fmt.Fprintf(w, "run %s: %s", s.Run, s.Outcome)
@@ -252,6 +325,9 @@ func printSummary(w io.Writer, s *metrics.RunSummary, dir string) {
 	}
 	fmt.Fprintf(w, "  backend     %s%s, %s session, skill %d, seed %d, maps %s\n", s.Backend, model, s.Session, s.Skill, s.Seed,
 		strings.Join(s.Maps, ","))
+	if s.Config != nil {
+		fmt.Fprintf(w, "  config      %s\n", configLine(s.Config))
+	}
 	t := s.Totals
 	fmt.Fprintf(w, "  episodes    %d: %d of %d levels done, %d deaths, %d kills seen, %.1f s game (%.1f s in combat), %.1f s wall\n",
 		len(s.Episodes), t.LevelsCompleted, t.Levels, t.Deaths, t.BotKills, float64(s.GameMs)/1000, float64(t.CombatMs)/1000,

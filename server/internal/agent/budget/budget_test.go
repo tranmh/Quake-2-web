@@ -432,3 +432,87 @@ func (s *failStore) AddSpend(_ context.Context, _ string, usd float64) (float64,
 	s.total += usd
 	return s.total, nil
 }
+
+// gatedStore is a MemStore whose calls park until released: AddSpend
+// commits when addRelease closes; LoadSpend reads the total on entry and
+// returns it when loadRelease closes.
+type gatedStore struct {
+	MemStore
+	addEntered, loadEntered chan struct{}
+	addRelease, loadRelease chan struct{}
+	addOnce, loadOnce       sync.Once
+}
+
+func (s *gatedStore) AddSpend(ctx context.Context, day string, usd float64) (float64, error) {
+	s.addOnce.Do(func() { close(s.addEntered) })
+	<-s.addRelease
+	return s.MemStore.AddSpend(ctx, day, usd)
+}
+
+func (s *gatedStore) LoadSpend(ctx context.Context, day string) (float64, error) {
+	v, err := s.MemStore.LoadSpend(ctx, day)
+	s.loadOnce.Do(func() { close(s.loadEntered) })
+	<-s.loadRelease
+	return v, err
+}
+
+// TestAccountFlushOverlap: a Flush that overlaps another cannot overwrite
+// today's spend with a total read before the other's AddSpend landed.
+func TestAccountFlushOverlap(t *testing.T) {
+	ctx := context.Background()
+	clk := &clock{t: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)}
+	store := &gatedStore{MemStore: MemStore{m: map[string]float64{"2026-10-02": 1}},
+		addEntered: make(chan struct{}), loadEntered: make(chan struct{}),
+		addRelease: make(chan struct{}), loadRelease: make(chan struct{})}
+	a := &Account{cfg: AccountConfig{Store: store, Now: clk.Now}, flushing: make(chan struct{}, 1),
+		unflushed: map[string]float64{}, day: "2026-10-02", daySpent: 1}
+	a.Add(5)
+	errA, errB := make(chan error, 1), make(chan error, 1)
+	go func() { errA <- a.Flush(ctx) }()
+	<-store.addEntered // A holds its pending spend, the store has not added it
+	go func() { errB <- a.Flush(ctx) }()
+	select { // unserialized, B reads the stale total now
+	case <-store.loadEntered:
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(store.addRelease)
+	if err := <-errA; err != nil {
+		t.Fatal(err)
+	}
+	close(store.loadRelease)
+	if err := <-errB; err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := a.Daily(); s != 6 {
+		t.Fatalf("daily spend %v after overlapping flushes, want the store's 6", s)
+	}
+
+	// a Flush waiting behind a stalled one gives up with its context and
+	// keeps its spend for the next
+	stall := &gatedStore{MemStore: MemStore{m: map[string]float64{}},
+		addEntered: make(chan struct{}), loadEntered: make(chan struct{}),
+		addRelease: make(chan struct{}), loadRelease: make(chan struct{})}
+	b := &Account{cfg: AccountConfig{Store: stall, Now: clk.Now}, flushing: make(chan struct{}, 1),
+		unflushed: map[string]float64{}, day: "2026-10-02"}
+	b.Add(1)
+	done := make(chan error, 1)
+	go func() { done <- b.Flush(ctx) }()
+	<-stall.addEntered
+	b.Add(2)
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if err := b.Flush(cctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiting flush: %v", err)
+	}
+	close(stall.addRelease)
+	close(stall.loadRelease)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if v := stall.m["2026-10-02"]; v != 3 {
+		t.Fatalf("stored %v, want 3", v)
+	}
+}

@@ -36,6 +36,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"quake2web/server/internal/agent/decide"
 	"quake2web/server/internal/agent/trace"
@@ -72,6 +73,8 @@ const (
 
 	defaultHost = "api.typesafe.ai"
 	maxBody     = 1 << 20
+	// maxErrMsg bounds the response text an HTTP error carries.
+	maxErrMsg = 200
 )
 
 // Errors of New.
@@ -647,11 +650,17 @@ func (c *Client) classify(hresp *http.Response, data []byte, setDigest string) *
 	if st >= 200 && st < 300 {
 		return nil
 	}
-	msg := strings.TrimSpace(string(data))
-	if len(msg) > 200 {
-		msg = msg[:200]
+	// Redact before cutting: a key that straddles the cut would otherwise
+	// leave its prefix in the message.
+	msg := trace.Redact(strings.TrimSpace(string(data)), c.cfg.APIKey)
+	if len(msg) > maxErrMsg {
+		n := maxErrMsg
+		for n > 0 && !utf8.RuneStart(msg[n]) {
+			n--
+		}
+		msg = msg[:n]
 	}
-	e := &Error{Class: ClassHTTP, Status: st, Msg: trace.Redact(msg, c.cfg.APIKey)}
+	e := &Error{Class: ClassHTTP, Status: st, Msg: msg}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()

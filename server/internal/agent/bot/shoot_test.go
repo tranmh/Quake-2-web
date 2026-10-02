@@ -120,6 +120,67 @@ func TestShooterSwitch(t *testing.T) {
 	}
 }
 
+// TestShooterSwitchBack: a switch that showed in the view weapon is done.
+// When the game later changes the weapon by itself (a pickup's
+// auto-switch), switching back sends a "use" judged afresh, not a refusal;
+// and a level entry forgets a refusal.
+func TestShooterSwitchBack(t *testing.T) {
+	var s Shooter
+	inv := map[string]int{"Shotgun": 1, "Shells": 20, "Machinegun": 1, "Bullets": 50}
+	if cmd := s.Switch(1000, belief("Blaster", 0, inv), decide.WeaponShotgun); cmd != "use Shotgun" {
+		t.Fatalf("switch: %q", cmd)
+	}
+	// it takes: the bot stops asking (weaponTick: the weapon wanted is in
+	// hand) and observes every frame
+	s.Observe(belief("Shotgun", 20, inv))
+	mg := belief("Machinegun", 50, inv)
+	s.Observe(mg)
+	if cmd := s.Switch(20000, mg, decide.WeaponShotgun); cmd != "use Shotgun" || s.Refused(20000, decide.WeaponShotgun) {
+		t.Fatalf("switch back after the game's own change: %q, refused %v", cmd, s.Refused(20000, decide.WeaponShotgun))
+	}
+	// this one never takes: refused useVerify after its first use
+	for now := int64(20100); now <= 20000+useVerify; now += 100 {
+		s.Observe(mg)
+		s.Switch(now, mg, decide.WeaponShotgun)
+	}
+	if !s.Refused(20000+useVerify, decide.WeaponShotgun) {
+		t.Fatal("a switch that never showed was not refused")
+	}
+	s.ForgetSwitch()
+	if now := int64(20000 + useVerify + 100); s.Refused(now, decide.WeaponShotgun) || s.Switch(now, mg, decide.WeaponShotgun) != "use Shotgun" {
+		t.Fatal("a refusal outlived the level entry")
+	}
+}
+
+// TestShooterHoldOff: while a switch away from a continuous weapon is in
+// progress the trigger stays released (the game drops a weapon only out of
+// its firing state); not for a weapon that is not continuous, nor once the
+// switch shows.
+func TestShooterHoldOff(t *testing.T) {
+	inv := map[string]int{"Machinegun": 1, "Bullets": 50, "Super Shotgun": 1, "Shotgun": 1, "Shells": 20}
+	var s Shooter
+	mg := belief("Machinegun", 50, inv)
+	if s.HoldOff(mg) {
+		t.Fatal("held off without a switch")
+	}
+	if cmd := s.Switch(1000, mg, decide.WeaponSuperShotgun); cmd != "use Super Shotgun" {
+		t.Fatalf("switch: %q", cmd)
+	}
+	if !s.HoldOff(mg) {
+		t.Fatal("the machinegun would fire on through the switch")
+	}
+	ssg := belief("Super Shotgun", 20, inv)
+	s.Observe(ssg)
+	if s.HoldOff(ssg) {
+		t.Fatal("held off after the switch showed")
+	}
+	var s2 Shooter
+	sg := belief("Shotgun", 20, inv)
+	if cmd := s2.Switch(1000, sg, decide.WeaponSuperShotgun); cmd == "" || s2.HoldOff(sg) {
+		t.Fatalf("switch %q from the shotgun held off %v", cmd, s2.HoldOff(sg))
+	}
+}
+
 func TestShooterAim(t *testing.T) {
 	var s Shooter
 	eye := Vec3{0, 0, 0}

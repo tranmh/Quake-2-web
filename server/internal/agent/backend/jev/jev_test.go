@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"quake2web/server/internal/agent/backend/jevtest"
 	"quake2web/server/internal/agent/backend/scripted"
@@ -193,6 +194,45 @@ func TestKeyNeverLeaks(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "disabled"); n != 1 {
 		t.Errorf("disable logged %d times:\n%s", n, logs.String())
+	}
+}
+
+// TestKeyRedactedBeforeCut: an error body that echoes the key across the
+// 200-byte cut leaves no prefix of it in the error.
+func TestKeyRedactedBeforeCut(t *testing.T) {
+	for _, pad := range []int{140, 145, 150, 160, 169} {
+		body := `{"error":{"message":"` + strings.Repeat("x", pad) + ` invalid api key: ` + testKey + `"}}`
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(body))
+		}))
+		c := client(t, srv.URL, nil)
+		_, err := c.Decide(context.Background(), request(t, 1, decide.LaneFast))
+		srv.Close()
+		if err == nil || ClassOf(err) != ClassAuth {
+			t.Fatalf("pad %d: %v", pad, err)
+		}
+		for n := 6; n <= len(testKey); n++ {
+			if strings.Contains(err.Error(), testKey[:n]) {
+				t.Fatalf("pad %d: a %d-byte prefix of the key leaked: %s", pad, n, err)
+			}
+		}
+	}
+}
+
+// TestErrorCutAtRune: the cut error text stays valid UTF-8.
+func TestErrorCutAtRune(t *testing.T) {
+	body := strings.Repeat("x", 199) + strings.Repeat("é", 10)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	c := client(t, srv.URL, nil)
+	_, err := c.Decide(context.Background(), request(t, 1, decide.LaneFast))
+	var e *Error
+	if !errors.As(err, &e) || !utf8.ValidString(e.Msg) || e.Msg != strings.Repeat("x", 199) {
+		t.Fatalf("error %v (msg %q)", err, e.Msg)
 	}
 }
 

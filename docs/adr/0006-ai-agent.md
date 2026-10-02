@@ -81,6 +81,9 @@ lockstep sv.Server (virtual clock)  ─┐                                    �
     in `assets/nav`.
   - Per-visit route tables are checked in (`fixtures/agent/routes`). `q2nav plan` derives and validates them
     against the entity lump. There is no general logic planner.
+  - A table may add optional detours for equipment it does not need (weapons, ammo, the quad damage). Each
+    must stand alone, since the table validates without it, and the executor skips a failed one
+    ([AGENT.md](../AGENT.md#game-data-nav-cache-and-route-tables)).
 - **Death.** A death reloads the level-entry autosave `save0`, which every `gamemap` writes in single player.
   The death is counted, and a per-level cap ends the episode.
 - **Recording.** One client-format `.dm2` is written per level attempt by `internal/demo`. That package ports

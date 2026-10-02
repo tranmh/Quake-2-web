@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -284,7 +285,8 @@ func decodeStrict(b []byte, v any) error {
 	if err := d.Decode(v); err != nil {
 		return err
 	}
-	if d.More() {
+	// only whitespace may follow (More would miss a stray ']' or '}')
+	if _, err := d.Token(); err != io.EOF {
 		return fmt.Errorf("trailing data after the JSON value")
 	}
 	return nil

@@ -352,6 +352,9 @@ func (r *Runner) Run(ctx context.Context) (*metrics.RunSummary, error) {
 			r.host.Shutdown()
 		}
 	}()
+	// a run that panics (runSafely recovers it) still closes its trace
+	// file; after the normal close below this is a no-op
+	defer func() { _ = r.router.swap(nil) }()
 	var errs []error
 	outcome, reason := OutcomeCompleted, ""
 	for ep := r.epFrom; ep < r.cfg.Episodes; ep++ {
@@ -387,7 +390,13 @@ func (r *Runner) Run(ctx context.Context) (*metrics.RunSummary, error) {
 	}
 	r.bus.Close()
 	if r.cfg.Account != nil {
-		if err := r.cfg.Account.Flush(context.WithoutCancel(ctx)); err != nil {
+		// bounded like the Manager's flushes: a stalled store must not hold
+		// the run (and its bot slot) after the game ended; what is not
+		// flushed stays for the account's next Flush
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountFlushTimeout)
+		err := r.cfg.Account.Flush(fctx)
+		cancel()
+		if err != nil {
 			errs = append(errs, fmt.Errorf("daily spend: %w", err))
 		}
 	}
@@ -522,8 +531,12 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	er := &episodeRun{ep: ep, seed: seed, stp: &stepper{}}
 	tag := EpisodeDir(ep)
 	rep := EpisodeReport{EpisodeSummary: metrics.EpisodeSummary{Index: ep, Seed: seed, Outcome: OutcomeFailed}}
-	fail := func(err error) (EpisodeReport, error) {
-		rep.Reason, rep.Error = err.Error(), err.Error()
+	// fail ends an episode that could not be set up. Its reason (run.json,
+	// a bot's public status) names the stage only; the error, which may
+	// name server paths, goes to the caller (the log, the command line).
+	fail := func(stage string, err error) (EpisodeReport, error) {
+		err = fmt.Errorf("%s: %w", stage, err)
+		rep.Reason, rep.Error = "setup failed: "+stage, err.Error()
 		r.addResult(rep)
 		return rep, err
 	}
@@ -532,24 +545,24 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	if !r.noFiles {
 		er.dir = filepath.Join(r.dir, tag)
 		if err := os.MkdirAll(er.dir, 0o755); err != nil {
-			return fail(err)
+			return fail(stageDir, err)
 		}
 		fs, err := trace.CreateFile(filepath.Join(er.dir, TraceFile), defaultFlush)
 		if err != nil {
-			return fail(err)
+			return fail(stageTrace, err)
 		}
 		if ep > r.epFrom {
 			// every episode's trace starts with the run's run_start
 			if err := fs.Write(r.runStart); err != nil {
 				_ = fs.Close()
-				return fail(err)
+				return fail(stageTrace, err)
 			}
 		}
 		if err := r.router.swap(fs); err != nil {
-			return fail(err)
+			return fail(stageTrace, err)
 		}
 		if er.log, err = createLog(filepath.Join(er.dir, LogFile), tag, &er.stp.gms, r.verboseLogf()); err != nil {
-			return fail(err)
+			return fail(stageLog, err)
 		}
 	} else {
 		er.log = discardLog(tag, &er.stp.gms, r.verboseLogf())
@@ -565,21 +578,27 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	// the backend, the session and the bot's policy
 	be, err := r.be.episode(ep, seed, r.strict, r.latency().model(seed))
 	if err != nil {
-		return fail(err)
+		return fail(stageBackend, err)
 	}
 	er.be = be
 	var hooks []func(*fakeclient.Client, []byte, []fakeclient.Span)
 	if cfg.Record && !r.noFiles {
 		er.rec = demo.NewRecorder(demo.DirCreator(filepath.Join(er.dir, DemoDir)))
 		hooks = append(hooks, er.rec.OnServerMessage)
+		// a panicking episode still finishes its demo (Close is idempotent)
+		defer func() { _ = er.rec.Close() }()
 	}
 	if cfg.OnServerMessage != nil {
 		hooks = append(hooks, cfg.OnServerMessage)
 	}
-	sess, closeSession, err := r.newSession(ep, seed, hooks, er.log.logf)
+	sess, closeSess, err := r.newSession(ep, seed, hooks, er.log.logf)
 	if err != nil {
-		return fail(err)
+		return fail(stageSession, err)
 	}
+	// deferred too, so that a panicking episode (runSafely recovers it)
+	// still stops its game and closes its connection
+	closeSession := sync.OnceFunc(closeSess)
+	defer closeSession()
 	er.stp.Session = sess
 	er.stp.feed = r.feed
 	er.pub = &publisher{bus: r.bus, st: r.st, ep: ep, s: er.stp}
@@ -606,9 +625,10 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 		},
 	})
 	if err != nil {
-		closeSession()
-		return fail(err)
+		return fail(stagePolicy, err)
 	}
+	closePolicy := sync.OnceValue(pol.Close)
+	defer closePolicy()
 	er.pol = pol
 	if r.onEpisode != nil {
 		r.onEpisode(er)
@@ -636,7 +656,7 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	wall := cfg.Now().Sub(start).Milliseconds()
 	er.pub.publish(trace.TypeProvenance, pol.provenance())
 	stats := pol.Stats()
-	_ = pol.Close()
+	_ = closePolicy()
 	closeSession()
 	var errs []error
 	if runErr != nil {
@@ -679,6 +699,19 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 
 // defaultFlush is how often an episode's trace file is flushed.
 const defaultFlush = 2 * time.Second
+
+// accountFlushTimeout bounds a run's final flush of the account's spend.
+const accountFlushTimeout = 10 * time.Second
+
+// The setup stages an episode can fail at (its public reason).
+const (
+	stageDir     = "episode directory"
+	stageTrace   = "trace file"
+	stageLog     = "episode log"
+	stageBackend = "backend"
+	stageSession = "session"
+	stagePolicy  = "decision pipeline"
+)
 
 func (r *Runner) addResult(rep EpisodeReport) {
 	r.mu.Lock()

@@ -59,7 +59,7 @@ bot live in the browser at `/watch/<id>`, with an overlay of its decisions, and 
 ```sh
 make demo nav                                  # demo pak + nav graphs of demo1-3 (assets/nav)
 cd server
-go run ./cmd/q2bot run -backend scripted -require-complete            # the whole campaign, ~30 s
+go run ./cmd/q2bot run -backend scripted -require-complete -max-deaths 25 -level-timeout 60m   # the whole campaign, ~40 s
 go run ./cmd/q2bot validate runs/<id>                                 # traces + demos
 go run ./cmd/q2bot run -backend mock -maps demo1 -min-model-share 0.7 -require-complete   # noisy mock Jev, gated
 go run ./cmd/q2nav plan -pak ../assets/demo/baseq2/pak0.pak           # validate the route tables

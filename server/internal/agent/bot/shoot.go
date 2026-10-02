@@ -169,6 +169,33 @@ func (s *Shooter) Switch(now int64, b *worldmodel.Belief, k decide.WeaponKey) st
 	return "use " + k.Pickup()
 }
 
+// Observe notes the frame's view weapon (call it every frame, before
+// Switch): a switch that shows in it is done, so that a later switch back
+// to that weapon (after the game changed the weapon by itself: a pickup's
+// auto-switch, an empty gun) is judged afresh.
+func (s *Shooter) Observe(b *worldmodel.Belief) {
+	if s.useFor != "" && b.Self.Weapon == s.useFor.Pickup() {
+		s.useFor = ""
+	}
+}
+
+// HoldOff reports whether the trigger must stay released for the switch
+// in progress: the game drops a weapon only out of its firing state (C
+// game/p_weapon.c Weapon_Generic), and a continuous weapon (machinegun,
+// chaingun, hyperblaster) stays in it for as long as the trigger is held.
+func (s *Shooter) HoldOff(b *worldmodel.Belief) bool {
+	if s.useFor == "" || b.Self.Weapon == s.useFor.Pickup() {
+		return false
+	}
+	w, ok := control.WeaponByPickup(b.Self.Weapon)
+	return ok && w.Continuous
+}
+
+// ForgetSwitch forgets the switch in progress and the weapons refused (a
+// level entry or a reload: the game restored another weapon and
+// inventory).
+func (s *Shooter) ForgetSwitch() { s.useFor, s.useFirst, s.refused = "", 0, nil }
+
 // Refused reports whether weapon k is unavailable at now because a switch
 // to it did not take.
 func (s *Shooter) Refused(now int64, k decide.WeaponKey) bool {

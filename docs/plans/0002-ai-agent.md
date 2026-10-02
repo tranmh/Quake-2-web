@@ -5,7 +5,7 @@
 Phases 0–8 are implemented. Phase 9 (live Jev) waits for an API key: the client, `jev-probe` and the manual
 `jev-live` nightly job are ready, and only fixture-tested so far. How to run it: [`docs/AGENT.md`](../AGENT.md).
 Design and fairness: [ADR-0006](../adr/0006-ai-agent.md). Measurements: [`docs/AGENT-EVAL.md`](../AGENT-EVAL.md).
-The plan below is kept as written.
+The plan below is kept as written, except that its question table also gives the current movement options.
 
 | # | Gate | Result |
 |---|---|---|
@@ -14,16 +14,21 @@ The plan below is kept as written.
 | 2 | demo1–3 build in under 60 s; sampled edges pass re-simulation and the live server | **Met.** 5–8 s per map. `make nav-verify`: re-simulation 340/340, 322/322, 332/332; live 100/100 bit-exact; posed (conditional and touch) 50/50 per map; every route step covered. |
 | 3 | Walk to 50 random nodes on demo1 (god/notarget) | **Met.** demo1 50/50 (demo2 20/20, demo3 19/20); seed sweep 740/750. |
 | 4 | Full campaign to `victory.pcx` with god/notarget | **Met.** `TestCampaignGod`: victory in 196.9 s of game time; seeds 1–9 all win. |
-| 5 | Scripted bot finishes *without god*; fairness differential green | **Met.** Seed 1 wins (phase-5 record: 4 deaths in 1043 s of game time, 27 s wall; `-max-deaths 25 -level-timeout 60m`). Seeds 1–11 won 11 of 11 in the phase-5 record; the current build wins seeds 1–9 (AGENT-EVAL.md). `fairness.TestDifferential`, `worldmodel.TestPerturbationInvariance` and every `TestImports` pass. |
-| 6 | CI mock-Jev demo1 green; nightly noisy-Jev campaign meets the provenance gate; ablations measurably worse | **Met for the provenance gate; completion is reported over seeds.** CI: the go job's `make agent-smoke` runs the noisy mock on demo1 with `-require-complete -min-model-share 0.7` and validates it; `TestMockGate` checks the gate's mechanism (a mock run held to 0.99 must exit 1). The **noisy** full campaign missed the gate before evidence aggregation (fire_policy 0.678 < 0.7). It now passes the provenance gate on every seed (0.82–0.95 of target/fire_policy/mode from the model, ≤ 5 % of ticks stale). Completion is a lottery on demo3: the round-2 build wins noisy seeds 1–5 4/5 and seeds 1–11 7/11 (demo3 survival 7/187), clean seeds 1–3 2/3 (seeds 1–9 7/9), against scripted 9/9 at 0 ms and at 212 ms. The nightly therefore plays six seeds of each mock and gates on the provenance gate of every run plus at least 2 (noisy) and 3 (clean) of 6 victories (AGENT.md, "Nightly"). Ablations are worse: constant fails on demo1 and random on demo3, while scripted wins. Per-seed numbers: AGENT-EVAL.md. |
+| 5 | Scripted bot finishes *without god*; fairness differential green | **Met.** Seed 1 wins (phase-5 record: 4 deaths in 1043 s of game time, 27 s wall; `-max-deaths 25 -level-timeout 60m`). Seeds 1–11 won 11 of 11 in the phase-5 record. The current build wins every seed measured: seeds 1–18 at 0 ms (demo3 survival 18/50, 36 %) and seeds 1–50 at 212 ms (50/160, 31 %) ([AGENT-EVAL.md](../AGENT-EVAL.md#read-this-first-what-decides-a-run)). `fairness.TestDifferential`, `worldmodel.TestPerturbationInvariance` and every `TestImports` pass. |
+| 6 | CI mock-Jev demo1 green; nightly noisy-Jev campaign meets the provenance gate; ablations measurably worse | **Met** (the nightly's runs measured locally; see row 8). CI: the go job's `make agent-smoke` runs the noisy mock on demo1 with `-require-complete -min-model-share 0.7` and validates it; `TestMockGate` checks the gate's mechanism (a mock run held to 0.99 must exit 1). The **noisy** full campaign missed the gate before evidence aggregation (fire_policy 0.678 < 0.7). One build gives the current numbers ([AGENT-EVAL.md, "Read this first"](../AGENT-EVAL.md#read-this-first-what-decides-a-run)). All 130 model runs are model-driven (target, fire_policy and mode from the model on ≥ 0.81 of decided ticks, ≤ 4.6 % of ticks stale) and win: clean mock 80 of 80 over seeds 1–80 (demo3 survival 80/199, 40 %), noisy mock 50 of 50 over seeds 1–50 (50/171, 29 %). The scripted policy gives 50/160 (31 %) at 212 ms and 18/50 (36 %) at 0 ms. All 198 runs win. The round-2 (wave-7) build still lost runs on demo3 (noisy 7 of 11 won, demo3 survival 7/187; clean 7 of 9, 7/109). The nightly plays six seeds of each mock and gates on the provenance gate of every run plus at least 5 of 6 victories each (AGENT.md, "Nightly"). Ablations are worse: constant fails on demo1 (seeds 1 and 2), random on demo3 (seed 1) and on demo2 (seed 2), while every other policy wins every seed. |
 | 7 | `TestRelayMatchesBot` and `TestE2EBotWatch` green | **Met.** All 8 relay sub-cases pass under `-race`. |
 | 8 | `watch.spec.ts` green in CI | **Met locally.** `play.spec.ts` and `watch.spec.ts` pass with `Q2_E2E_REQUIRE=1`. The CI `e2e` job and the nightly workflow are in place and have not run on GitHub yet. |
-| 9 | Jev completes the campaign with ≥ 70 % of target/fire_policy/mode from the model, stale ≤ 15 %, 8–10 QPS in combat, cost in `run.json` | **Pending a key.** At the mock models' demo3 survival, one live run's completion would also be a lottery: read AGENT-EVAL.md's [per-attempt survival table](../AGENT-EVAL.md#read-this-first-what-decides-a-run) first. |
+| 9 | Jev completes the campaign with ≥ 70 % of target/fire_policy/mode from the model, stale ≤ 15 %, 8–10 QPS in combat, cost in `run.json` | **Pending a key.** The mock models win every seed measured (demo3 survival 29–40 % per attempt), but they are not Jev, and a live model's demo3 survival is unmeasured. One live run's outcome says little about it on its own: read the [Read this first](../AGENT-EVAL.md#read-this-first-what-decides-a-run) section of AGENT-EVAL.md before judging one. |
 
 Deviations from the plan as written:
 - The live relay never resyncs a forward that overflows: relay reliable data never shares a datagram with a
   forward, oversize forwards are split, and only a keyframe that fits no datagram is retried.
 - `.dm2` files end at each level transition (PARITY TODO-IMPROVE).
+- The movement question offers one `strafe` option in place of `strafe_left` and `strafe_right` (wave 8). The
+  controller picks the side for every command (`control.Strafer`: a seeded rhythm of 0.6–1.2 s segments; a
+  side whose way is unsafe or blocked flips at once, and a dangerous projectile's dodge side is taken at
+  once). Traces from before wave 8 carry the old options and replay only with the build that recorded them
+  (AGENT-EVAL.md, "Format change").
 - Damage bearing uses the kick residual, corrected by cos(pitch), and is unknown beyond |pitch| 70°.
 - "Vanished while in PVS" is implemented as "its last box is in view and it is not seen".
 - Route facts confirmed on the pak:
@@ -228,7 +233,7 @@ These live in `server/internal/fakeclient/{fakeclient.go,cl_parse.go,cl_ents.go,
   |---|---|---|---|
   | `target` | choice | fast (≤10 Hz in combat) | dynamic enemy IDs + `none` |
   | `fire_policy` | choice | fast | `hold` · `fire_when_aligned` · `suppress`. **Latency-tolerant**: the reflex layer executes it every 25 ms. |
-  | `movement` | choice | fast | `advance` · `retreat` · `strafe_left` · `strafe_right` · `hold` (applied by the controller with hysteresis) |
+  | `movement` | choice | fast | `advance` · `retreat` · `strafe` · `hold` (applied by the controller with hysteresis; the controller picks the strafe side). As written: `strafe_left` · `strafe_right` in place of `strafe`, which traces from before wave 8 still carry (see Deviations). |
   | `mode` | choice | slow (2 Hz or on an event) | `fight` · `objective` · `pickup` · `retreat` · `explore` |
   | `weapon` | choice | slow | owned weapons with ammo + `keep` |
   | `pickup` | choice | slow | dynamic item IDs + `none` |

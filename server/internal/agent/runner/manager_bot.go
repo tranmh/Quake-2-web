@@ -236,7 +236,13 @@ func runSafely(ctx context.Context, r botRun) (sum *metrics.RunSummary, err erro
 	return r.Run(ctx)
 }
 
-// endStatus maps a run's end to a bot status and reason.
+// reasonInternal is a bot's public reason when an error ended its run or
+// came with its end: error text can name server paths, hosts and system
+// errors, so it goes to the server log ("bot ended") instead.
+const reasonInternal = "an internal error ended the run (the server log has the details)"
+
+// endStatus maps a run's end to a bot status and its public reason
+// (bot.json, which anyone who may see the bot reads).
 func endStatus(sum *metrics.RunSummary, err error, stopWhy string, limit bool, maxRun time.Duration) (string, string) {
 	switch {
 	case stopWhy != "":
@@ -244,33 +250,39 @@ func endStatus(sum *metrics.RunSummary, err error, stopWhy string, limit bool, m
 	case limit:
 		return api.BotStopped, fmt.Sprintf("its wall-clock limit (%s) was reached", maxRun)
 	case sum == nil:
-		if err == nil {
-			err = errors.New("no summary")
-		}
-		return api.BotFailed, firstLine(err.Error())
+		return api.BotFailed, reasonInternal
 	}
 	switch sum.Outcome {
 	case OutcomeCompleted:
-		if err != nil && !errors.Is(err, ErrIncomplete) {
-			return api.BotFailed, firstLine(err.Error())
+		if internalError(err) {
+			return api.BotFailed, reasonInternal
 		}
 		return api.BotFinished, sum.Reason
 	case OutcomeAborted:
 		return api.BotStopped, sum.Reason
 	}
-	reason := sum.Reason
-	if reason == "" && err != nil {
-		reason = firstLine(err.Error())
+	if internalError(err) {
+		// the run's reason may be the error's text (a campaign error)
+		return api.BotFailed, reasonInternal
 	}
-	return api.BotFailed, reason
+	return api.BotFailed, sum.Reason
 }
 
-func firstLine(s string) string {
-	s, _, _ = strings.Cut(s, "\n")
-	if len(s) > 300 {
-		s = s[:300]
+// internalError reports whether err holds an error other than
+// ErrIncomplete (the run's own verdict on an incomplete campaign).
+func internalError(err error) bool {
+	if err == nil {
+		return false
 	}
-	return s
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range j.Unwrap() {
+			if internalError(e) {
+				return true
+			}
+		}
+		return false
+	}
+	return !errors.Is(err, ErrIncomplete)
 }
 
 // liveInfo describes a live bot.

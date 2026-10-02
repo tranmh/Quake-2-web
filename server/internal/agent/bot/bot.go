@@ -353,6 +353,7 @@ func (b *Bot) Enter(lv Level) error {
 	b.wedgeSince, b.navRecoveries = 0, 0
 	b.attemptAt, b.foughtKillAt, b.fought = 0, 0, b.fought[:0]
 	b.shoot.Reset()
+	b.shoot.ForgetSwitch()
 	return nil
 }
 
@@ -622,6 +623,7 @@ func (b *Bot) yieldRoute() {
 // with the best weapon for the range. weaponTo is the weapon acted on.
 func (b *Bot) weaponTick(c *fakeclient.Client, bel *worldmodel.Belief) {
 	s := &bel.Self
+	b.shoot.Observe(bel)
 	cur := decide.WeaponFromPickup(s.Weapon)
 	want := b.intent.Weapon
 	tr := b.liveTrack(bel, b.target)
@@ -1200,6 +1202,11 @@ func (b *Bot) Cmd(c *fakeclient.Client, msec int) shared.UserCmd {
 		}
 		if b.fire {
 			u.Buttons |= q2const.BUTTON_ATTACK
+		}
+		if b.bel != nil && b.shoot.HoldOff(b.bel) {
+			// a continuous weapon fires on while the trigger is held, and
+			// the game switches only once it stops: let go for the switch
+			u.Buttons &^= q2const.BUTTON_ATTACK
 		}
 		if u.Buttons&q2const.BUTTON_ATTACK != 0 {
 			b.fired++

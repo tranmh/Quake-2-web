@@ -199,6 +199,59 @@ func TestJevProbeMock(t *testing.T) {
 	}
 }
 
+// TestProbeStatesMatchGoldens: the embedded jev-probe states are the decide
+// package's golden lane states (Q2_UPDATE_FIXTURES regenerates only those).
+func TestProbeStatesMatchGoldens(t *testing.T) {
+	for _, lane := range []string{"fast", "slow"} {
+		probe, err := probeStates.ReadFile("probe_" + lane + ".json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		golden, err := os.ReadFile(filepath.Join("..", "..", "internal", "agent", "decide", "testdata", lane+"_state.golden.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var p, g any
+		if err := json.Unmarshal(probe, &p); err != nil {
+			t.Fatalf("probe_%s.json: %v", lane, err)
+		}
+		if err := json.Unmarshal(golden, &g); err != nil {
+			t.Fatalf("%s golden: %v", lane, err)
+		}
+		if !reflect.DeepEqual(p, g) {
+			t.Errorf("probe_%s.json differs from internal/agent/decide/testdata/%s_state.golden.json; copy the golden over it", lane, lane)
+		}
+	}
+}
+
+// TestPrintSummaryConfig: the summary prints the run's configuration, so
+// runs that differ only in noise, latency or watchdogs print differently.
+func TestPrintSummaryConfig(t *testing.T) {
+	s := &metrics.RunSummary{Run: "r1", Outcome: "completed", Backend: "mock", Session: "lockstep", Seed: 1, Maps: []string{"demo1"},
+		Config: &metrics.RunConfig{Backend: "mock", Session: "lockstep", SimLatency: "212ms", MaxDeaths: 25, LevelTimeout: "1h0m0s",
+			Mock:   &metrics.MockConfig{Policy: "noisy", Noise: &metrics.MockNoise{Noise: 0.3, Swap: 0.1, LowConfidence: 0.1}},
+			Budget: &metrics.BudgetConfig{USD: 2, OnExhausted: "fallback"}, EntryCommands: []string{"god"}, Trace: "full", Record: true}}
+	var b bytes.Buffer
+	printSummary(&b, s, "")
+	want := "  config      mock noisy (noise 0.3, swap 0.1, low conf 0.1), sim latency 212ms, max deaths 25, level timeout 1h0m0s, " +
+		"budget $2 on exhausted fallback, entry commands god, trace full, demos\n"
+	if !strings.Contains(b.String(), want) {
+		t.Fatalf("summary lacks\n%s\n%s", want, b.String())
+	}
+	s.Config = &metrics.RunConfig{Backend: "scripted", MaxDeaths: -1}
+	b.Reset()
+	printSummary(&b, s, "")
+	if want := "  config      no death cap, level timeout default, no demos\n"; !strings.Contains(b.String(), want) {
+		t.Fatalf("summary lacks\n%s\n%s", want, b.String())
+	}
+	s.Config = nil
+	b.Reset()
+	printSummary(&b, s, "")
+	if strings.Contains(b.String(), "config") {
+		t.Fatalf("a summary without a config section printed one:\n%s", b.String())
+	}
+}
+
 // gameCap bounds a run's game time under -race (unless Q2_AGENT_LONG=1).
 func gameCap() []string {
 	if raceEnabled && os.Getenv("Q2_AGENT_LONG") != "1" {

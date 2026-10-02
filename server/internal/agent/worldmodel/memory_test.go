@@ -87,6 +87,36 @@ func TestLevelMemoryRestore(t *testing.T) {
 	}
 }
 
+// TestRefreshFirstInventoryInCombat: the level's first inventory is asked
+// for even in combat (the bot does not know its weapons without it); the
+// help, and a stale inventory, wait for the end of the combat.
+func TestRefreshFirstInventoryInCombat(t *testing.T) {
+	s := newSim(t)
+	s.step()
+	w := s.w
+	s.ps.Stats[q2const.STAT_HEALTH] = 90
+	s.ps.Stats[q2const.STAT_FLASHES] = 1
+	s.step()
+	if !w.Belief().Self.InCombat || w.Belief().Inventory.Known {
+		t.Fatalf("not in combat (%v) or inventory known", w.Belief().Self.InCombat)
+	}
+	if !w.WantsInventoryRefresh() || w.WantsHelpRefresh() {
+		t.Fatal("the first inventory waits for the end of combat, or the help goes out in it")
+	}
+	w.NoteInventoryRequested()
+	s.inv[2], s.inv[3] = 1, 20
+	s.invSeq++
+	s.step()
+	s.ps.Stats[q2const.STAT_HEALTH] = 80
+	s.ps.Stats[q2const.STAT_PICKUP_STRING] = int16(q2const.CS_ITEMS + 3)
+	for i := 0; i < 25; i++ {
+		s.step()
+	}
+	if b := w.Belief(); !b.Self.InCombat || !b.Inventory.Known || w.WantsInventoryRefresh() || w.WantsHelpRefresh() {
+		t.Fatalf("in combat with a known inventory: inventory %v, help %v", w.WantsInventoryRefresh(), w.WantsHelpRefresh())
+	}
+}
+
 func TestRefreshSignals(t *testing.T) {
 	s := newSim(t)
 	s.step()

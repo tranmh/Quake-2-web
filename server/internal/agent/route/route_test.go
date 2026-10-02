@@ -378,8 +378,13 @@ func TestStrictJSON(t *testing.T) {
 		!strings.Contains(err.Error(), "targte") {
 		t.Errorf("unknown field accepted: %v", err)
 	}
-	if _, err := route.ParseTable([]byte(`{"schema":1} {}`)); err == nil {
-		t.Error("trailing data accepted")
+	for _, tail := range []string{` {}`, `}`, `]`, "\n}\n", ` x`} {
+		if _, err := route.ParseTable([]byte(`{"schema":1}` + tail)); err == nil || !strings.Contains(err.Error(), "trailing data") {
+			t.Errorf("trailing %q accepted: %v", tail, err)
+		}
+	}
+	if _, err := route.ParseTable([]byte("{\"schema\":1}\n\t \n")); err != nil && strings.Contains(err.Error(), "trailing") {
+		t.Errorf("trailing whitespace refused: %v", err)
 	}
 	if _, err := route.ParseTable([]byte(`{"schema":2,"name":"x","map":"demo1"}`)); err == nil ||
 		!strings.Contains(err.Error(), "schema 2, want 1") {

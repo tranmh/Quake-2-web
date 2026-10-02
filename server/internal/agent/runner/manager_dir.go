@@ -190,8 +190,11 @@ func (m *Manager) recoverInterrupted() {
 }
 
 // prune deletes the ended runs beyond Keep, and an account's beyond
-// KeepPerUser, oldest first. Live bots (a bot being created, a command
-// line run still going) are never touched.
+// KeepPerUser, oldest first. The runs of administrators, of the server and
+// of the command line are only ever evicted by newer ones of theirs: the
+// other accounts' runs are kept in the room Keep leaves them, so that no
+// number of accounts starting bots can delete them. Live bots (a bot being
+// created, a command line run still going) are never touched.
 func (m *Manager) prune() {
 	if m.cfg.Keep <= 0 {
 		return
@@ -202,19 +205,28 @@ func (m *Manager) prune() {
 	if err != nil {
 		return
 	}
-	kept, mine := 0, map[int64]int{}
+	ended := runs[:0]
+	privileged := 0
 	for _, r := range runs {
 		if api.BotLive(r.meta.Status) || m.live(r.id) != nil {
 			continue
 		}
-		// a user's runs have a share of the Keep (an administrator's, the
-		// server's and the command line's do not)
-		user := r.meta.OwnerID != 0 && !r.meta.OwnerAdmin
-		if kept < m.cfg.Keep && (!user || mine[r.meta.OwnerID] < m.cfg.KeepPerUser) {
-			kept++
-			if user {
-				mine[r.meta.OwnerID]++
+		ended = append(ended, r)
+		if !userRun(r.meta) {
+			privileged++
+		}
+	}
+	userRoom := m.cfg.Keep - min(privileged, m.cfg.Keep)
+	keptPrivileged, keptUser, mine := 0, 0, map[int64]int{}
+	for _, r := range ended {
+		if !userRun(r.meta) {
+			if keptPrivileged < m.cfg.Keep {
+				keptPrivileged++
+				continue
 			}
+		} else if keptUser < userRoom && mine[r.meta.OwnerID] < m.cfg.KeepPerUser {
+			keptUser++
+			mine[r.meta.OwnerID]++
 			continue
 		}
 		if filepath.Dir(r.dir) != filepath.Clean(m.cfg.Dir) || !ValidRunID(filepath.Base(r.dir)) {
@@ -227,6 +239,11 @@ func (m *Manager) prune() {
 		}
 	}
 }
+
+// userRun reports whether a run is an account's that is not an
+// administrator's (it has a share of the retention: KeepPerUser, within
+// the room the other runs leave).
+func userRun(meta botMeta) bool { return meta.OwnerID != 0 && !meta.OwnerAdmin }
 
 // artifactName is the allowlist of the files a run directory serves.
 var artifactName = regexp.MustCompile(`^(run\.json|ep-[0-9]{3,4}/(episode\.json|trace\.jsonl\.gz|demos/[0-9]{2,4}-[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}\.dm2))$`)

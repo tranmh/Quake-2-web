@@ -543,6 +543,61 @@ func TestTickProvenance(t *testing.T) {
 	m.wantField(t, "target", "e1", "") // still shot at on the move when in view
 }
 
+// TestTickProvenanceUnused: a target the intent names but the bot does
+// not engage (its mode is another, the target out of view to shoot back
+// at) and a movement outside a fight decided nothing this tick: they are
+// traced as default (not_engaged, not_fighting), not credited to the
+// decision; a fight the bot disengaged from keeps its target off as a
+// reflex.
+func TestTickProvenanceUnused(t *testing.T) {
+	m := newModeBot(t, "demo1", route.Step{Op: route.OpGoto, Pos: &route.Vec{128, -320, 24}})
+	bel := selfAt(Vec3{0, 0, 24}, 100)
+	e1 := monster("e1", Vec3{300, 0, 24})
+	e1.Visible, e1.Shootable = false, false
+	bel.Tracks = []worldmodel.Track{e1}
+	model := decide.FieldProvenance{Source: decide.SourceModel, Confidence: 0.9}
+	in := func(i decide.Intent) {
+		p := &i.Provenance
+		p.Mode, p.Target, p.FirePolicy, p.Movement, p.Weapon, p.Pickup, p.Danger = model, model, model, model, model, model, model
+		*m.intent = i
+	}
+	want := func(name, value, source, reason string) {
+		t.Helper()
+		if f := m.field(t, name); f.Value != value || f.Source != source || f.Fallback != reason {
+			t.Errorf("%s field %+v, want %q from %s (%q)", name, f, value, source, reason)
+		}
+	}
+	// the objective, the model naming a target out of view
+	in(decide.Intent{Mode: decide.ModeObjective, Target: "e1", FirePolicy: decide.FireWhenAligned, Movement: decide.MoveAdvance})
+	m.at(100, bel)
+	if m.Mode() != ModeObjective || m.target != "" {
+		t.Fatalf("mode %s target %q", m.Mode(), m.target)
+	}
+	want("mode", "objective", trace.SourceModel, "")
+	want("target", "none", trace.SourceDefault, notEngaged)
+	want("movement", "nav", trace.SourceDefault, notFighting)
+	// in view with a line of fire: shot at on the move, as decided
+	bel.Tracks[0].Visible, bel.Tracks[0].Shootable = true, true
+	m.at(200, bel)
+	want("target", "e1", trace.SourceModel, "")
+	want("movement", "nav", trace.SourceDefault, notFighting)
+	// a fight: acted on as decided
+	in(decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireWhenAligned, Movement: decide.MoveHold})
+	m.at(300, bel)
+	want("target", "e1", trace.SourceModel, "")
+	want("movement", "hold", trace.SourceModel, "")
+	// disengaged from, out of view: the bot overrode the fight
+	bel.Tracks[0].Visible, bel.Tracks[0].Shootable = false, false
+	now := int64(400)
+	for ; now <= 400+fightBudget+200; now += 100 {
+		m.at(now, bel)
+	}
+	if m.Mode() == ModeFight {
+		t.Fatal("not disengaged")
+	}
+	want("target", "none", trace.SourceReflex, "disengaged")
+}
+
 // TestStallKill: a level attempt with no progress (no route step done nor
 // its path shortened, no monster the bot fought killed) for stallFor is
 // given up with "kill"; a kill of a monster it fought restarts the clock.

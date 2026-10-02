@@ -187,9 +187,9 @@ type Executor struct {
 	pauseUntil int64
 	deadline   int64
 	extended   bool
-	// causeAt is when the last action step (not a wait or confirm) was
-	// done: the effects waited for were caused then.
-	causeAt int64
+	// startAt is when the route started (the cause time of a wait with no
+	// action step before it; see causeAt).
+	startAt int64
 	// progressAt is the last progress (a step done, or the path left
 	// shrinking by progressMin); bestRemain the shortest path left of
 	// the current step.
@@ -409,7 +409,7 @@ func (x *Executor) Retry() {
 // Start begins the route at now (ms): call it once the level's first
 // belief arrived.
 func (x *Executor) Start(now int64) {
-	x.now, x.causeAt = now, now
+	x.now, x.startAt = now, now
 	x.yielding, x.yieldTotal = false, 0
 	x.noteProgress()
 	x.cur = 0
@@ -472,7 +472,6 @@ func (x *Executor) complete(why string) {
 	st.Status, st.Done, st.Reason = StepDone, x.now, why
 	x.logf("step %d %s: done (%s) after %.1fs", x.cur, st.Desc, why, float64(x.now-st.Started)/1000)
 	if op := x.plans[x.cur].op; op != route.OpWait && op != route.OpConfirm && op != route.OpFace {
-		x.causeAt = x.now
 		p := &x.plans[x.cur]
 		for k := range p.effects {
 			x.claims = append(x.claims, claim{f: &p.effects[k], at: x.now})
@@ -522,10 +521,7 @@ func (x *Executor) back(why string) {
 		x.logf("step %d %s: stalled after %d attempts: %s", x.cur, st.Desc, st.Attempts, why)
 		return
 	}
-	prev := x.cur - 1
-	for prev >= 0 && (x.plans[prev].op == route.OpWait || x.plans[prev].op == route.OpConfirm || x.plans[prev].op == route.OpFace) {
-		prev--
-	}
+	prev := x.causeStep(x.cur)
 	if prev < 0 {
 		x.fail(why)
 		return
@@ -541,6 +537,38 @@ func (x *Executor) back(why string) {
 	x.cur = prev
 	x.pauseUntil = x.now + RetryPause
 	x.begin()
+}
+
+// causeStep returns the action step whose effects wait or confirm step i
+// observes (-1: none): the closest one before it (not a wait, confirm or
+// face) that is required or in step i's own detour. An optional detour in
+// between causes none of them: a table validates without its optional
+// steps, so a required step never relies on one.
+func (x *Executor) causeStep(i int) int {
+	detour, own := "", x.plans[i].optional()
+	if own {
+		detour = x.plans[i].step.Detour
+	}
+	for j := i - 1; j >= 0; j-- {
+		p := &x.plans[j]
+		if !p.optional() || p.step.Detour != detour {
+			own = false // past the wait's own detour
+		}
+		if p.optional() && !own || p.op == route.OpWait || p.op == route.OpConfirm || p.op == route.OpFace {
+			continue
+		}
+		return j
+	}
+	return -1
+}
+
+// causeAt is when the effects step i waits for were caused: when its
+// cause step (causeStep) was done, or the route's start.
+func (x *Executor) causeAt(i int) int64 {
+	if j := x.causeStep(i); j >= 0 && x.steps[j].Status == StepDone {
+		return x.steps[j].Done
+	}
+	return x.startAt
 }
 
 // skip gives up the current optional step and the rest of its detour (the
@@ -950,12 +978,13 @@ func (x *Executor) runWait(p *plan) Directive {
 	all, anyContra, anyPending := true, false, false
 	var contra string
 	var unseenAt *effect
+	cause := x.causeAt(x.cur)
 	for k := range p.effects {
 		f := &p.effects[k]
 		if !observable(f.kind) {
 			continue
 		}
-		switch v := x.judge(f, x.belief, x.causeAt); v {
+		switch v := x.judge(f, x.belief, cause); v {
 		case seen:
 		case contradicted:
 			all, anyContra = false, true

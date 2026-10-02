@@ -72,6 +72,12 @@ type AccountStats struct {
 type Account struct {
 	cfg AccountConfig
 
+	// flushing serializes Flush (a one-slot semaphore, so that a waiting
+	// Flush still honours its context): a Flush that read the store's
+	// total before an overlapping one's AddSpend landed would otherwise
+	// overwrite daySpent with the stale total.
+	flushing chan struct{}
+
 	mu        sync.Mutex
 	reqTokens float64
 	tokTokens float64
@@ -94,7 +100,7 @@ func NewAccount(ctx context.Context, cfg AccountConfig) (*Account, error) {
 	if cfg.QPS > 0 && cfg.Burst <= 0 {
 		cfg.Burst = max(1, int(math.Ceil(cfg.QPS)))
 	}
-	a := &Account{cfg: cfg, unflushed: map[string]float64{}}
+	a := &Account{cfg: cfg, flushing: make(chan struct{}, 1), unflushed: map[string]float64{}}
 	a.day = dayOf(cfg.Now())
 	spent, err := cfg.Store.LoadSpend(ctx, a.day)
 	if err != nil {
@@ -168,8 +174,16 @@ func (a *Account) Daily() (spent, limit float64) {
 }
 
 // Flush adds the unflushed spend to the store and refreshes today's total
-// from it (which includes other processes' spend).
+// from it (which includes other processes' spend). Flushes run one at a
+// time; one that is still waiting when ctx ends returns ctx's error and
+// leaves the spend for the next.
 func (a *Account) Flush(ctx context.Context) error {
+	select {
+	case a.flushing <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-a.flushing }()
 	a.mu.Lock()
 	pending := a.unflushed
 	a.unflushed = map[string]float64{}

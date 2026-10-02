@@ -144,6 +144,46 @@ func TestCmdFireGate(t *testing.T) {
 	}
 }
 
+// TestCmdSwitchReleasesTrigger: with a continuous weapon in hand the
+// trigger is let go while a switch is in progress (the game switches only
+// once the weapon leaves its firing state), and pulled again once the new
+// weapon is up.
+func TestCmdSwitchReleasesTrigger(t *testing.T) {
+	target := along(openSpot, 0, 300)
+	m := newCmdBot(t, openSpot)
+	m.bel.Tracks = []worldmodel.Track{monster("e1", target)}
+	m.bel.Self.Weapon, m.bel.Self.Ammo = "Machinegun", 50
+	m.bel.Inventory.Known = true
+	m.bel.Inventory.Items = []worldmodel.InvItem{{Index: 1, Name: "Machinegun", Count: 1}, {Index: 2, Name: "Bullets", Count: 50},
+		{Index: 3, Name: "Railgun", Count: 1}, {Index: 4, Name: "Slugs", Count: 10}}
+	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireWhenAligned, Movement: decide.MoveHold}
+	eye := Vec3{openSpot[0], openSpot[1], openSpot[2] + 22}
+	_, pitch, _ := control.LookAt(eye, Vec3{target[0], target[1], target[2] + 4})
+	fires := func(now int64) bool {
+		m.frame(now)
+		m.shoot.SetView(0, pitch)
+		fired := false
+		for i := 0; i < 4; i++ {
+			fired = m.cmd().Buttons&q2const.BUTTON_ATTACK != 0
+		}
+		return fired
+	}
+	if !fires(100) {
+		t.Fatalf("the machinegun did not fire (reflexes %v)", m.fight.reflexes)
+	}
+	m.intent.Weapon = decide.WeaponRailgun
+	if fires(200) || m.switchCmd != "use Railgun" {
+		t.Fatalf("fired through the switch %q", m.switchCmd)
+	}
+	if fires(300) {
+		t.Fatal("fired while the switch is in progress")
+	}
+	m.bel.Self.Weapon, m.bel.Self.Ammo = "Railgun", 10
+	if !fires(400) {
+		t.Fatalf("the railgun did not fire once up (reflexes %v)", m.fight.reflexes)
+	}
+}
+
 // TestCmdDodge: a projectile that will pass 10 units from the bot in 0.2 s
 // makes the next command run along its dodge direction (reflex dodge),
 // whatever the fight's own movement.

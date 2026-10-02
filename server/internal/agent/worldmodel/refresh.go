@@ -12,7 +12,8 @@ const RefreshInterval = 2000
 // refresher keeps the inventory and the help computer and decides when the
 // control layer should ask the server for them again. Asking costs a layout
 // flash on the player's screen, so it happens at most once per
-// RefreshInterval and never in combat.
+// RefreshInterval and never in combat, except for the level's first
+// inventory (without it the bot does not know its weapons).
 type refresher struct {
 	lastAsk        int64 // last request of either kind (0: never)
 	asked          bool
@@ -57,10 +58,12 @@ func (r *refresher) update(w *World, pc *perception.Percept) {
 	}
 }
 
-func (w *World) mayAsk() bool {
+// mayAsk reports whether a refresh may be asked for now; inCombat allows
+// it in combat too (the level's first inventory).
+func (w *World) mayAsk(inCombat bool) bool {
 	r := &w.refresh
 	s := &w.b.Self
-	if s.InCombat || s.Dead || s.Intermission || w.pc == nil {
+	if s.InCombat && !inCombat || s.Dead || s.Intermission || w.pc == nil {
 		return false
 	}
 	return !r.asked || w.now-r.lastAsk >= RefreshInterval
@@ -68,10 +71,10 @@ func (w *World) mayAsk() bool {
 
 // WantsInventoryRefresh reports whether the control layer should send
 // "inven" and "putaway" now: the inventory was never received on this
-// level, or something was picked up (or armor absorbed damage) since, and
-// the rate limit and combat allow it.
+// level (even in combat), or something was picked up (or armor absorbed
+// damage) since and combat allows it, within the rate limit.
 func (w *World) WantsInventoryRefresh() bool {
-	if !w.mayAsk() {
+	if !w.mayAsk(!w.b.Inventory.Known) {
 		return false
 	}
 	inv := &w.b.Inventory
@@ -83,7 +86,7 @@ func (w *World) WantsInventoryRefresh() bool {
 // its icon blinks (new objectives) and it was not read since. The
 // inventory goes first when both are wanted.
 func (w *World) WantsHelpRefresh() bool {
-	if !w.mayAsk() || w.WantsInventoryRefresh() {
+	if !w.mayAsk(false) || w.WantsInventoryRefresh() {
 		return false
 	}
 	r := &w.refresh

@@ -52,7 +52,8 @@ const (
 //     target is dead or unknown: none), retarget (the decided target is
 //     dead, unknown or none: the most dangerous awake monster in view with
 //     a line of fire, fought in a fight, shot back at on the move when it
-//     attacks).
+//     attacks), or the mode's override when it kept the bot from the fight
+//     the intent asked for (disengaged, explore_watchdog: none).
 //   - fire_policy: route_kill (a hold forced to fire_when_aligned at the
 //     route's kill), retarget (likewise at a retarget's monster).
 //   - movement, in a fight only: reposition (backed off after standing
@@ -69,10 +70,14 @@ const (
 //     at a target or a route shoot goal too close), unusable (the decided
 //     weapon is not held or has no ammo: keep).
 //
-// The weapon's Value is the weapon acted on even without an override
-// (with no decision about it, Source default, the bot's choice for the
-// range). Outside the modes that use them the movement, pickup and danger
-// fields keep the decided value.
+// A decided value the bot had no use for on the tick is Source default
+// with the reason, so that it is not credited to the decision: a target
+// it neither fought nor shot back at (not_engaged: none; the intent's
+// mode is another) and, outside a fight, the movement (not_fighting: nav,
+// the navigator moves the bot). The weapon's Value is the weapon acted on
+// even without an override (with no decision about it, Source default,
+// the bot's choice for the range). Outside the modes that use them the
+// pickup and danger fields keep the decided value.
 type Intent struct {
 	Mode       string  `json:"mode"`
 	Target     string  `json:"target,omitempty"`

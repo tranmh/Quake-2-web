@@ -9,7 +9,7 @@ const (
 	SourceScripted = "scripted" // the scripted policy (fallback or scripted backend)
 	SourceReflex   = "reflex"   // a reflex overrode the answer
 	SourceStale    = "stale"    // a previous answer kept past its TTL
-	SourceDefault  = "default"  // no answer was available: the field's default
+	SourceDefault  = "default"  // no answer was available (the field's default), or the bot had no use for it (a tick's not_engaged, not_fighting)
 )
 
 // RunStart is the body of run_start.

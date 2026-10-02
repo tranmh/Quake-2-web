@@ -35,6 +35,11 @@ attempts, where attempts = deaths + 1 per visit. Same protocol for every row (lo
   through ranks last), by permutation. Permuting runs with the ratio itself as the statistic gives 0.15,
   0.03, 0.02 and 0.01. That test is weaker here, because a few long wave-7 runs (13–27 attempts each)
   carry most of the attempts. The method and commands are in [Reproduce (wave 8)](#reproduce-wave-8).
+- **Attempts are deaths + 1 per visit** on this whole page. A visit lost at the death cap ends on its 26th
+  death, so it played 26 attempts and counts 27; the `0/27` visits in the wave-7 tables are such visits. The
+  nightly summary counts the attempts played instead (AGENT.md, "Nightly"). In the table above only the noisy
+  *before* row has visits lost at the cap (seeds 3, 7 and 9); counted as played, it is 7/184 (3.8 %) instead
+  of 7/187. The clean *before* row's two failures ended short of the cap, and every *after* run won.
 - **Model runs are model-driven.** Every model run after is: target, fire_policy and mode from the model on
   ≥ 0.81 of decided ticks, ≤ 4.6 % of ticks on stale answers.
 - **The after rows are one build.** It is this tree, including the last change: detours are skipped one at a
@@ -81,7 +86,8 @@ the attempts, then the two run-level p (ratio permutation, rank-sum).
     of build, since all three ran on the same one.
   - An earlier version of this page gave 38 % from seeds 1–20 alone. 29 % over 50 seeds is the rate.
 - **Victories are no longer a lottery.** All 130 model runs above and all 68 scripted ones win.
-  A demo3 visit takes 2 attempts at the median (the most: 13); before, a failing run spent all 26.
+  A demo3 visit takes 2 attempts at the median (the most: 13). Before, a run lost at the death cap played all
+  26 attempts it had (27 in the counts above).
 - **Not all of it is latency handling.** The largest single steps were the demo3 detours (equipment on every
   attempt; see the [development sequence](#development-sequence)). The standing-rule changes alone moved
   survival by 1–7 points, each step within noise.
@@ -252,9 +258,9 @@ seeds 1–20; the *after* build plays these runs identically):
 ### Caveats (wave 8)
 
 - **Attempts are clustered by run.** Every demo3 attempt of a run reloads the same arrival save: the same
-  inventory and health. Runs differ a lot (from 1 to 27 attempts), so the attempts of one run are not
-  independent draws. The Fisher p on the attempt counts overstates certainty. The intervals given here are
-  therefore a bootstrap over runs, and the comparisons also give two run-level tests (see
+  inventory and health. Runs differ a lot (from 1 to 27 attempts, counted as deaths + 1), so the attempts of
+  one run are not independent draws. The Fisher p on the attempt counts overstates certainty. The intervals
+  given here are therefore a bootstrap over runs, and the comparisons also give two run-level tests (see
   [Reproduce (wave 8)](#reproduce-wave-8)). The large effects (before against after) hold at run level; the
   borderline ones (noisy against clean, the latency gap, the development steps) do not get stronger.
 - **The mock is not Jev.** The clean mock answers with the scripted rules, so its numbers measure the rules
@@ -281,7 +287,8 @@ for s in $(seq 1 30); do
   # scripted 212 ms: -backend scripted -sim-latency 212ms -seed $s
   # scripted 0 ms:   -backend scripted -seed $s
 done
-# demo3 survival over the runs in /tmp/agent-eval
+# demo3 survival over the runs in /tmp/agent-eval (attempts = deaths + 1; for the attempts played, as the
+# nightly summary counts them, use .deaths + (if .outcome=="death_limit" then 0 else 1 end))
 jq -s '[.[].episodes[0].levels[] | select(.map=="demo3")]
        | {exits: map(select(.outcome=="exit")) | length, attempts: (map(.deaths+1) | add)}' /tmp/agent-eval/*/run.json
 # run-level 95 % interval: bootstrap over runs of sum(exits) / sum(attempts)

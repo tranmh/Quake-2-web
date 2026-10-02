@@ -20,21 +20,24 @@ make nav                      # nav graphs of demo1-3 + overlay dumps -> assets/
 make agent-smoke              # scripted + noisy-mock demo1 runs (mock held to the 0.7 gate) + q2bot validate
 
 cd server
-go run ./cmd/q2bot run -backend scripted -require-complete            # the whole campaign, lockstep, ~30 s
+go run ./cmd/q2bot run -backend scripted -require-complete -max-deaths 25 -level-timeout 60m   # the whole campaign, lockstep, ~40 s
 go run ./cmd/q2bot validate runs/<id>                                 # traces + every .dm2
 go run ./cmd/q2bot replay -trace runs/<id>/ep-000/trace.jsonl.gz -strict   # lockstep determinism
 go run ./cmd/q2bot run -backend mock -mock-policy noisy -maps demo1 -min-model-share 0.7 -require-complete
 ```
 
-`q2bot run` prints a summary like this one (scripted, whole campaign, seed 1, `-max-deaths 25
--level-timeout 60m`; the numbers move with every change to the bot, and the measured ones are in
-[AGENT-EVAL.md](AGENT-EVAL.md)):
+The whole campaign runs with the limits of [AGENT-EVAL.md](AGENT-EVAL.md) (`-max-deaths 25 -level-timeout
+60m`). With the defaults (5 deaths and 20 min of game time per level) it fails: every demo3 death reloads the
+arrival save, and seed 1 dies there 6 times, in 18.5 min, before it gets through.
+
+That command prints a summary like this one (scripted, seed 1; the numbers move with every change to the bot,
+and the measured ones are in [AGENT-EVAL.md](AGENT-EVAL.md)):
 
 ```
-run 20261002T053302Z-3bdee0cf: completed (1 of 1 episodes to victory.pcx)
+run 20261002T162713Z-d134c59b: completed (1 of 1 episodes to victory.pcx)
   backend     scripted, lockstep session, skill 1, seed 1, maps demo1,demo2,demo3,demo2
-  episodes    1: 4 of 4 levels done, 4 deaths, 121 kills seen, 1042.9 s game (611.0 s in combat), 26.9 s wall
-  api         8705 calls (8705 ok, 0 errors, 0 stale), latency p50/p95/p99 0/0/0 ms, 13.4 QPS in combat, ...
+  episodes    1: 4 of 4 levels done, 6 deaths, 160 kills seen, 1554.3 s game (876.3 s in combat), 41.2 s wall
+  api         12660 calls (12660 ok, 0 errors, 0 stale), latency p50/p95/p99 0/0/0 ms, 13.7 QPS in combat, ...
   gate        not model-driven: backend "scripted" does not query a model; ...
 ```
 
@@ -66,6 +69,18 @@ cd web && pnpm --filter web dev                       # http://localhost:3000/bo
 - **Route tables.** These are `fixtures/agent/routes/{campaign.json,demo1.json,demo2a.json,demo3.json,
   demo2b.json}`; `$Q2_ROUTES_DIR` (or `q2bot -campaign`) overrides the directory. The schema and validation
   rules are in `fixtures/agent/routes/README.md`.
+  - **Optional steps and detours.** A goto, press or wait step, or a pickup of an item that is not a key, may
+    carry `"optional": true`: equipment the route does not need. An optional step may name its `"detour"`.
+    Adjacent optional steps with the same name (or none) are one detour, so two detours next to each other
+    need different names.
+  - **Their validation.** The last step cannot be optional, only optional steps name a detour, and a named
+    detour's steps are adjacent. The table must also validate without its optional steps, so no required step
+    relies on one, and, when it has several detours, without any one of them, so every detour stands alone.
+    `q2nav plan` marks these steps `(optional)` or `(optional, detour <name>)`.
+  - **The demo detours.** demo1 `shotgun` (the shotgun and 2 boxes of shells near the start), demo2a
+    `machinegun` (button `*36` opens the closet door `*35`: the machinegun and 2 boxes of bullets), and demo3
+    `quad` (the quad damage) and `chaingun` (the chaingun and 2 boxes of bullets). Every demo3 attempt starts
+    from the arrival save, so the bot tries the quad and the chaingun again on every attempt.
 
 ## Inside an episode
 
@@ -102,6 +117,12 @@ Each package's `doc.go` describes it in detail; this is the overview.
     elsewhere, a removed wall).
   - `Yield` pauses a step's clock while the bot fights or explores. `Engage` lets a kill step's own fight run
     on that step's clock.
+  - An optional step gets one attempt and no retry. When it fails (no path, a timeout, its effects not seen),
+    the executor skips it together with the rest of its detour: the pending optional steps right after it with
+    the same `detour` name, such as the wait for a closet door and the pickups behind it. Detours are skipped
+    one at a time, so a detour that follows under another name is still tried. An optional pickup of a weapon
+    the bot already holds is skipped on its own, and the rest of its detour (the ammo) goes on. A skip counts
+    as route progress.
 - **Navigation runtime** (`nav/navrt`).
   - **Inputs.** The fair belief, the bot's own player state and the commands it sent, and static map
     knowledge.
@@ -132,7 +153,18 @@ Each package's `doc.go` describes it in detail; this is the overview.
       view, or, for a drain monster, was seen or heard awake in the last 2 s while hits arrive without a
       bearing (a drain does no knockback);
     - under 25 health, no advance on an attacker in view within 600 units: it sidesteps instead
-      (`low_health`).
+      (`low_health`);
+    - when the Intent's fight target is dead, unknown or none (the next answer is a latency away), it fights
+      the most dangerous awake monster in view with a line of fire within 1000 units. On the move with no
+      live target in the Intent, it shoots back at such a monster when that monster attacks. When the Intent
+      holds fire it fires when aligned (target and fire_policy `retarget`);
+    - a hit with no bearing (a drain, a hit without knockback) while the bot has no target turns it towards
+      the nearest awake monster out of view that it saw or heard within 5 s and 700 units. Without one, it
+      turns behind itself, then to one side and the other on later hits. A scan under way is not restarted
+      (tick reflex `scan`);
+    - a picked-up quad damage is used (`use Quad Damage`) the first time the bot then fights an awake monster
+      in view (tick reflex `quad`). In single player the game only stores a picked-up quad
+      (`Pickup_Powerup`), and it lasts 30 s from its use.
   - It reads the inventory and the help computer as described in ADR-0006.
   - It types `kill` (a death, then `load save0`) when it cannot go on:
     - in a pit the route's goal cannot be reached from, for 12 s (`trapTick`, reflex `trapped_kill`);
@@ -582,26 +614,38 @@ with `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide ./intern
   | Entry | Seeds | Gate |
   |---|---|---|
   | `scripted` | 1 | `-require-complete`, `validate`, `replay -strict` |
-  | `mock-clean` (`-mock-policy scripted`, 212 ms) | 1–6 | every run passes the provenance gate (`-min-model-share 0.7`, in the run and in `validate`); at least 3 of 6 reach `victory.pcx` |
-  | `mock-noisy` (`-mock-policy noisy`, 212 ms) | 1–6 | every run passes the provenance gate; at least 2 of 6 reach `victory.pcx` |
+  | `mock-clean` (`-mock-policy scripted`, 212 ms) | 1–6 | every run passes the provenance gate (`-min-model-share 0.7`, in the run and in `validate`); at least 5 of 6 reach `victory.pcx` |
+  | `mock-noisy` (`-mock-policy noisy`, 212 ms) | 1–6 | every run passes the provenance gate; at least 5 of 6 reach `victory.pcx` |
   | `ablate-constant`, `ablate-random` | 1 | exit 1 (`-require-complete`), and measurably worse than scripted: fewer levels done, or as many with more deaths |
   | `latency-100ms`, `-400ms`, `-500ms` (clean mock) | 1 | none: data points (212 ms is `mock-clean`) |
 
-  **Why several seeds.**
+  **Why several seeds, and why 5 of 6.**
   - A run is decided on demo3. With up to 26 attempts there, it wins with probability about 1 − (1 − s)^26
-    for a per-attempt demo3 survival s, so one seed's victory is a lottery at the measured rates. A
-    single-seed `-require-complete` would flip with any change to the bot.
-  - The thresholds come from the round-2 rates of AGENT-EVAL.md: noisy mock demo3 survival 7/187 with 7 of
-    11 seeds won, clean mock 7/109 with 7 of 9 won. At those win rates an unchanged bot misses its gate with
-    probability 2.7 % (noisy, under 2 of 6) and 2.5 % (clean, under 3 of 6). A bot whose win rate fell to
-    0.2 (demo3 survival under 1 %) is caught 66 % (noisy) and 90 % (clean) of the time.
+    for a per-attempt demo3 survival s. Which seeds win changes with any change to the bot, so the gate
+    asks for a share of six seeds instead of a victory on each.
+  - The thresholds come from AGENT-EVAL.md's wave-8 rates, pooled over the seeds of one build. Clean mock:
+    80/199 (40 %, run-level 95 % interval 34–47 %) over seeds 1–80. Noisy mock: 50/171 (29 %, 24–37 %) over
+    seeds 1–50. Every one of those 130 runs won, seeds 1–6 of both included.
+  - With no loss in 80 (clean) and 50 (noisy) runs, a per-run loss rate above 3.7 % and 5.8 % is ruled out at
+    95 %. Even at those bounds, an unchanged bot misses 5 of 6 with probability 1.8 % (clean) and 4.3 %
+    (noisy). At the survival rates alone the chance is under 10⁻⁵. 6 of 6 would catch more, but the runs
+    cannot back it: at the same bounds an unchanged bot would miss it 20 % and 30 % of the time.
+  - What 5 of 6 catches:
+    - a fall back to the wave-7 rates (demo3 survival 6.4 % clean, 3.7 % noisy; win rates about 0.82 and
+      0.62): 29 % (clean) and 73 % (noisy) of the time. The earlier thresholds (3 and 2 of 6, from those
+      wave-7 rates) caught that 1 % and 3 % of the time;
+    - a win rate of 0.5 (demo3 survival about 2.6 %): 89 %;
+    - a win rate of 0.2 (survival under 1 %): over 99.8 %.
+  - A victory gate only sees a collapse. A clean survival halved to 20 % still wins 99.7 % of runs. Smaller
+    regressions show only in the pooled demo3 survival of the job summary (below).
   - The runs are deterministic, so a red gate repeats on the same commit: it is a change's draw, not a
     night's. When AGENT-EVAL.md's rates move, re-derive `min_wins` in the workflow's matrix.
   - The job summary also gives each entry's victories and pooled demo3 survival with its counts, which says
     more than either gate. Its attempts are a visit's deaths plus the attempt that exited or was under way
     when the level ended; a visit lost at the death cap holds 26 deaths and 26 attempts. AGENT-EVAL.md counts
     deaths + 1 for every visit, one attempt more per visit lost at the cap, so its denominators run slightly
-    higher than the summary's for the same runs.
+    higher than the summary's for the same runs. Its wave-8 *after* rows have no such visit: every one of
+    those runs won.
 
   **Also nightly.**
   - The `long-tests` job and a 60 s `FuzzRelayViewerPacket`.

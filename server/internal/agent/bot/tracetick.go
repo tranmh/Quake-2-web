@@ -1,6 +1,8 @@
 package bot
 
 import (
+	"cmp"
+
 	"quake2web/server/internal/agent/decide"
 	"quake2web/server/internal/agent/trace"
 	"quake2web/server/internal/agent/worldmodel"
@@ -60,27 +62,46 @@ func (b *Bot) traceTick(bel *worldmodel.Belief) {
 
 // traceIntent is the tick's Intent with the provenance of every field:
 // the value acted on, the bot's overrides marked as reflex with the
-// reason (see trace.Intent).
+// reason, and a value the bot had no use for this tick (a target it did
+// not engage, a movement outside a fight: the navigator moves it) as
+// default with the reason (see trace.Intent). Neither credits the
+// decision's source.
 func (b *Bot) traceIntent() *trace.Intent {
 	in := &b.intent
 	ti := &trace.Intent{Mode: string(in.Mode), Target: in.Target, FirePolicy: string(in.FirePolicy), Movement: string(in.Movement),
 		Weapon: string(in.Weapon), Pickup: in.Pickup, Danger: in.Danger}
-	acted := decide.Intent{Mode: actedMode(b.mode), Target: b.target, FirePolicy: b.firePolicy, Movement: decide.Movement(b.fight.move.String()),
-		Weapon: b.weaponTo}
+	move := decide.Movement(b.fight.move.String())
+	if b.mode != ModeFight {
+		move = movedByNav
+	}
+	acted := decide.Intent{Mode: actedMode(b.mode), Target: b.target, FirePolicy: b.firePolicy, Movement: move, Weapon: b.weaponTo}
 	for _, f := range traceFields() {
 		p := in.Provenance.Get(f)
 		tf := trace.Field{Name: f.ID(), Value: in.Value(f), Source: p.Source.String(), Confidence: p.Confidence, Fallback: p.Reason}
-		by := ""
+		by, unused := "", ""
 		switch f {
 		case decide.FieldMode:
 			by = b.modeBy
 		case decide.FieldTarget:
 			by = b.targetBy
+			if by == "" && b.target != in.Target {
+				switch {
+				case b.target == "" && (in.Mode != decide.ModeFight || b.modeBy == ""):
+					// the intent's mode is not a fight and the target is
+					// not in view to shoot back at
+					unused = notEngaged
+				default:
+					// kept from the fight the intent asked for
+					by = cmp.Or(b.modeBy, "override")
+				}
+			}
 		case decide.FieldFirePolicy:
 			by = b.fireBy
 		case decide.FieldMovement:
 			if b.mode == ModeFight {
 				by = b.moveBy
+			} else {
+				unused = notFighting
 			}
 		case decide.FieldWeapon:
 			by = b.weaponBy
@@ -88,10 +109,21 @@ func (b *Bot) traceIntent() *trace.Intent {
 			// no decision chose one: the source stays the default's)
 			tf.Value = acted.Value(f)
 		}
-		if by != "" {
+		switch {
+		case by != "":
 			tf.Value, tf.Source, tf.Fallback, tf.Confidence = acted.Value(f), trace.SourceReflex, by, 0
+		case unused != "":
+			tf.Value, tf.Source, tf.Fallback, tf.Confidence = acted.Value(f), trace.SourceDefault, unused, 0
 		}
 		ti.Fields = append(ti.Fields, tf)
 	}
 	return ti
 }
+
+// Reasons of a tick field the bot had no use for (source default), and
+// the movement value outside a fight.
+const (
+	notEngaged  = "not_engaged"  // target: not fought nor shot at
+	notFighting = "not_fighting" // movement: the navigator moves the bot
+	movedByNav  = decide.Movement("nav")
+)

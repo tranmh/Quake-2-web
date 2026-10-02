@@ -441,8 +441,9 @@ func (v *episodeValidator) check(e *trace.Event) {
 
 // checkProvenance cross-checks the episode's provenance event: its
 // acted-on counts are the lane tick events' (when the trace has them),
-// and the arbiter decided at least as often from every source as the bot
-// acted on it (the bot's overrides only turn values into reflex).
+// and the arbiter decided at least as often from every decision source
+// as the bot acted on it (the bot's overrides only turn values into
+// reflex, and a value it had no use for into default).
 func (v *episodeValidator) checkProvenance() {
 	p := v.prov
 	if p == nil {
@@ -473,7 +474,7 @@ func (v *episodeValidator) checkProvenance() {
 		if !ok {
 			continue
 		}
-		if f.Default > a.Default || f.Model > a.Model || f.Scripted > a.Scripted || f.Stale > a.Stale {
+		if f.Model > a.Model || f.Scripted > a.Scripted || f.Stale > a.Stale {
 			v.rep.errorf("%s: %s acted on %+v, more than the arbiter decided %+v", v.file, f.Name, f, a)
 		}
 	}

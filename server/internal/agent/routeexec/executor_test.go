@@ -33,6 +33,7 @@ func TestExecutorDemo2(t *testing.T) {
 	lv := demo(t, "demo2")
 	t.Run("WaitForEffectsSeen", func(t *testing.T) { testWaitForEffectsSeen(t, lv) })
 	t.Run("WaitContradictedGoesBack", func(t *testing.T) { testWaitContradictedGoesBack(t, lv) })
+	t.Run("WaitAfterDetourJudgedFromItsCause", func(t *testing.T) { testWaitAfterDetourJudgedFromItsCause(t, lv) })
 	t.Run("WaitUnseenEffectsAssumedAtTimeout", func(t *testing.T) { testWaitUnseenEffectsAssumedAtTimeout(t, lv) })
 	t.Run("AvoidSet", func(t *testing.T) { testAvoidSet(t, lv) })
 	t.Run("AssumeClaimsWhenNoPath", func(t *testing.T) { testAssumeClaimsWhenNoPath(t, lv) })
@@ -325,6 +326,54 @@ func testWaitContradictedGoesBack(t *testing.T, lv level) {
 	}
 }
 
+// testWaitAfterDetourJudgedFromItsCause: route.Validate accepts an
+// optional detour between a step and the wait for its effects (the table
+// validates without it). The wait's effects are the press's: the hatch
+// seen opening during the detour counts, and when the hatch stays shut
+// the executor goes back to the press, not to the detour.
+func testWaitAfterDetourJudgedFromItsCause(t *testing.T, lv level) {
+	hb := hatch(t, lv)
+	hs := hatchSteps()
+	steps := []route.Step{hs[0], {Op: route.OpGoto, Pos: vec(162, 2016, -160), Optional: true, Detour: "zz"}, hs[1]}
+
+	h := newHarness(t, lv, steps)
+	h.tick(1)
+	h.nav.arrive()
+	h.tick(1)
+	h.wantStep(1, StepRunning)
+	h.b.Movers = []worldmodel.Mover{moverAt(lv, hb[0], 1, h.now), moverAt(lv, hb[1], 1, h.now)}
+	h.tick(3)
+	h.b.Movers = nil // out of view from the detour's end
+	h.tick(2)
+	h.nav.arrive()
+	h.tick(2)
+	if !h.x.Done() || h.x.Steps()[2].Reason != "effects seen" {
+		t.Fatalf("the hatch seen opening after the press did not count: %+v", h.x.Steps()[2])
+	}
+
+	h = newHarness(t, lv, steps)
+	h.tick(1)
+	h.nav.arrive()
+	h.tick(1)
+	h.wantStep(1, StepRunning)
+	h.nav.arrive()
+	h.tick(1)
+	h.wantStep(2, StepRunning)
+	presses := len(h.nav.goals)
+	for i := 0; i < 50 && h.x.Index() == 2; i++ {
+		h.b.Movers = []worldmodel.Mover{moverAt(lv, hb[0], 0, h.now), moverAt(lv, hb[1], 0, h.now)}
+		h.tick(1)
+	}
+	h.wantStep(0, StepRunning)
+	if st := h.x.Steps()[2]; st.Attempts != 1 || !strings.Contains(st.Reason, "did not happen") {
+		t.Fatalf("wait after going back: %+v", st)
+	}
+	h.tick(RetryPause/100 + 1)
+	if len(h.nav.goals) != presses+1 {
+		t.Fatal("the press was not attempted again")
+	}
+}
+
 func testWaitUnseenEffectsAssumedAtTimeout(t *testing.T, lv level) {
 	h := newHarness(t, lv, hatchSteps())
 	h.tick(1)
@@ -608,5 +657,37 @@ func TestCheckedInTables(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestCauseStep: a wait's cause is the closest action step before it
+// that is required or in the wait's own detour.
+func TestCauseStep(t *testing.T) {
+	st := func(op route.Op, optional bool, detour string) plan {
+		return plan{op: op, step: &route.Step{Op: op, Optional: optional, Detour: detour}}
+	}
+	x := &Executor{plans: []plan{
+		st(route.OpPress, false, ""),   // 0
+		st(route.OpGoto, true, "a"),    // 1
+		st(route.OpPress, true, "a"),   // 2
+		st(route.OpWait, true, "a"),    // 3: its detour's press
+		st(route.OpWait, false, ""),    // 4: the required press, past detour a
+		st(route.OpFace, false, ""),    // 5
+		st(route.OpPickup, true, "b"),  // 6
+		st(route.OpConfirm, false, ""), // 7: past the face and detour b
+		st(route.OpWait, true, "c"),    // 8: detour c has no action step: the required press
+	}}
+	for i, want := range map[int]int{3: 2, 4: 0, 7: 0, 8: 0} {
+		if got := x.causeStep(i); got != want {
+			t.Errorf("cause of step %d: %d, want %d", i, got, want)
+		}
+	}
+	x.plans = x.plans[1:4] // no required step before: an optional wait's own detour, or none
+	if got := x.causeStep(2); got != 1 {
+		t.Errorf("cause in the detour: %d", got)
+	}
+	x.plans = []plan{st(route.OpGoto, true, "a"), st(route.OpWait, false, "")}
+	if got := x.causeStep(1); got != -1 {
+		t.Errorf("a required wait after a detour only: cause %d", got)
 	}
 }
