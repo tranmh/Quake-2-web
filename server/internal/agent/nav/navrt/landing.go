@@ -22,7 +22,11 @@ import (
 // the bot over it, whatever the follower does then. A flight onto a ledge
 // must therefore also come to rest there after the landing (a simulated
 // braking stop, navsim.StopAt), and an edge that does not even from rest
-// is left out for good.
+// is left out for good. That verdict is judged in the world the builder
+// validated the edge in (Graph.EdgeWorld: the static solids and the
+// movers at the poses the edge was checked with), not in the prediction
+// world: a monster standing on the ledge, or a door caught halfway, must
+// not take the edge away for the rest of the level.
 
 // landingStopMsec is how long the simulated stop after a landing gets.
 const landingStopMsec = 600
@@ -36,11 +40,13 @@ func (n *Navigator) checksLanding(e *nav.Edge) bool {
 	return flight(e) && n.g.Nodes[e.To].Flags&nav.NodeLedge != 0
 }
 
-// trial simulates edge i in the prediction world from the bot's state now
-// (fromRest: at rest on its start node, after the follower's stop there)
-// and reports whether it arrives and, with rest, whether the bot then
-// comes to rest on its end node. The verdict of a start from rest only
-// depends on the static world and is cached.
+// trial simulates edge i and reports whether it arrives and, with rest,
+// whether the bot then comes to rest on its end node. From the bot's
+// state now it runs in the prediction world (the believed movers and the
+// monsters in view count). The ledge check from rest (fromRest and rest:
+// at rest on the start node, after the follower's stop there) runs in the
+// edge's validation world instead; its verdict only depends on static
+// knowledge and is cached.
 func (n *Navigator) trial(i int, e *nav.Edge, fromRest, rest bool) bool {
 	if n.w == nil {
 		return true
@@ -49,10 +55,20 @@ func (n *Navigator) trial(i int, e *nav.Edge, fromRest, rest bool) bool {
 	if v, ok := n.landing[i]; ok && cache {
 		return v
 	}
-	if n.sim == nil {
-		n.sim = n.g.NewRunner(n.w)
+	var r *navsim.Runner
+	if cache {
+		if n.landSim == nil {
+			n.landWorld = navsim.NewWorld(n.md.CM)
+			n.landSim = n.g.NewRunner(n.landWorld)
+		}
+		n.g.EdgeWorld(n.landWorld, e)
+		r = n.landSim
+	} else {
+		if n.sim == nil {
+			n.sim = n.g.NewRunner(n.w)
+		}
+		r = n.sim
 	}
-	r := n.sim
 	if fromRest {
 		n.g.Place(r, e.From)
 	} else {
@@ -81,8 +97,9 @@ func (n *Navigator) trial(i int, e *nav.Edge, fromRest, rest bool) bool {
 	return ok
 }
 
-// rejectLanding leaves flight edge i out for good after it failed the
-// ledge check from rest (the verdict does not change), and plans again.
+// rejectLanding gives up on flight edge e after it failed the ledge check
+// from rest (cached by trial: cost leaves it out for the level), and
+// plans again.
 func (n *Navigator) rejectLanding(e *nav.Edge) {
 	n.status.Cause = CauseWorld
 	n.status.Reason = fmt.Sprintf("%s %s would not come to rest on its ledge", e.Kind, EdgeKey(e))

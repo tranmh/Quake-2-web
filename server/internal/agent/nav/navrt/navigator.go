@@ -22,6 +22,7 @@ const (
 	DefaultFragilePenalty = 10   // s
 	DefaultDamageCost     = 0.2  // s per hit point
 	DefaultButtonPenalty  = 3    // s
+	DefaultHazardPenalty  = 20   // s
 	// StopCost is added to edges that start with a stop at their start
 	// node (EdgeFromRest, and the jump, drop and ladder recipes, which
 	// stop there themselves): the edge costs were measured from rest.
@@ -47,7 +48,9 @@ const CmdMsec = 25
 type Config struct {
 	// Avoid lists lump entities the bot must never set off (the route's
 	// avoid list, exits it should not take): edges with an effect on one
-	// of them, or walking at one, are left out of every path.
+	// of them, or walking at one, are left out of every path, and the
+	// follower's own steering keeps clear of their volumes and buttons
+	// (see SetAvoid to change it later).
 	Avoid []int32
 	// RepathInterval is the period of routine repaths (ms; 0: 2000).
 	RepathInterval int64
@@ -62,6 +65,10 @@ type Config struct {
 	// ButtonPenalty is added to an edge that presses a button the goal is
 	// not about (s; 0: 3).
 	ButtonPenalty float32
+	// HazardPenalty is added to EdgeHazard edges (slime, lava,
+	// trigger_hurt) on top of their damage's DamageCost: a planner takes
+	// one only when the dry way costs that much more (s; 0: 20).
+	HazardPenalty float32
 	// AllowNeedsUse plans rides that only start when something uses the
 	// mover (the route executor presses the button first); otherwise
 	// they are used only while the mover is seen moving.
@@ -87,6 +94,9 @@ func (c *Config) defaults() {
 	}
 	if c.ButtonPenalty <= 0 {
 		c.ButtonPenalty = DefaultButtonPenalty
+	}
+	if c.HazardPenalty <= 0 {
+		c.HazardPenalty = DefaultHazardPenalty
 	}
 }
 
@@ -235,12 +245,15 @@ type Navigator struct {
 	static *navsim.World
 
 	avoid      map[int32]bool
+	avoidBoxes []avoidBox         // the boxes of the avoided entities (buildAvoid)
 	dirYaw     map[int32]float32  // directional trigger -> movedir yaw
 	volsOf     map[int32][]int    // entity -> indexes into Graph.Volumes
 	remembered map[int]bool       // edges an earlier attempt found blocked
 	floor      map[*nav.Edge]bool // walk edges with floor under them (floored)
 	landing    map[int]bool       // ledge check verdicts from rest (trial)
-	sim        *navsim.Runner     // scratch runner of the flight checks
+	sim        *navsim.Runner     // scratch runner of the flight checks from the bot's state
+	landSim    *navsim.Runner     // runner of the ledge checks from rest, in landWorld
+	landWorld  *navsim.World      // the world an edge was validated in (Graph.EdgeWorld)
 	inside     map[int]bool       // conditional edges that start inside their blocker (startsInside)
 	probe      *navsim.World      // scratch world of startsInside
 	memKeys    int
@@ -289,6 +302,7 @@ type Navigator struct {
 	swimTo   bool // phaseStop swims to the edge start instead of stopping there
 	airTicks int  // commands in the air during phaseStop
 	flight   int  // commands in the air during phaseRun
+	grounded int  // commands on the ground since the last in the air, during phaseRun
 	runStart int64
 	deadline int64
 	waitLim  int64
@@ -299,9 +313,12 @@ type Navigator struct {
 	node     nav.NodeID
 
 	// landed reports that the step before the current one was a jump or
-	// a drop (see begin); airSince is when the bot last stood or swam.
+	// a drop (see begin); airSince is when the bot last stood or swam,
+	// lastAir how long (ms) it was in the air before it came down in this
+	// command (0 when it did not just come down).
 	landed   bool
 	airSince int64
+	lastAir  int64
 
 	noLookahead int64 // no pursuit lookahead before this time (ms)
 	gapAt       int64 // last relocalization for a pit in front of the bot
@@ -325,6 +342,7 @@ type Navigator struct {
 // level is believed as it spawns until the first belief arrives.
 func New(g *nav.Graph, md *mapdata.Map, cfg Config) *Navigator {
 	cfg.defaults()
+	cfg.Avoid = append([]int32(nil), cfg.Avoid...)
 	n := &Navigator{
 		g: g, md: md, cfg: cfg,
 		ms: NewMapState(g, md), pl: NewPlanner(g), bl: NewBlocked(),
@@ -333,9 +351,6 @@ func New(g *nav.Graph, md *mapdata.Map, cfg Config) *Navigator {
 	}
 	if md != nil && md.CM != nil {
 		n.w, n.static = navsim.NewWorld(md.CM), navsim.NewWorld(md.CM)
-	}
-	for _, a := range cfg.Avoid {
-		n.avoid[a] = true
 	}
 	if md != nil {
 		for i := range md.Triggers {
@@ -350,6 +365,7 @@ func New(g *nav.Graph, md *mapdata.Map, cfg Config) *Navigator {
 		e := g.Volumes[vi].Entity
 		n.volsOf[e] = append(n.volsOf[e], vi)
 	}
+	n.buildAvoid()
 	n.status = Status{Node: nav.NoNode, Edge: -1, WaitFor: -1}
 	n.rebuildWorld(nil)
 	return n
@@ -735,8 +751,9 @@ func (n *Navigator) trackOf(id int) string {
 
 // Localize returns the node the bot at p is at: the nearest node (with
 // height weighted, see nav.ZWeight) the bot can be on in the believed
-// blocker states and can walk to in a straight line, over floor if any
-// is, searching 48, 96 and 192 units around; NoNode when there is none.
+// blocker states and can walk to in a straight line (over floor if any
+// is, and without touching an avoided entity), searching 48, 96 and 192
+// units around; NoNode when there is none.
 // A bot standing (not ducked) under a low ceiling that only a crawl gets
 // out of is localized with the ducked hull as a last resort (the
 // follower crouches where only that hull passes).
@@ -750,7 +767,8 @@ func (n *Navigator) Localize(p Vec3, ducked bool) nav.NodeID {
 		for _, line := range []func(a, b Vec3, ducked bool) bool{n.clearWalk, n.clear} {
 			for _, r := range []float32{48, 96, 192} {
 				id := n.g.LocalizeIn(p, r, masks, func(id nav.NodeID, nd *nav.Node) bool {
-					return n.usable(id) && line(p, nd.Origin, d || nd.Flags&nav.NodeCrouch != 0)
+					ducked := d || nd.Flags&nav.NodeCrouch != 0
+					return n.usable(id) && line(p, nd.Origin, ducked) && !n.avoidHit(p, nd.Origin, ducked, 0)
 				})
 				if id != nav.NoNode {
 					return id
@@ -917,6 +935,9 @@ func (n *Navigator) cost(i int, e *nav.Edge) (float32, bool) {
 	}
 	if e.Flags&nav.EdgeFragile != 0 {
 		c += n.cfg.FragilePenalty
+	}
+	if e.Flags&nav.EdgeHazard != 0 {
+		c += n.cfg.HazardPenalty
 	}
 	if dmg := int(e.FallDamage) + int(e.Damage); dmg > 0 {
 		c += float32(dmg) * n.cfg.DamageCost

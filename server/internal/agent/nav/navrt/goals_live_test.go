@@ -42,7 +42,8 @@ func TestLiveDemo2(t *testing.T) {
 }
 
 // budgetFor plans goal from where the bot is and returns the gate's time
-// budget for it (planned seconds x 1.5 + 5 s). A goal that waits on
+// budget for it (gateBudget: the path's travel time x 1.5 + 5 s) and that
+// travel time. A goal that waits on
 // something the bot set off (a car that starts after its button, a hatch
 // swinging open) may have no plan yet: the bot stands still for up to 5 s
 // until it has one, and the wait counts towards the budget.
@@ -59,8 +60,8 @@ func (b *liveBot) budgetFor(goal Goal) (int64, float32) {
 		here := b.nav.Localize(b.origin(), b.l.Client().Frame.PlayerState.PMove.PmFlags&1 != 0)
 		b.nav.now = b.now()
 		if p, ok := b.nav.pl.Find(here, t, b.nav.cost); ok {
-			waited := b.now() - start
-			return int64(p.Cost*1.5*1000) + 5000 + waited, p.Cost
+			budget, secs := gateBudget(b.nav, p)
+			return budget + b.now() - start, secs
 		}
 		if b.now()-start > 5000 {
 			b.t.Fatalf("no plan for %s from node %d at %v", goal, here, b.origin())

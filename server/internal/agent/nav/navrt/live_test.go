@@ -142,11 +142,29 @@ next:
 		}
 		avoid = append(avoid, a)
 	}
-	b.nav.cfg.Avoid = avoid
-	b.nav.avoid = map[int32]bool{}
-	for _, a := range avoid {
-		b.nav.avoid[a] = true
+	b.nav.SetAvoid(avoid)
+}
+
+// pathSeconds is the travel time of path p for the gate's budget: the
+// edges' measured costs plus the waits the belief expects for their
+// conditions, without the planner's preferences (the stop and swim start
+// allowances, the fragile, button, damage, hazard, occupied and
+// remembered penalties).
+func pathSeconds(n *Navigator, p Path) float32 {
+	c := float32(0)
+	for _, i := range p.Edges {
+		e := &n.g.Edges[i]
+		_, wait := n.holds(e)
+		c += e.Cost + wait
 	}
+	return c
+}
+
+// gateBudget is the gate's time budget for path p (ms): its travel time
+// (pathSeconds) x 1.5 + 5 s.
+func gateBudget(n *Navigator, p Path) (int64, float32) {
+	secs := pathSeconds(n, p)
+	return int64(secs*1.5*1000) + 5000, secs
 }
 
 func (b *liveBot) observe() {
@@ -268,7 +286,8 @@ type walkResult struct {
 	ok       bool
 	msec     int64
 	budget   int64
-	planned  float32
+	planned  float32 // the planner's cost (s)
+	secs     float32 // the path's travel time the budget comes from (s)
 	status   Status
 	from, to Vec3
 	end      Vec3
@@ -277,7 +296,7 @@ type walkResult struct {
 
 // walkRandom walks the bot to count random nodes of the spawn's connected
 // part of the graph, one after the other, each within the time budget the
-// gate allows (planned seconds x 1.5 + 5 s).
+// gate allows (the planned path's travel time x 1.5 + 5 s, gateBudget).
 // after, when given, sees the bot after each target (for debugging).
 func walkRandom(t *testing.T, d *demoLevel, count int, seed int64, after ...func(b *liveBot, k int, r walkResult)) []walkResult {
 	name := d.md.Name
@@ -322,11 +341,11 @@ func walkRandom(t *testing.T, d *demoLevel, count int, seed int64, after ...func
 			continue
 		}
 		r.planned = p.Cost
-		r.budget = int64(p.Cost*1.5*1000) + 5000
+		r.budget, r.secs = gateBudget(b.nav, p)
 		b.trace = traceAt == k
 		b.traceCmd = b.trace && os.Getenv("Q2_NAVRT_TRACECMD_AT") != ""
 		if b.trace {
-			t.Logf("target #%d: node %d %v from %v (node %d), planned %.1fs: %v", k, target, r.to, from, here, p.Cost, p.Edges)
+			t.Logf("target #%d: node %d %v from %v (node %d), %.1fs (planner cost %.1fs): %v", k, target, r.to, from, here, r.secs, p.Cost, p.Edges)
 		}
 		st, ms, err := b.runGoal(goal, r.budget)
 		r.status, r.msec, r.err, r.end = st, ms, err, b.origin()
@@ -345,20 +364,28 @@ func walkRandom(t *testing.T, d *demoLevel, count int, seed int64, after ...func
 func report(t *testing.T, name string, res []walkResult, need int) {
 	pass := 0
 	var fails []string
+	var used, worst float64
 	for i, r := range res {
 		if r.ok {
 			pass++
+			f := float64(r.msec) / float64(r.budget)
+			used += f
+			worst = max(worst, f)
 			continue
 		}
 		cause, reason := r.status.Cause, r.status.Reason
 		if cause == CauseNone && reason == "" {
 			cause, reason = r.status.LastCause, "(earlier) "+r.status.LastReason
 		}
-		fails = append(fails, fmt.Sprintf("  #%d node %d %v (from %v): %s after %.1fs of %.1fs budget (planned %.1fs), ended at %v: %s %s; %s (repaths %d, stucks %d) %v",
-			i, r.target, r.to, r.from, r.status.Follow, float64(r.msec)/1000, float64(r.budget)/1000, r.planned, r.end,
+		fails = append(fails, fmt.Sprintf("  #%d node %d %v (from %v): %s after %.1fs of %.1fs budget (path %.1fs, planner cost %.1fs), ended at %v: %s %s; %s (repaths %d, stucks %d) %v",
+			i, r.target, r.to, r.from, r.status.Follow, float64(r.msec)/1000, float64(r.budget)/1000, r.secs, r.planned, r.end,
 			cause, reason, statusEdge(r.status), r.status.Repaths, r.status.Stucks, r.err))
 	}
-	t.Logf("%s: %d/%d arrivals", name, pass, len(res))
+	if pass > 0 {
+		t.Logf("%s: %d/%d arrivals (budget used: mean %.0f%%, worst %.0f%%)", name, pass, len(res), 100*used/float64(pass), 100*worst)
+	} else {
+		t.Logf("%s: %d/%d arrivals", name, pass, len(res))
+	}
 	if len(fails) > 0 {
 		t.Logf("%s failures:\n%s", name, strings.Join(fails, "\n"))
 	}
@@ -493,12 +520,12 @@ func testRouteSmokeCar(t *testing.T, d *demoLevel) {
 	if !ok {
 		t.Fatal("no path from the spawn to the car")
 	}
-	budget := int64(p.Cost*1.5*1000) + 5000
+	budget, secs := gateBudget(b.nav, p)
 	st, ms, err := b.runGoal(goal, budget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("car reached in %.1fs (planned %.1fs, budget %.1fs): %s, %d repaths, %d stucks", float64(ms)/1000, p.Cost, float64(budget)/1000, st.Follow, st.Repaths, st.Stucks)
+	t.Logf("car reached in %.1fs (path %.1fs, planner cost %.1fs, budget %.1fs): %s, %d repaths, %d stucks", float64(ms)/1000, secs, p.Cost, float64(budget)/1000, st.Follow, st.Repaths, st.Stucks)
 	if st.Follow != Arrived {
 		t.Fatalf("did not reach the car: %s %s %s at %v", st.Follow, st.Cause, st.Reason, b.origin())
 	}

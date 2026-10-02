@@ -28,7 +28,13 @@
 //     cause), and repaths on events and every RepathInterval. Before a jump
 //     or drop it simulates the flight in its prediction world from the
 //     bot's actual state (and onto a ledge, that the bot comes to rest
-//     there). Its output is a control.MoveIntent per usercmd and a Status.
+//     there, judged in the world the edge was validated in). Entities it
+//     must not set off (Config.Avoid, SetAvoid) are left out of the plans
+//     and kept clear of by its own steering too: the lookahead's corner
+//     cuts, the recovery manoeuvres, the walk back to the graph. Hazard
+//     edges (slime, lava) cost a penalty on top of their damage and run
+//     with their validated executor. Its output is a control.MoveIntent per
+//     usercmd and a Status.
 //   - Predictor replays the commands the server has not acknowledged yet
 //     with navsim (like CL_PredictMovement), so the follower decides on the
 //     position each command will actually run from.

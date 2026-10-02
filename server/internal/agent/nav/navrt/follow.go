@@ -28,6 +28,11 @@ const (
 	// flightMin is the number of commands in the air that make a flight
 	// (fewer is a ramp hop).
 	flightMin = 4
+	// landSettle is the number of commands on the ground that make a
+	// flight's landing: fewer is a touch-down on the way (a lip it slides
+	// off, the drop going on below), which the builder's simulation goes
+	// through as well.
+	landSettle = 3
 	// noLookaheadMsec is how long the follower pursues node by node after
 	// it got stuck.
 	noLookaheadMsec = 3000
@@ -79,7 +84,11 @@ func (n *Navigator) Tick(in TickInput) control.MoveIntent {
 		n.note(in.Last)
 	}
 	o := n.st.Origin()
+	n.lastAir = 0
 	if n.st.OnGround() || n.st.WaterLevel >= 2 {
+		if n.haveOrigin {
+			n.lastAir = n.now - n.airSince - CmdMsec
+		}
 		n.airSince = n.now
 	}
 	if n.haveOrigin && dist3(o, n.lastOrigin) > teleportJump {
@@ -452,7 +461,8 @@ func (n *Navigator) follow() control.MoveIntent {
 		i := n.path.Edges[n.cur]
 		e := &n.g.Edges[i]
 		n.status.Edge, n.status.Step = i, n.cur
-		if n.ph != phaseWait && n.ph != phaseApproach && n.status.Follow != Stuck {
+		// (a recovery manoeuvre returns before follow: a Stuck here is over)
+		if n.ph != phaseWait && n.ph != phaseApproach {
 			if n.status.Follow == Waiting {
 				n.status.Cause, n.status.Reason = CauseNone, ""
 			}
@@ -497,7 +507,9 @@ func (n *Navigator) advance() {
 // plainNow reports whether edge e is a plain walk the follower may pursue
 // with lookahead: a walk or crawl that works from a running start, over
 // floor all the way (not a run across a gap, which needs the validated
-// run-up), whose conditions hold now without waiting.
+// run-up), not through a hazard or into a barrel (both run with their
+// validated executor, no corner cut), whose conditions hold now without
+// waiting.
 func (n *Navigator) plainNow(e *nav.Edge) bool {
 	if e.Kind != nav.EdgeWalk && e.Kind != nav.EdgeCrouch {
 		return false
@@ -505,7 +517,7 @@ func (n *Navigator) plainNow(e *nav.Edge) bool {
 	if e.Recipe != navsim.RecipeWalk && e.Recipe != navsim.RecipeCrouch {
 		return false
 	}
-	if e.Flags&(nav.EdgeFromRest|nav.EdgeFragile) != 0 || !n.floored(e) {
+	if e.Flags&(nav.EdgeFromRest|nav.EdgeFragile|nav.EdgeHazard|nav.EdgePushes) != 0 || !n.floored(e) {
 		return false
 	}
 	if len(e.Reqs) == 0 {
@@ -663,7 +675,7 @@ func (n *Navigator) run(e *nav.Edge) {
 		n.ex = p.Executor()
 	}
 	n.runStart = n.now
-	n.flight = 0
+	n.flight, n.grounded = 0, 0
 	n.deadline = n.now + n.limit(e)
 }
 
@@ -752,7 +764,8 @@ func (n *Navigator) running(i int, e *nav.Edge) (control.MoveIntent, bool) {
 		return control.MoveIntent{}, true
 	}
 	if n.st.OnGround() || n.st.WaterLevel >= 2 {
-		if n.flight >= flightMin && (e.Kind == nav.EdgeJump || e.Kind == nav.EdgeDrop) && n.landedWrong(e) {
+		n.grounded++
+		if n.flight >= flightMin && n.grounded >= landSettle && (e.Kind == nav.EdgeJump || e.Kind == nav.EdgeDrop) && n.landedWrong(e) {
 			// it flew and landed somewhere else: this edge does not work
 			// from where the bot started it
 			n.status.Cause = CauseWorld
@@ -761,9 +774,12 @@ func (n *Navigator) running(i int, e *nav.Edge) (control.MoveIntent, bool) {
 			n.relocalize(n.status.Reason, true)
 			return n.hold(), false
 		}
-		n.flight = 0
+		if n.grounded >= landSettle {
+			n.flight = 0
+		}
 	} else {
 		n.flight++
+		n.grounded = 0
 	}
 	if n.now > n.deadline {
 		return n.stuckNow(n.hold(), fmt.Sprintf("edge %s (%s) timed out", EdgeKey(e), e.Kind)), false
@@ -822,6 +838,19 @@ func (n *Navigator) fellOff(e *nav.Edge) bool {
 	return segDistH(o, from, to) > 160
 }
 
+// fellBelow reports whether the bot just came down from a flight (at
+// least flightMin commands in the air) well below both ends of plain walk
+// e (more than a step and the arrival tolerance under the lower one): a
+// walk over floor never goes there, it fell off. Standing that low is no
+// fall by itself: a path planned from a node up a ramp starts there.
+func (n *Navigator) fellBelow(e *nav.Edge) bool {
+	if !n.st.OnGround() || n.lastAir < flightMin*CmdMsec {
+		return false
+	}
+	from, to := n.g.Nodes[e.From].Origin, n.g.Nodes[e.To].Origin
+	return n.st.Origin()[2] < min(from[2], to[2])-navsim.StepHeight-navsim.ArriveZ
+}
+
 // segDistH is the horizontal distance from p to the segment a-b.
 func segDistH(p, a, b Vec3) float32 {
 	dx, dy := float64(b[0]-a[0]), float64(b[1]-a[1])
@@ -840,6 +869,13 @@ func segDistH(p, a, b Vec3) float32 {
 // walks lead there.
 func (n *Navigator) walk() (control.MoveIntent, bool) {
 	o := n.st.Origin()
+	if e := &n.g.Edges[n.path.Edges[n.cur]]; n.fellBelow(e) {
+		// the pursuit carried it over a ledge (a turn taken at full
+		// speed): plan from where it came down instead of pushing into the
+		// wall under the walk it was on
+		n.relocalize(fmt.Sprintf("fell off edge %s to %v", EdgeKey(e), o), true)
+		return n.hold(), false
+	}
 	n.catchUp(o)
 	for n.cur < len(n.path.Edges) {
 		e := &n.g.Edges[n.path.Edges[n.cur]]
@@ -856,8 +892,8 @@ func (n *Navigator) walk() (control.MoveIntent, bool) {
 		if n.cur+1 < len(n.path.Edges) {
 			ne := &n.g.Edges[n.path.Edges[n.cur+1]]
 			nx := n.g.Nodes[ne.To].Origin
-			if n.plainNow(ne) && ne.Recipe == e.Recipe && n.st.OnGround() && distH(o, nx) < distH(to, nx) &&
-				abs32(o[2]-to[2]) <= navsim.ArriveZ+navsim.StepHeight && n.clear(o, nx, e.Recipe == navsim.RecipeCrouch) {
+			if ducked := e.Recipe == navsim.RecipeCrouch; n.plainNow(ne) && ne.Recipe == e.Recipe && n.st.OnGround() && distH(o, nx) < distH(to, nx) &&
+				abs32(o[2]-to[2]) <= navsim.ArriveZ+navsim.StepHeight && n.clear(o, nx, ducked) && !n.avoidHit(o, nx, ducked, avoidMargin) {
 				n.advance()
 				n.ph = phaseRun
 				continue
@@ -884,6 +920,19 @@ func (n *Navigator) walk() (control.MoveIntent, bool) {
 	}
 	e := &n.g.Edges[n.path.Edges[n.cur]]
 	target, gap := n.lookahead(o, e)
+	if t, ok := n.avoidDetour(o, e, target, e.Recipe == navsim.RecipeCrouch); !ok {
+		if n.now-n.gapAt > 1000 {
+			n.gapAt = n.now
+			n.relocalize(fmt.Sprintf("the way from %v along edge %s touches an avoided entity", o, EdgeKey(e)), true)
+			return n.hold(), false
+		}
+	} else if t != target {
+		// off the edge, the straight way to its end touches an avoided
+		// entity: back to its start first
+		ducked := e.Recipe == navsim.RecipeCrouch
+		target = t
+		gap = distH(o, t) >= 2*navsim.ArriveXY && n.clear(o, t, ducked) && !n.floorBetween(o, t, ducked)
+	}
 	if gap && n.st.OnGround() {
 		// off the edge with a pit in between (on a monster's head, pushed
 		// aside): walk back to its start, or start over from where it is
@@ -939,24 +988,26 @@ func (n *Navigator) braking(target Vec3) bool {
 
 // catchUp moves the current step on to the one among the next plain
 // walks whose end node is nearest to the bot, when the bot can walk there
-// straight: steering at the lookahead it can pass nodes wide of the
-// arrival tolerance, and a step left behind would turn it round.
+// straight (clear of the avoided entities): steering at the lookahead it
+// can pass nodes wide of the arrival tolerance, and a step left behind
+// would turn it round.
 func (n *Navigator) catchUp(o Vec3) {
 	if n.cur >= len(n.path.Edges) || !n.st.OnGround() {
 		return
 	}
 	e := &n.g.Edges[n.path.Edges[n.cur]]
+	ducked := e.Recipe == navsim.RecipeCrouch
 	best, bestD := n.cur, dist3(o, n.g.Nodes[e.To].Origin)
 	for j := n.cur + 1; j < len(n.path.Edges) && j <= n.cur+8; j++ {
 		ej := &n.g.Edges[n.path.Edges[j]]
 		if !n.plainNow(ej) || ej.Recipe != e.Recipe {
 			break
 		}
-		if d := dist3(o, n.g.Nodes[ej.To].Origin); d < bestD {
-			best, bestD = j, d
+		if p := n.g.Nodes[ej.To].Origin; dist3(o, p) < bestD && !n.avoidHit(o, p, ducked, avoidMargin) {
+			best, bestD = j, dist3(o, p)
 		}
 	}
-	if best == n.cur || !n.clearWalk(o, n.g.Nodes[n.g.Edges[n.path.Edges[best]].To].Origin, e.Recipe == navsim.RecipeCrouch) {
+	if best == n.cur || !n.clearWalk(o, n.g.Nodes[n.g.Edges[n.path.Edges[best]].To].Origin, ducked) {
 		return
 	}
 	for n.cur < best {
@@ -967,9 +1018,10 @@ func (n *Navigator) catchUp(o Vec3) {
 
 // lookahead returns the node to steer at on the plain walks from the
 // current step: the farthest one within the lookahead the bot can walk to
-// in a straight line over floor, with only plain walks leading there; the
-// current step's end when none is. gap reports that the straight line to
-// that end is open but has no floor under it (a pit to fall into).
+// in a straight line over floor, past no monster and clear of the avoided
+// entities, with only plain walks leading there; the current step's end
+// when none is. gap reports that the straight line to that end is open
+// but has no floor under it (a pit to fall into).
 func (n *Navigator) lookahead(o Vec3, cur *nav.Edge) (target Vec3, gap bool) {
 	best := n.g.Nodes[cur.To].Origin
 	ducked := cur.Recipe == navsim.RecipeCrouch
@@ -983,7 +1035,7 @@ func (n *Navigator) lookahead(o Vec3, cur *nav.Edge) (target Vec3, gap bool) {
 			break
 		}
 		p := n.g.Nodes[e.To].Origin
-		if dist3(o, p) > n.cfg.Lookahead || !n.clearWalk(o, p, ducked) || n.lineOccupied(o, p, ducked) {
+		if dist3(o, p) > n.cfg.Lookahead || !n.clearWalk(o, p, ducked) || n.lineOccupied(o, p, ducked) || n.avoidHit(o, p, ducked, avoidMargin) {
 			break
 		}
 		best, gap = p, false
@@ -997,7 +1049,8 @@ func (n *Navigator) lookahead(o Vec3, cur *nav.Edge) (target Vec3, gap bool) {
 func (n *Navigator) pathEnd() control.MoveIntent {
 	end := n.g.Node(n.path.End(n.g))
 	o := n.st.Origin()
-	if end != nil && !navsim.Arrived(&n.st, end.Origin, n.g.ArriveMode(n.path.End(n.g))) && distH(o, end.Origin) < 96 {
+	if end != nil && !navsim.Arrived(&n.st, end.Origin, n.g.ArriveMode(n.path.End(n.g))) && distH(o, end.Origin) < 96 &&
+		!n.avoidHit(o, end.Origin, n.st.Ducked(), 0) {
 		return n.stopAt(end.Origin)
 	}
 	if n.goal.Kind == GoalShoot && end != nil {
@@ -1082,9 +1135,9 @@ func doorLike(k nav.BlockerKind) bool {
 
 // safeSpot returns where to wait before edge e for blocker b: its start,
 // else the start of an earlier step, else the nearest node around it the
-// bot can walk to straight, that is out of the path of every mover and,
-// waiting for a plat, out of its center trigger (standing in it keeps a
-// plat at its top up for ever).
+// bot can walk to straight (clear of the avoided entities), that is out
+// of the path of every mover and, waiting for a plat, out of its center
+// trigger (standing in it keeps a plat at its top up for ever).
 func (n *Navigator) safeSpot(e *nav.Edge, b int32) Vec3 {
 	first := n.g.Nodes[e.From].Origin
 	if n.safeWait(first, b) {
@@ -1102,7 +1155,7 @@ func (n *Navigator) safeSpot(e *nav.Edge, b int32) Vec3 {
 		if nd.Flags&(nav.NodeMover|nav.NodeWater|nav.NodeLadder|nav.NodeCrouch) != 0 {
 			continue
 		}
-		if n.safeWait(nd.Origin, b) && n.clearWalk(o, nd.Origin, false) {
+		if n.safeWait(nd.Origin, b) && n.clearWalk(o, nd.Origin, false) && !n.avoidHit(o, nd.Origin, false, avoidMargin) {
 			return nd.Origin
 		}
 	}
@@ -1197,8 +1250,9 @@ func (n *Navigator) hold() control.MoveIntent {
 	return idleIntent(&n.st)
 }
 
-// walkOff walks back to the nearest node when the bot is off the graph,
-// relocalizing every 250 ms, and gives up after OffGraphLimit.
+// walkOff walks back to the nearest node when the bot is off the graph
+// (the nearest the straight way to which stays clear of the avoided
+// entities), relocalizing every 250 ms, and gives up after OffGraphLimit.
 func (n *Navigator) walkOff() control.MoveIntent {
 	if n.now-n.offSince > OffGraphLimit {
 		n.final = true
@@ -1214,7 +1268,10 @@ func (n *Navigator) walkOff() control.MoveIntent {
 			return n.hold()
 		}
 	}
-	id := n.g.LocalizeIn(o, 512, n.ms.Masks(), nil)
+	ducked := n.st.Ducked()
+	id := n.g.LocalizeIn(o, 512, n.ms.Masks(), func(_ nav.NodeID, nd *nav.Node) bool {
+		return !n.avoidHit(o, nd.Origin, ducked, avoidMargin)
+	})
 	if id == nav.NoNode {
 		return n.hold()
 	}
@@ -1230,9 +1287,14 @@ func (n *Navigator) walkOff() control.MoveIntent {
 // (Touch_Multi only fires for a player facing along its movedir, judged
 // on the facing of the last server frame) from well before it enters one
 // the path sets off: from 0.4 s (at least 64 units) out, on the steps that
-// start that close.
+// start that close. An intent that already sets its view (an executor's
+// recipe, a hold) only gets its yaw turned (Compose keeps the world-space
+// wish direction whatever the yaw), and one whose movement depends on the
+// view itself is left alone: a ladder (pmove finds it and climbs by the
+// facing), swimming and a water jump (the pitch steers, the yaw finds the
+// ledge).
 func (n *Navigator) faceDirectional(in *control.MoveIntent) {
-	if len(n.dirYaw) == 0 {
+	if len(n.dirYaw) == 0 || n.cur >= len(n.path.Edges) || in.MustFace && !n.yawFree() {
 		return
 	}
 	reach := max(64, n.st.HSpeed()*0.4)
@@ -1251,12 +1313,32 @@ func (n *Navigator) faceDirectional(in *control.MoveIntent) {
 				v := &n.g.Volumes[vi]
 				lo, hi := add(v.Min, Vec3{-reach, -reach, -reach}), add(v.Max, Vec3{reach, reach, reach})
 				if boxTouch(o, ducked, lo, hi) {
-					in.MustFace, in.FaceYaw, in.FacePitch = true, yaw, 0
+					if !in.MustFace {
+						in.FacePitch = 0
+					}
+					in.MustFace, in.FaceYaw = true, yaw
 					return
 				}
 			}
 		}
 	}
+}
+
+// yawFree reports whether the movement of the current step does not
+// depend on the view yaw beyond the wish direction: not on or at a
+// ladder, not in the water, not a swim or water jump edge.
+func (n *Navigator) yawFree() bool {
+	if n.st.WaterLevel >= 2 {
+		return false
+	}
+	if nd := n.g.Node(n.node); nd != nil && nd.Flags&nav.NodeLadder != 0 {
+		return false
+	}
+	switch n.g.Edges[n.path.Edges[n.cur]].Recipe {
+	case navsim.RecipeLadder, navsim.RecipeSwim, navsim.RecipeWaterJump:
+		return false
+	}
+	return true
 }
 
 // Stuck detection and recovery.
@@ -1402,9 +1484,6 @@ func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveInte
 	n.status.Follow, n.status.Cause = Stuck, cause
 	n.status.Reason = why + ": " + detail
 	dir := flatDir(in)
-	if s.sign == 0 {
-		s.sign = 1
-	}
 	monster := cause == CauseEntity && n.blockedBy >= 0
 	if k := n.occupantOf(n.trackOf(n.st.Ground)); k >= 0 && n.st.OnGround() && s.level <= 3 {
 		// stuck on a monster's head (against a low ceiling, say): step off
@@ -1418,11 +1497,13 @@ func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveInte
 		} else {
 			off = Vec3{-dir[0], -dir[1], 0}
 		}
-		s.man, s.manEnd, s.manDir = manBack, n.now+400, n.openDir(off)
-		n.status.Reason += " (on its head: stepping off)"
-		n.resetStep()
-		m, _ := n.manoeuvre()
-		return m
+		if d, ok := n.openDir(off, 400); ok {
+			s.man, s.manEnd, s.manDir = manBack, n.now+400, d
+			n.status.Reason += " (on its head: stepping off)"
+			n.resetStep()
+			m, _ := n.manoeuvre()
+			return m
+		}
 	}
 	switch s.level {
 	case 1, 2:
@@ -1430,9 +1511,12 @@ func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveInte
 			n.strafe(dir)
 			break
 		}
-		s.man, s.manEnd, s.manDir, s.jumped = manJump, n.now+150, dir, false
+		// the jump's flight carries on past the 150 ms of pushing
+		if !n.avoidSweep(dir, jumpSweep) {
+			s.man, s.manEnd, s.manDir, s.jumped = manJump, n.now+150, dir, false
+		}
 	case 3:
-		if back := (Vec3{-dir[0], -dir[1], 0}); n.floorAlong(back, 300) {
+		if back := (Vec3{-dir[0], -dir[1], 0}); n.safeDir(back, 300) {
 			s.man, s.manEnd, s.manDir = manBack, n.now+300, back
 		}
 	case 4:
@@ -1460,36 +1544,54 @@ func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveInte
 	return n.hold() // no safe manoeuvre at this level: the next one escalates
 }
 
-// strafe starts a sidestep of 0.4 s to a side with floor, perpendicular
-// to dir (the other side first the next time).
+// jumpSweep is the run (ms at full speed) the avoid check of a recovery
+// jump covers: the push and the flight after it.
+const jumpSweep = 500
+
+// strafe starts a sidestep of 0.4 s to a side with floor and no avoided
+// entity, perpendicular to dir (the other side first the next time).
 func (n *Navigator) strafe(dir Vec3) {
 	s := &n.stuck
+	if s.sign == 0 {
+		s.sign = 1
+	}
 	side := Vec3{-dir[1] * s.sign, dir[0] * s.sign, 0}
-	if !n.floorAlong(side, 400) {
+	if !n.safeDir(side, 400) {
 		side = Vec3{-side[0], -side[1], 0}
 	}
 	s.sign = -s.sign
-	if n.floorAlong(side, 400) {
+	if n.safeDir(side, 400) {
 		s.man, s.manEnd, s.manDir = manStrafe, n.now+400, side
 	}
 }
 
 // openDir returns the first of dir, its two perpendiculars and its
 // opposite in which the hull can move 24 units from where the bot is (in
-// the static world: no wall or low ceiling), dir when none can.
-func (n *Navigator) openDir(dir Vec3) Vec3 {
-	if n.static == nil {
-		return dir
-	}
-	o := n.st.Origin()
-	mins, maxs := hull(n.st.Ducked())
-	for _, d := range []Vec3{dir, {-dir[1], dir[0], 0}, {dir[1], -dir[0], 0}, {-dir[0], -dir[1], 0}} {
-		end := add(o, Vec3{d[0] * 24, d[1] * 24, 0})
-		if tr := n.static.Trace(o, mins, maxs, end, q2const.MASK_PLAYERSOLID); !tr.StartSolid && tr.Fraction == 1 {
-			return d
+// the static world: no wall or low ceiling) and a run of msec does not
+// touch an avoided entity; when no way is open, the first of them whose
+// run is clear of the avoided entities (dir without any). ok is false when
+// every direction would touch one.
+func (n *Navigator) openDir(dir Vec3, msec int) (Vec3, bool) {
+	dirs := []Vec3{dir, {-dir[1], dir[0], 0}, {dir[1], -dir[0], 0}, {-dir[0], -dir[1], 0}}
+	if n.static != nil {
+		o := n.st.Origin()
+		mins, maxs := hull(n.st.Ducked())
+		for _, d := range dirs {
+			end := add(o, Vec3{d[0] * 24, d[1] * 24, 0})
+			if tr := n.static.Trace(o, mins, maxs, end, q2const.MASK_PLAYERSOLID); !tr.StartSolid && tr.Fraction == 1 && !n.avoidSweep(d, msec) {
+				return d, true
+			}
 		}
 	}
-	return dir
+	if !n.avoidSweep(dir, msec) {
+		return dir, true
+	}
+	for _, d := range dirs[1:] {
+		if !n.avoidSweep(d, msec) {
+			return d, true
+		}
+	}
+	return dir, false
 }
 
 // manoeuvre returns the intent of the recovery manoeuvre in progress.
@@ -1499,8 +1601,10 @@ func (n *Navigator) manoeuvre() (control.MoveIntent, bool) {
 		return control.MoveIntent{}, false
 	}
 	if n.now >= s.manEnd {
-		if s.man == manWait && n.status.Follow == Waiting {
-			n.status.Follow = Stuck
+		// the recovery is over: back to following (Tick's tidyStatus keeps
+		// the report in LastCause and LastReason)
+		if n.status.Follow == Stuck || s.man == manWait && n.status.Follow == Waiting {
+			n.status.Follow = Following
 		}
 		s.man = manNone
 		s.bestAt, s.nring = s.active, 0

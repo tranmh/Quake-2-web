@@ -37,6 +37,13 @@ type simBot struct {
 // nodes 32 apart) with extra solids in the server's world only.
 func newSim(t testing.TB, cfg Config, extra ...navsim.Solid) *simBot {
 	t.Helper()
+	return newSimGraph(t, cfg, nil, extra...)
+}
+
+// newSimGraph is newSim with the built graph changed by edit (when not
+// nil) before the navigator and the server's runner are made from it.
+func newSimGraph(t testing.TB, cfg Config, edit func(g *nav.Graph), extra ...navsim.Solid) *simBot {
+	t.Helper()
 	raw := bsp.Encode(bsp.SyntheticFloorMap())
 	md, err := mapdata.Load("synthetic", raw, mapdata.Options{Skill: 1})
 	if err != nil {
@@ -47,6 +54,9 @@ func newSim(t testing.TB, cfg Config, extra ...navsim.Solid) *simBot {
 		t.Fatal(err)
 	}
 	g = g.ForSkill(1)
+	if edit != nil {
+		edit(g)
+	}
 	w := navsim.NewWorld(md.CM)
 	w.SetSolids(append(append([]navsim.Solid(nil), g.Solids...), extra...))
 	return &simBot{t: t, g: g, md: md, srv: g.NewRunner(w), nav: New(g, md, cfg)}
@@ -124,20 +134,33 @@ func TestSimFollowArrives(t *testing.T) {
 // TestSimStuckOnUnseenObstacle: a pillar the navigator knows nothing about
 // stands on the straight way (on the middle node): the bot gets stuck,
 // recovers (at worst by marking the edge into the pillar blocked) and
-// arrives the long way round.
+// arrives the long way round. Once the first recovery manoeuvre is over
+// the status is back to following, the report kept in LastCause and
+// LastReason.
 func TestSimStuckOnUnseenObstacle(t *testing.T) {
 	pillar := navsim.Solid{ID: 999, Box: true, Origin: Vec3{0, 0, 0}, Mins: Vec3{-12, -12, 0}, Maxs: Vec3{12, 12, 120}}
 	s := newSim(t, Config{}, pillar)
 	s.g.Place(s.srv, s.nodeAt(-64, 0))
 	var first Status
+	var stuckAt, backAt int64 = -1, -1
 	if err := s.nav.SetGoal(NodeGoal(s.nodeAt(64, 0)), 0); err != nil {
 		t.Fatal(err)
 	}
 	for s.now < 20000 && s.nav.Status().Follow != Arrived && !s.nav.final {
 		s.tick()
-		if st := s.nav.Status(); st.Stucks == 1 && first.Stucks == 0 {
-			first = st
+		st := s.nav.Status()
+		if st.Stucks == 1 && first.Stucks == 0 {
+			first, stuckAt = st, s.now
 		}
+		if stuckAt >= 0 && backAt < 0 && st.Stucks == 1 && st.Follow == Following {
+			backAt = s.now
+			if st.Cause != CauseNone || st.Reason != "" || st.LastCause != first.Cause || st.LastReason != first.Reason {
+				t.Errorf("back to following: %+v, want the first report (%s %q) in LastCause and LastReason", st, first.Cause, first.Reason)
+			}
+		}
+	}
+	if backAt < 0 || backAt-stuckAt > 1000 {
+		t.Errorf("stuck at %d ms, following again at %d ms (the manoeuvres last at most 0.4 s)", stuckAt, backAt)
 	}
 	st := s.nav.Status()
 	if st.Follow != Arrived {
