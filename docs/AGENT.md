@@ -104,6 +104,23 @@ Each package's `doc.go` describes it in detail; this is the overview.
     would end the run.
   - **Mid-campaign starts.** `Config.EntryCommands` (the `-cheats`) are re-sent at every level entry and must
     be idempotent. `Config.Visits`/`StopAfter` start or stop mid-campaign.
+- **Perception and belief** (`perception`, `worldmodel`; the rules are ADR-0006's).
+  - **Sight.** An entity enters the belief when it is in the field of view with a line of sight from the eye.
+    A track's position (`Pos`) and velocity (`Vel`) come from sightings only.
+  - **Hearing.** A sound or muzzle flash out of view gives a cue, never a position: the stereo balance the
+    client's mixer renders (`perception.Pan`: hard left, left, center, right, hard right; ahead and behind
+    sound alike) and its loudness against the sound's own level (`perception.Loudness`: near, mid, far), with
+    the sound's class and time. A heard explosion keeps its type and cue; a door's or plat's sound admits the
+    brush's pose.
+  - **Placing a track by ear** (`worldmodel/ear.go`). Each track keeps the world yaws its recent cues allow and
+    narrows them with each cue within 1.5 s: a turn of the bot between two sounds tells front from back.
+    `Track.Ear` holds the last cue, the arc (`Yaw` ± `Spread`, `Ambiguous` while ahead and behind both fit)
+    and a stand-in `Est`: the middle of the arc at the middle distance of the loudness step.
+    `Track.Loc` is where the bot believes the track is: in view its position, out of view its last position
+    seen while the sounds agree with it, otherwise `Est` (`LocSeen` false). A hit whose bearing the view kick
+    gives narrows the arc of the track it is attributed to. Aiming, turning, keeping away, the scan, retreats,
+    damage attribution and a kill step's look and firing position use `Loc`; the navigator's obstacles and
+    the line-of-fire checks use positions seen only.
 - **Route executor** (`routeexec`).
   - Each step becomes a navigator goal. It is judged done from the belief: a mover pose, a laser gone, a
     track dead, an item taken, the inventory. A directional touch counts only while the bot faces along the
@@ -151,7 +168,8 @@ Each package's `doc.go` describes it in detail; this is the overview.
     - in a fight, backing away at once from a drain monster (the parasite) within 304 units or a melee-only
       one (such as the berserker) within 160, whatever the Intent's movement (`keep_off`). The monster is in
       view, or, for a drain monster, was seen or heard awake in the last 2 s while hits arrive without a
-      bearing (a drain does no knockback);
+      bearing (a drain does no knockback). One only heard has no distance: it counts when it sounded near,
+      and the bot backs away from its stand-in;
     - under 25 health, no advance on an attacker in view within 600 units: it sidesteps instead
       (`low_health`);
     - when the Intent's fight target is dead, unknown or none (the next answer is a latency away), it fights
@@ -159,7 +177,8 @@ Each package's `doc.go` describes it in detail; this is the overview.
       live target in the Intent, it shoots back at such a monster when that monster attacks. When the Intent
       holds fire it fires when aligned (target and fire_policy `retarget`);
     - a hit with no bearing (a drain, a hit without knockback) while the bot has no target turns it towards
-      the nearest awake monster out of view that it saw or heard within 5 s and 700 units. Without one, it
+      the nearest awake monster out of view that it saw or heard within 5 s and 700 units (one only heard:
+      towards the side it sounded from, at its stand-in). Without one, it
       turns behind itself, then to one side and the other on later hits. A scan under way is not restarted
       (tick reflex `scan`);
     - a picked-up quad damage is used (`use Quad Damage`) the first time the bot then fights an awake monster
@@ -476,8 +495,8 @@ the code is the reference.
 - **Fast (combat) lane.** It runs up to 10 Hz while enemies or projectiles are known. The state holds `me`
   (hp bucket, health, armor, weapon, ammo bucket, on_ground, damage in the last second, the bearing of the
   last hit, ...), the top `enemies` (id, class, bearing, elev, dist bucket, units, visible, shootable, aim,
-  state, wounded, threat, current), the top `incoming` projectiles (kind, bearing, eta, dodge) and `space`
-  (front, back, left, right). Questions: `target`, `fire_policy`, `movement`.
+  state, wounded, threat, current, heard), the top `incoming` projectiles (kind, bearing, eta, dodge) and
+  `space` (front, back, left, right). Questions: `target`, `fire_policy`, `movement`.
 - **Slow (strategy) lane.** It runs at 2 Hz and early on events. The state adds the mode, the owned weapons,
   the top items, the objective (route step, path distance and bearing, stalled), level stats and recent
   events. Questions: `mode`, `weapon`, `pickup`, `danger`.
@@ -487,6 +506,10 @@ the code is the reference.
   - `hp`: critical < 25, low < 50, ok < 100, full. `dist`: close < 250, mid < 700, far.
   - `space`: blocked < 48, tight < 128, open. `aim`: on (the view ray hits the box), near (within
     max(3 angular radii, 10°)), off.
+  - `heard` (near, mid, far: how loud it sounded) marks an enemy out of view that only hearing places. Its
+    bearing is then the side it sounded from in steps of 45° (ahead and behind alike until the bot turns),
+    `elev` 0, `units` the middle distance of its loudness in steps of 50, `aim` off and `shootable` false.
+    Its target option says "only heard".
 - **Vocabulary.**
 
   | Question | Type | Options |
@@ -574,8 +597,9 @@ with `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide ./intern
 - **Main gates.** These run in CI:
   - `route.TestCheckedInTablesValid` and `q2nav TestPlanValidatesCheckedInTables`: the route tables against
     the pak.
-  - `worldmodel.TestPerturbationInvariance`, `fairness.TestDifferential` and `TestImports` in every agent
-    package.
+  - `worldmodel.TestPerturbationInvariance` (beliefs, lane states and scripted answers unchanged when hidden
+    state and the origins of heard-only monsters are rewritten within their cues), `fairness.TestDifferential`
+    and `TestImports` in every agent package.
   - `campaign.TestCampaignGod` (victory with god/notarget) and `campaign.TestCampaignScripted` (no cheats;
     under `-race` only with `Q2_AGENT_LONG=1`).
   - `cmd/q2bot` `TestGate` (run, validate, replay -strict, summarize on demo1) and `TestMockGate` (the gate's

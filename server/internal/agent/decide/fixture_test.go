@@ -50,6 +50,7 @@ func testBelief() *worldmodel.Belief {
 	mon := perception.KindMonster.String()
 	std := func(t worldmodel.Track) worldmodel.Track {
 		t.Kind, t.PosKnown, t.Mins, t.Maxs, t.Lump = mon, true, Vec3{-16, -16, -24}, Vec3{16, 16, 32}, -1
+		t.Loc, t.LocKnown, t.LocSeen = t.Pos, true, true
 		if t.Life == 0 && t.LastUpdate == 0 {
 			t.LastUpdate = fixtureNow
 		}
@@ -75,7 +76,8 @@ func testBelief() *worldmodel.Belief {
 				LastUpdate: 8200, FirstSeen: 1000}),
 			std(worldmodel.Track{ID: "e7", Num: 16, Class: "tank", Pos: Vec3{900, 0, 24}, LastSeen: 1000, LastUpdate: 1000,
 				FirstSeen: 900, Awareness: worldmodel.Alert, Threat: 4}),
-			{ID: "o1", Num: 20, Class: "barrel", Kind: perception.KindBarrel.String(), Pos: Vec3{30, 30, 0}, PosKnown: true, Visible: true, LastUpdate: fixtureNow},
+			{ID: "o1", Num: 20, Class: "barrel", Kind: perception.KindBarrel.String(), Pos: Vec3{30, 30, 0}, PosKnown: true,
+				Loc: Vec3{30, 30, 0}, LocKnown: true, LocSeen: true, Visible: true, LastUpdate: fixtureNow},
 		},
 		Projectiles: []worldmodel.Projectile{
 			{ID: "p1", Num: 30, Class: "rocket", Weapon: "rocket", Pos: Vec3{0, 200, 40}, TCA: 0.3, Miss: 10, Danger: true, DodgeSide: 1},

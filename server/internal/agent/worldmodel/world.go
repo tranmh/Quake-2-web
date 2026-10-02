@@ -6,7 +6,11 @@
 //
 // World.Update is the only entry point that sees a FrameInput, and it hands
 // it straight to the Perceiver: everything else works on the Percept, which
-// holds only what a player could see or hear. The belief is deterministic:
+// holds only what a player could see or hear. A track's position and
+// velocity come from sight alone; hearing places a track out of view only
+// by the coarse cues of its sounds (Track.Ear: a side, narrowed by the
+// bot's own turns, and a loudness step) and a stand-in derived from them
+// (Track.Loc). The belief is deterministic:
 // it depends only on the inputs and the caller's clock (no map iteration
 // order, no wall clock).
 //

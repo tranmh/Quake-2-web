@@ -24,19 +24,24 @@
 //
 // The world model (package worldmodel) only ever sees Percepts.
 //
-// Fairness assumptions (also stated in docs/adr/0006 when it is written):
+// Fairness assumptions (also stated in docs/adr/0006-ai-agent.md):
 // the field of view is the client's fov (player_state_t.fov, from the "fov"
 // userinfo) at a 4:3 aspect unless configured; monster bodies do not occlude
 // the line of sight; brush entities do (an occluding brush is by definition
 // visible where the line of sight hits it); entity numbers identify an
 // entity across frames, which stands for a player's visual re-identification;
-// sounds are positioned where the client's mixer positions them. A sound or
-// muzzle flash whose emitter is not in the packet arrives without a
-// position (the mixer would use a stale origin the Perceiver cannot know):
-// it is passed on with PosKnown false, and the consumer must gate it with
-// Percept.Audible at the position it last perceived the emitter at. Without
-// a collision map the Perceiver fails closed: nothing is seen, sounds are
-// still heard.
+// a sound tells the listener only what the client's mixer renders of it
+// (S_SpatializeOrigin): a stereo balance and a distance attenuation, which
+// a Hearing carries as a coarse Cue (Pan: five steps of left/right, with
+// ahead and behind alike; Loudness: near, mid, far), never the emitter's
+// position. Muzzle flashes and explosions heard but not seen are the same;
+// seen ones carry what is seen. A sound or muzzle flash whose emitter is
+// not in the packet arrives without a cue (the mixer would use a stale
+// origin the Perceiver cannot know): it is passed on with Placed false,
+// and the consumer must gate it with Percept.Audible at the position it
+// believes the emitter is at. A brush entity's sound (door, plat) admits
+// the brush's pose. Without a collision map the Perceiver fails closed:
+// nothing is seen, sounds are still heard.
 //
 // Nothing here imports the server or the game: the import guard test keeps
 // the package on the client side of the wire.

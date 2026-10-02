@@ -135,9 +135,15 @@ type KillOrder struct {
 	Lump  int
 	Class string
 	// Track is the monster's track once the bot has seen it ("" until
-	// then); Pos its last known position (its spawn origin before).
+	// then); Pos where the bot believes it is: its last position seen (its
+	// spawn origin before), or, once it is heard where that position
+	// disagrees with, hearing's stand-in (ByEar: a side and a loudness
+	// step, never a position; Seen is then the last position seen or the
+	// spawn origin).
 	Track string
 	Pos   Vec3
+	ByEar bool
+	Seen  Vec3
 	// Visible: the track is in view with a line of fire (shootable).
 	Visible bool
 }

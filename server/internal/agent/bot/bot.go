@@ -629,7 +629,7 @@ func (b *Bot) weaponTick(c *fakeclient.Client, bel *worldmodel.Belief) {
 	tr := b.liveTrack(bel, b.target)
 	d := float32(-1)
 	if tr != nil {
-		d = dist3(s.Eye, tr.Pos)
+		d = dist3(s.Eye, tr.Loc)
 	} else if p, ok := b.shootGoal(); ok {
 		d = dist3(s.Eye, p)
 	}
@@ -733,11 +733,13 @@ func (b *Bot) shootGoal() (Vec3, bool) {
 	return Vec3{}, false
 }
 
+// liveTrack returns the track id names while it is alive and located (seen,
+// or heard with a direction: Loc), else nil.
 func (b *Bot) liveTrack(bel *worldmodel.Belief, id string) *worldmodel.Track {
 	if id == "" {
 		return nil
 	}
-	if t := bel.Track(id); t != nil && t.Life == worldmodel.LifeAlive {
+	if t := bel.Track(id); t != nil && t.Life == worldmodel.LifeAlive && t.LocKnown {
 		return t
 	}
 	return nil
@@ -1391,10 +1393,11 @@ func (b *Bot) Describe() string {
 		bel.Frames, len(bel.Tracks), len(bel.Items), len(bel.Movers), len(bel.Lasers), bel.Inventory.Known, bel.HelpKnown)
 	for i := range bel.Tracks {
 		t := &bel.Tracks[i]
-		if t.Kind != perception.KindMonster.String() || dist3(t.Pos, s.Origin) > 1500 {
+		if t.Kind != perception.KindMonster.String() || dist3(t.Loc, s.Origin) > 1500 {
 			continue
 		}
-		out += fmt.Sprintf("  track %s %s lump %d at %v %s vis %v shoot %v aware %s\n", t.ID, t.Class, t.Lump, t.Pos, t.Life, t.Visible, t.Shootable, t.Awareness)
+		out += fmt.Sprintf("  track %s %s lump %d at %v (seen %v) %s vis %v shoot %v aware %s\n", t.ID, t.Class, t.Lump, t.Loc, t.LocSeen,
+			t.Life, t.Visible, t.Shootable, t.Awareness)
 	}
 	for i := range bel.Lasers {
 		l := &bel.Lasers[i]

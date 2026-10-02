@@ -51,7 +51,9 @@ func (s *Sighting) Center() Vec3 {
 }
 
 // Hearing is an audible sound: a svc_sound event, or the loop sound of an
-// entity in the frame.
+// entity in the frame. It says what the sound is and where it seems to
+// come from (Cue), never where its emitter is: the client's mixer renders
+// a stereo balance and a distance attenuation, not a position.
 type Hearing struct {
 	Num     int32 // emitting entity (0: the world or none)
 	Channel int32
@@ -59,29 +61,36 @@ type Hearing struct {
 	Path    string
 	Kind    SoundKind
 	Family  string // monster family of a monster voice
-	// Pos is where the mixer places the sound; PosKnown is false when the
-	// emitter is not in the frame and the message carried no position.
-	// The client mixer would then play it at the emitter's stale origin,
-	// so the Perceiver cannot tell whether it is audible: the consumer
-	// must check Percept.Audible at the position it believes the emitter
-	// is at (from earlier admitted data) and drop the sound otherwise.
-	// ATTN_NONE sounds are audible anywhere.
-	Pos      Vec3
-	PosKnown bool
-	// FromEntity: Pos is the emitter's origin in this frame, so hearing it
-	// admits that origin.
-	FromEntity bool
+	// Cue is how the mixer renders the sound for the listener: its stereo
+	// balance and loudness. It is zero without a direction: an ATTN_NONE
+	// sound (not spatialized), or one this frame does not place (Placed
+	// false).
+	Cue Cue
+	// Placed: the mixer plays the sound at a position this frame holds
+	// (the message's, or the emitter's origin with the emitter in the
+	// packet), and it is audible there. False: the emitter is not in the
+	// frame and the message carried no position; the client mixer would
+	// play it at the emitter's stale origin, so the Perceiver cannot tell
+	// whether it is audible: the consumer must check Percept.Audible at
+	// the position it believes the emitter is at (from earlier admitted
+	// data) and drop the sound otherwise. ATTN_NONE sounds are audible
+	// anywhere.
+	Placed bool
+	// Seen: the emitter is in view this frame (Percept.Sighting has it,
+	// with its position).
+	Seen bool
 	// Mover is set when the emitter is a brush entity of the frame (door,
-	// plat, button sounds): hearing it admits the mover's pose.
+	// plat, button sounds): hearing it admits the mover's pose (the
+	// mover's geometry and travel are static map knowledge; see ADR-0006).
 	Mover       *BrushPose
 	Volume      float32
 	Attenuation float32
 	Loop        bool
 }
 
-// Flash is an audible muzzle flash of another entity. Its sound plays at
-// Volume with ATTN_NORM (C: client/cl_fx.c CL_ParseMuzzleFlash). Weapon
-// is WeaponNone for the non-weapon flashes (MZ_LOGIN, MZ_LOGOUT,
+// Flash is an audible or visible muzzle flash of another entity. Its sound
+// plays at Volume with ATTN_NORM (C: client/cl_fx.c CL_ParseMuzzleFlash).
+// Weapon is WeaponNone for the non-weapon flashes (MZ_LOGIN, MZ_LOGOUT,
 // MZ_RESPAWN, MZ_ITEMRESPAWN): no attack.
 type Flash struct {
 	Num      int32
@@ -90,20 +99,26 @@ type Flash struct {
 	Weapon   Weapon
 	Silenced bool
 	Volume   float32 // 1, or 0.2 when silenced
-	// Pos is the shooter's origin in this frame. PosKnown false: the
-	// shooter is not in the frame and, as for a Hearing without a
-	// position, the consumer must check Percept.Audible at the position it
-	// believes the shooter is at.
-	Pos      Vec3
-	PosKnown bool
+	// Cue is how the mixer renders the flash's sound (zero when it is not
+	// placed, or seen but out of earshot).
+	Cue Cue
+	// Placed: the shooter is in the frame, and the flash is audible at its
+	// origin or seen. False: as for a Hearing without a position, the
+	// consumer must check Percept.Audible at the position it believes the
+	// shooter is at.
+	Placed bool
+	// Seen: the shooter is in view this frame (the flash's light with it).
+	Seen bool
 }
 
 // TempEvent is an admitted temp entity: an explosion (or other loud effect)
-// heard, or an impact, trail or beam seen.
+// heard, or an impact, trail or beam seen. One heard but not seen keeps
+// only its Type of the TempEnt (no position) and its Cue.
 type TempEvent struct {
 	fakeclient.TempEnt
 	Heard bool
 	Seen  bool
+	Cue   Cue // how its sound plays (when Heard)
 }
 
 // Percept is one frame as the player perceives it. It never holds an
@@ -172,21 +187,18 @@ func (p *Percept) Sighting(num int32) *Sighting {
 }
 
 // Admitted returns the entity numbers whose state entered the percept this
-// frame (seen, or positioned by a sound or flash they made), sorted. The
-// fairness tests perturb every other entity.
+// frame (seen, or a mover whose pose a sound of it gave), sorted. An
+// entity only heard is not admitted: only its sound's Cue is. The fairness
+// tests perturb every other entity, and the heard ones' origins within
+// what keeps their cues.
 func (p *Percept) Admitted() []int32 {
 	var out []int32
 	for i := range p.Seen {
 		out = append(out, p.Seen[i].Num)
 	}
 	for i := range p.Heard {
-		if h := &p.Heard[i]; h.FromEntity || h.Mover != nil {
+		if h := &p.Heard[i]; h.Mover != nil {
 			out = append(out, h.Num)
-		}
-	}
-	for i := range p.Flashes {
-		if p.Flashes[i].PosKnown {
-			out = append(out, p.Flashes[i].Num)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
@@ -391,7 +403,8 @@ func (p *Perceiver) brushPose(e *shared.EntityState) *BrushPose {
 	return &BrushPose{Num: e.Number, Inline: n, Origin: e.Origin, Angles: e.Angles}
 }
 
-// hear admits the audible svc_sound events and loop sounds.
+// hear admits the audible svc_sound events and loop sounds, with their
+// cues and without their positions.
 func (p *Perceiver) hear(pc *Percept, in *FrameInput, byNum map[int32]*shared.EntityState, own int32) {
 	for _, s := range in.Events.Sounds {
 		if s.Ent == own && own != 0 {
@@ -405,15 +418,21 @@ func (p *Perceiver) hear(pc *Percept, in *FrameInput, byNum map[int32]*shared.En
 		if s.Ent == 0 {
 			e = nil
 		}
+		var pos Vec3
 		switch {
 		case s.Pos != nil:
-			h.Pos, h.PosKnown = *s.Pos, true
+			pos, h.Placed = *s.Pos, true
 		case e != nil:
-			h.Pos, h.PosKnown, h.FromEntity = e.Origin, true, true
+			pos, h.Placed = e.Origin, true
 		}
-		if h.PosKnown && !audible(p.vision, h.Pos, s.Volume*255, soundDistMult(s.Attenuation)) {
-			continue
+		if h.Placed {
+			mult := soundDistMult(s.Attenuation)
+			if !audible(p.vision, pos, s.Volume*255, mult) {
+				continue
+			}
+			h.Cue = cueAt(p.vision, pos, mult)
 		}
+		h.Seen = s.Ent != 0 && pc.Sighting(s.Ent) != nil
 		h.Mover = p.brushPose(e)
 		pc.Heard = append(pc.Heard, h)
 	}
@@ -428,12 +447,12 @@ func (p *Perceiver) hear(pc *Percept, in *FrameInput, byNum map[int32]*shared.En
 		path := p.soundName(e.Sound, in.CS)
 		kind, fam := ClassifySound(path)
 		pc.Heard = append(pc.Heard, Hearing{Num: e.Number, Index: e.Sound, Path: path, Kind: kind, Family: fam,
-			Pos: e.Origin, PosKnown: true, FromEntity: true, Mover: p.brushPose(e), Volume: 1,
-			Attenuation: q2const.ATTN_STATIC, Loop: true})
+			Cue: cueAt(p.vision, e.Origin, soundLoopAttenuate), Placed: true, Seen: pc.Sighting(e.Number) != nil,
+			Mover: p.brushPose(e), Volume: 1, Attenuation: q2const.ATTN_STATIC, Loop: true})
 	}
 }
 
-// flashes admits the audible muzzle flashes of other entities.
+// flashes admits the audible or visible muzzle flashes of other entities.
 // C: client/cl_fx.c:238 CL_ParseMuzzleFlash, :429 CL_ParseMuzzleFlash2
 func (p *Perceiver) flashes(pc *Percept, in *FrameInput, byNum map[int32]*shared.EntityState, own int32) {
 	for _, f := range in.Events.MuzzleFlashes {
@@ -452,8 +471,11 @@ func (p *Perceiver) flashes(pc *Percept, in *FrameInput, byNum map[int32]*shared
 			}
 		}
 		if e := byNum[f.Ent]; e != nil {
-			fl.Pos, fl.PosKnown = e.Origin, true
-			if !audible(p.vision, fl.Pos, fl.Volume*255, soundDistMult(q2const.ATTN_NORM)) {
+			mult := soundDistMult(flashAttenuation)
+			fl.Placed, fl.Seen = true, pc.Sighting(f.Ent) != nil
+			if audible(p.vision, e.Origin, fl.Volume*255, mult) {
+				fl.Cue = cueAt(p.vision, e.Origin, mult)
+			} else if !fl.Seen {
 				continue
 			}
 		}
@@ -472,7 +494,9 @@ func (p *Perceiver) tempEnts(pc *Percept, in *FrameInput) {
 			q2const.TE_EXPLOSION1_NP, q2const.TE_PLASMA_EXPLOSION, q2const.TE_BFG_BIGEXPLOSION,
 			q2const.TE_PLAIN_EXPLOSION, q2const.TE_TRACKER_EXPLOSION, q2const.TE_NUKEBLAST, q2const.TE_BOSSTPORT,
 			q2const.TE_BLASTER, q2const.TE_BLASTER2, q2const.TE_FLECHETTE, q2const.TE_RAILTRAIL:
-			ev.Heard = audible(p.vision, t.Pos, 255, soundDistMult(q2const.ATTN_NORM))
+			if mult := soundDistMult(q2const.ATTN_NORM); audible(p.vision, t.Pos, 255, mult) {
+				ev.Heard, ev.Cue = true, cueAt(p.vision, t.Pos, mult)
+			}
 		}
 		switch t.Type {
 		case q2const.TE_RAILTRAIL, q2const.TE_BUBBLETRAIL, q2const.TE_BUBBLETRAIL2, q2const.TE_DEBUGTRAIL,
@@ -482,6 +506,9 @@ func (p *Perceiver) tempEnts(pc *Percept, in *FrameInput) {
 			ev.Seen = p.vision.SeesSegment(t.Pos, t.Pos2, beamSamples, -1)
 		default:
 			ev.Seen = p.vision.SeesPoint(t.Pos)
+		}
+		if ev.Heard && !ev.Seen {
+			ev.TempEnt = fakeclient.TempEnt{Type: t.Type} // heard: what it was, not where
 		}
 		if ev.Heard || ev.Seen {
 			pc.TempEnts = append(pc.TempEnts, ev)

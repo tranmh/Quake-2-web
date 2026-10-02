@@ -308,6 +308,9 @@ func (st *selfTracker) damage(w *World, pc *perception.Percept, predPitch, predR
 		ev.Cause = "drown"
 	}
 	ev.Source = w.attribute(&ev)
+	if ev.Source != "" && ev.BearingKnown {
+		w.feelHit(ev.Source, ev.Bearing, ps.ViewAngles[q2const.YAW])
+	}
 	w.b.Damage = append(w.b.Damage, ev)
 }
 
@@ -343,7 +346,7 @@ func (w *World) attribute(ev *DamageEvent) string {
 	best, bestDiff, recent, only := "", float32(fuseAngle), 0, ""
 	eye := w.b.Self.Eye
 	for _, a := range w.actors {
-		if a.Life != LifeAlive || !a.PosKnown {
+		if a.Life != LifeAlive || !a.LocKnown {
 			continue
 		}
 		if !(w.now-a.LastAttack <= fuseMemory || w.now-a.LastHeard <= fuseMemory || a.Visible && a.Awareness == Attacking) {
@@ -354,8 +357,12 @@ func (w *World) attribute(ev *DamageEvent) string {
 		if !ev.BearingKnown {
 			continue
 		}
-		yaw := float32(math.Atan2(float64(a.Pos[1]-eye[1]), float64(a.Pos[0]-eye[0])) * 180 / math.Pi)
-		if d := float32(math.Abs(float64(angleDiff(yaw, ev.Bearing)))); d <= bestDiff {
+		d := float32(math.Abs(float64(angleDiff(yawTo(eye, a.Loc), ev.Bearing))))
+		if !a.LocSeen {
+			// placed by ear: anywhere in the arc the sounds allow
+			d = max(0, d-a.Ear.Spread)
+		}
+		if d <= bestDiff {
 			best, bestDiff = a.ID, d
 		}
 	}

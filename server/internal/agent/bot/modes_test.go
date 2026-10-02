@@ -59,6 +59,7 @@ func (m *modeBot) sent(s string) bool { return bytes.Contains(m.c.Netchan.Messag
 
 func monster(id string, p Vec3) worldmodel.Track {
 	return worldmodel.Track{ID: id, Kind: "monster", Class: "soldier", Life: worldmodel.LifeAlive, Pos: p, PosKnown: true,
+		Loc: p, LocKnown: true, LocSeen: true,
 		Visible: true, Shootable: true, Awareness: worldmodel.Attacking, Threat: 1}
 }
 

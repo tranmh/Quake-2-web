@@ -38,13 +38,14 @@ func belief(i, perturb int) *worldmodel.Belief {
 		if perturb > 0 && i >= perturb {
 			r += 400
 		}
+		pos := worldmodel.Vec3{float32(r * math.Cos(a)), float32(r * math.Sin(a)), 24}
 		b.Tracks = append(b.Tracks, worldmodel.Track{ID: "e1", Class: "soldier", Kind: mon, PosKnown: true, Visible: true, Shootable: true,
-			Pos: worldmodel.Vec3{float32(r * math.Cos(a)), float32(r * math.Sin(a)), 24}, Mins: worldmodel.Vec3{-16, -16, -24}, Maxs: worldmodel.Vec3{16, 16, 32},
+			Pos: pos, Loc: pos, LocKnown: true, LocSeen: true, Mins: worldmodel.Vec3{-16, -16, -24}, Maxs: worldmodel.Vec3{16, 16, 32},
 			LastSeen: now, LastUpdate: now, FirstSeen: 500, Awareness: worldmodel.Attacking, Threat: 9, Confidence: 1})
 	}
 	if i >= 15 && i < 30 {
 		b.Tracks = append(b.Tracks, worldmodel.Track{ID: "e2", Class: "gunner", Kind: mon, PosKnown: true, Visible: i%4 != 0, Shootable: true,
-			Pos: worldmodel.Vec3{-500, 300, 24}, Mins: worldmodel.Vec3{-16, -16, -24}, Maxs: worldmodel.Vec3{16, 16, 32},
+			Pos: worldmodel.Vec3{-500, 300, 24}, Loc: worldmodel.Vec3{-500, 300, 24}, LocKnown: true, LocSeen: true, Mins: worldmodel.Vec3{-16, -16, -24}, Maxs: worldmodel.Vec3{16, 16, 32},
 			LastSeen: now, LastUpdate: now, FirstSeen: 1500, Awareness: worldmodel.Alert, Threat: 14, Confidence: 1})
 	}
 	if i%10 == 3 {

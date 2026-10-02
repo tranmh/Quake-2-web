@@ -38,9 +38,11 @@ type actor struct {
 	cls    *perception.Class // nil while only heard
 	family string
 	bound  bool
-	obsPos Vec3  // last admitted position
+	obsPos Vec3  // last position seen
 	obsAt  int64 // when
 	hasObs bool
+	// earMask: the world yaws the cues heard since Ear.At-earMemory allow
+	earMask yawMask
 }
 
 func (a *actor) setLife(l LifeState, now int64) {
@@ -49,7 +51,7 @@ func (a *actor) setLife(l LifeState, now int64) {
 	}
 }
 
-// observe folds an admitted position into the track: velocity EMA.
+// observe folds a position seen into the track: velocity EMA.
 func (a *actor) observe(pos Vec3, now int64) {
 	if a.hasObs && now > a.obsAt && now-a.obsAt <= 1000 {
 		dt := float32(now-a.obsAt) / 1000
@@ -497,12 +499,12 @@ func (w *World) laserFor(num int32, start Vec3) *Laser {
 	return l
 }
 
-// observeHearings folds what was heard.
+// observeHearings folds what was heard: what each sound was, and for an
+// emitter out of view its cue (hearCue), never a position.
 func (w *World) observeHearings(pc *perception.Percept) {
 	for i := range pc.Heard {
 		h := &pc.Heard[i]
-		ev := SoundEvent{At: w.now, Kind: h.Kind.String(), Path: h.Path, Family: h.Family, Num: h.Num,
-			Pos: h.Pos, PosKnown: h.PosKnown}
+		ev := SoundEvent{At: w.now, Kind: h.Kind.String(), Path: h.Path, Family: h.Family, Num: h.Num, Cue: h.Cue, Seen: h.Seen}
 		if h.Mover != nil {
 			w.seeMover(h.Mover, false)
 		}
@@ -512,20 +514,20 @@ func (w *World) observeHearings(pc *perception.Percept) {
 				// the voice's directory is only a hint (soldiers cock
 				// their guns with an infantry sound): the number decides
 				a = w.actors[b.idx]
-			} else if h.Family != "" && h.FromEntity {
-				// a monster's voice (or buzz) at a known position
-				a = w.actorFor(h.Num, nil, h.Family, h.Pos, true, 0)
+			} else if h.Family != "" && h.Placed && !h.Seen {
+				// a monster's voice (or buzz) the mixer plays this frame
+				a = w.actorFor(h.Num, nil, h.Family, Vec3{}, false, 0)
 			}
 		}
-		if !h.PosKnown && !audibleAt(pc, a, h.Volume, h.Attenuation) {
+		if !h.Placed && !audibleAt(pc, a, h.Volume, h.Attenuation) {
 			// the server sends a sound to its whole PHS, and the mixer
 			// would play this one at the emitter's stale origin: heard
-			// only if that is within earshot of where the bot last
-			// perceived the emitter
+			// only if that is within earshot of where the bot believes
+			// the emitter is
 			continue
 		}
 		if a != nil {
-			w.hearActor(a, h)
+			w.hearActor(a, h, pc)
 			ev.Track = a.ID
 		}
 		if !h.Loop {
@@ -536,25 +538,25 @@ func (w *World) observeHearings(pc *perception.Percept) {
 
 // audibleAt reports whether a sound (or flash) that came without a position
 // is audible: an ATTN_NONE sound always, any other one when the emitter's
-// track a has a position the mixer would play it audibly at. The position
-// is the track's last admitted one, standing for the client's stale origin
-// of an entity outside the frame.
+// track a is located (Loc: the last position seen, or hearing's stand-in)
+// where the mixer would play it audibly. Loc stands for the client's stale
+// origin of an entity outside the frame.
 func audibleAt(pc *perception.Percept, a *actor, volume, attenuation float32) bool {
 	if attenuation == q2const.ATTN_NONE {
 		return pc.Audible(pc.Eye, volume, attenuation)
 	}
-	if a == nil || !a.PosKnown {
+	if a == nil || !a.LocKnown {
 		return false
 	}
-	return pc.Audible(a.Pos, volume, attenuation)
+	return pc.Audible(a.Loc, volume, attenuation)
 }
 
-// hearActor folds a sound of track a. Only a sound from the emitter's
-// origin in this frame moves the track and refreshes its confidence; one
-// without a position only says it is still around.
-func (w *World) hearActor(a *actor, h *perception.Hearing) {
-	if h.FromEntity {
-		a.observe(h.Pos, w.now)
+// hearActor folds a sound of track a: its cue when the emitter is out of
+// view (hearCue: a direction and a distance step, no position), and what
+// the sound says (awake, attacking, dying).
+func (w *World) hearActor(a *actor, h *perception.Hearing, pc *perception.Percept) {
+	if !h.Seen {
+		w.hearCue(a, h.Cue, h.Kind, h.Attenuation, h.Loop, pc)
 	}
 	a.Heard, a.LastHeard = true, w.now
 	switch h.Kind {
@@ -578,7 +580,8 @@ func (w *World) hearActor(a *actor, h *perception.Hearing) {
 	}
 }
 
-// observeFlashes folds the muzzle flashes of others.
+// observeFlashes folds the muzzle flashes of others: a shooter in view is
+// placed by its sighting, one out of view by its flash's cue.
 func (w *World) observeFlashes(pc *perception.Percept) {
 	for i := range pc.Flashes {
 		f := &pc.Flashes[i]
@@ -588,25 +591,27 @@ func (w *World) observeFlashes(pc *perception.Percept) {
 		var a *actor
 		if b, ok := w.bind[f.Num]; ok && b.kind == bindActor {
 			a = w.actors[b.idx]
-		} else if f.PosKnown && attack {
+		} else if f.Placed && !f.Seen && attack {
 			fam := "" // svc_muzzleflash2: some monster
 			if !f.Monster {
 				fam = "player"
 			}
-			a = w.actorFor(f.Num, nil, fam, f.Pos, true, 0)
+			a = w.actorFor(f.Num, nil, fam, Vec3{}, false, 0)
 		}
 		if a == nil {
 			continue
 		}
-		if !f.PosKnown && !audibleAt(pc, a, f.Volume, q2const.ATTN_NORM) {
+		if !f.Placed && !audibleAt(pc, a, f.Volume, q2const.ATTN_NORM) {
 			continue // as for a sound without a position
 		}
-		a.Heard, a.LastHeard = true, w.now
+		if !f.Placed || f.Cue.Directional() {
+			a.Heard, a.LastHeard = true, w.now
+		}
 		if !attack {
 			continue
 		}
-		if f.PosKnown {
-			a.observe(f.Pos, w.now)
+		if !f.Seen {
+			w.hearCue(a, f.Cue, perception.SoundAttack, q2const.ATTN_NORM, false, pc)
 		}
 		if a.Life == LifeAlive {
 			a.Awareness, a.LastAttack, a.Weapon = Attacking, w.now, f.Weapon.String()
@@ -633,7 +638,8 @@ func (w *World) observeTempEnts(pc *perception.Percept) {
 	}
 	w.explode = keep
 	for i := range pc.TempEnts {
-		if t := &pc.TempEnts[i]; explosive(t.Type) {
+		// only an explosion seen has a position; one heard does not
+		if t := &pc.TempEnts[i]; t.Seen && explosive(t.Type) {
 			w.explode = append(w.explode, explosion{pos: t.Pos, at: w.now})
 		}
 	}
@@ -814,8 +820,9 @@ func (w *World) updateActors() {
 		if a.Awareness == Attacking && w.now-a.LastAttack > AttackMemory {
 			a.Awareness = Alert
 		}
-		if a.PosKnown && !a.Visible {
-			a.Dist = dist(a.Pos, eye)
+		a.locate()
+		if a.LocKnown && !a.Visible {
+			a.Dist = dist(a.Loc, eye)
 		}
 		a.Threat = threat(a)
 	}

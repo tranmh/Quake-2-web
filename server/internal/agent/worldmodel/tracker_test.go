@@ -168,14 +168,20 @@ func TestAwareness(t *testing.T) {
 		t.Fatalf("attack frame: %s", tr.Awareness)
 	}
 
-	// a hidden monster's flash creates a track at its position
+	// a hidden monster's flash creates a track placed by ear: no position,
+	// a cue (ahead or behind, near) whose stand-in is behind (out of view)
 	s2 := newSim(t)
 	s2.ents = []shared.EntityState{soldierAt(30, Vec3{-300, 0, 24})} // behind the player
 	s2.ev.MuzzleFlashes = []fakeclient.MuzzleFlash{{Ent: 30, Weapon: q2const.MZ2_SOLDIER_MACHINEGUN_1, Monster: true}}
 	b := s2.step()
-	if len(b.Tracks) != 1 || b.Tracks[0].Visible || !b.Tracks[0].Heard || b.Tracks[0].Pos != (Vec3{-300, 0, 24}) ||
-		b.Tracks[0].Class != "monster" || b.Tracks[0].Awareness != Attacking {
+	if len(b.Tracks) != 1 || b.Tracks[0].Visible || !b.Tracks[0].Heard || b.Tracks[0].PosKnown || b.Tracks[0].Pos != (Vec3{}) ||
+		b.Tracks[0].Vel != (Vec3{}) || b.Tracks[0].Class != "monster" || b.Tracks[0].Awareness != Attacking {
 		t.Fatalf("heard flash: %+v", b.Tracks)
+	}
+	if e := b.Tracks[0].Ear; e.Pan != perception.PanCenter || e.Loud != perception.LoudNear || !e.Ambiguous ||
+		absf(angleDiff(e.Yaw, 180)) > 1 || e.Sound != "attack" || !b.Tracks[0].LocKnown || b.Tracks[0].LocSeen ||
+		b.Tracks[0].Loc != e.Est || e.Est[2] != 24 {
+		t.Fatalf("heard flash's ear: %+v", b.Tracks[0])
 	}
 	// later seen: the same track learns its class
 	s2.ps.ViewAngles[q2const.YAW] = 180
@@ -452,7 +458,8 @@ func TestFootstepsAndLoginFlashes(t *testing.T) {
 			t.Errorf("track %s after footsteps and a login flash: %+v", tr.ID, tr)
 		}
 	}
-	if tr := s.track("e2"); tr.Num != 21 || !tr.Heard || tr.Pos != (Vec3{-200, 0, 24}) {
+	if tr := s.track("e2"); tr.Num != 21 || !tr.Heard || tr.PosKnown || tr.Ear.Sound != "step" ||
+		absf(angleDiff(tr.Ear.Yaw, 180)) > tr.Ear.Spread {
 		t.Fatalf("heard tank steps %+v", tr)
 	}
 	// heard walking behind the bot is no combat (a soldier in view is)

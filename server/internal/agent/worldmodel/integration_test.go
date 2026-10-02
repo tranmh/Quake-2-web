@@ -144,7 +144,7 @@ func TestDemo1Belief(t *testing.T) {
 	var digests []string
 	admittedEver := map[int32]bool{}
 	lastPos := map[string]Vec3{}
-	hiddenMonsterFrames, bearings := 0, 0
+	hiddenMonsterFrames, bearings, heardOnly := 0, 0, 0
 	recs, _ := runDemo1(t, frames, func(w *World, in *perception.FrameInput) {
 		pc := w.Percept()
 		b := w.Belief()
@@ -155,6 +155,17 @@ func TestDemo1Belief(t *testing.T) {
 		}
 		for i := range pc.Seen {
 			seen[pc.Seen[i].Num] = true
+		}
+		// a sound or flash placed this frame admits its cue
+		for i := range pc.Heard {
+			if h := &pc.Heard[i]; h.Placed && h.Num > 0 {
+				admittedEver[h.Num], admitted[h.Num] = true, true
+			}
+		}
+		for i := range pc.Flashes {
+			if f := &pc.Flashes[i]; f.Placed {
+				admittedEver[f.Num], admitted[f.Num] = true, true
+			}
 		}
 		for _, tr := range b.Tracks {
 			if !admittedEver[tr.Num] {
@@ -168,8 +179,16 @@ func TestDemo1Belief(t *testing.T) {
 			if tr.LastUpdate == b.Time && !admitted[tr.Num] {
 				t.Fatalf("t=%d: track %s updated without being perceived", b.Time, tr.ID)
 			}
-			if p, ok := lastPos[tr.ID]; ok && p != tr.Pos && !admitted[tr.Num] {
-				t.Fatalf("t=%d: track %s moved from %v to %v without an admitted position", b.Time, tr.ID, p, tr.Pos)
+			// only a sighting gives a position: hearing places a track by
+			// its stand-in (Loc), never Pos
+			if p, ok := lastPos[tr.ID]; ok && p != tr.Pos && !seen[tr.Num] {
+				t.Fatalf("t=%d: track %s moved from %v to %v without being seen", b.Time, tr.ID, p, tr.Pos)
+			}
+			if tr.PosKnown != (tr.LastSeen > 0) || tr.LocSeen && tr.Loc != tr.Pos || tr.LocKnown && !tr.LocSeen && tr.Loc != tr.Ear.Est {
+				t.Fatalf("t=%d: track %s located inconsistently: %+v", b.Time, tr.ID, tr)
+			}
+			if !tr.LocSeen && tr.LocKnown {
+				heardOnly++
 			}
 			lastPos[tr.ID] = tr.Pos
 		}
@@ -208,7 +227,11 @@ func TestDemo1Belief(t *testing.T) {
 	if bearings == 0 {
 		t.Error("no damage with a bearing in the run")
 	}
-	t.Logf("%d frames, %d frames with hidden monsters, %d bearings", len(recs), hiddenMonsterFrames, bearings)
+	if heardOnly == 0 {
+		t.Error("no track was ever placed by ear alone")
+	}
+	t.Logf("%d frames, %d frames with hidden monsters, %d bearings, %d track-frames placed by ear", len(recs),
+		hiddenMonsterFrames, bearings, heardOnly)
 
 	var again []string
 	var last Belief

@@ -207,7 +207,7 @@ func TestShooterAim(t *testing.T) {
 		t.Error("fired with Fire unset")
 	}
 	// a led projectile weapon aims ahead of a moving target
-	tr := &worldmodel.Track{Pos: Vec3{1000, 0, 0}, Vel: Vec3{0, 200, 0}, Mins: Vec3{-16, -16, -24}, Maxs: Vec3{16, 16, 32}}
+	tr := &worldmodel.Track{Pos: Vec3{1000, 0, 0}, Loc: Vec3{1000, 0, 0}, LocKnown: true, LocSeen: true, Vel: Vec3{0, 200, 0}, Mins: Vec3{-16, -16, -24}, Maxs: Vec3{16, 16, 32}}
 	p, r := aimFor(eye, tr, decide.WeaponBlaster)
 	if p[1] < 150 || r != 16 {
 		t.Errorf("blaster lead %v radius %v", p, r)

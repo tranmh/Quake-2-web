@@ -34,6 +34,16 @@ func TestTargetAndExit(t *testing.T) {
 	if p, ok := h.x.Target(); !ok || dist3(p, Vec3{moved[0], moved[1], moved[2] + 4}) > 1 {
 		t.Fatalf("kill target %v (%v) once seen, want the track's center", p, ok)
 	}
+	// out of view and heard since from elsewhere: the kill follows
+	// hearing's stand-in (the track's Pos stays where it was seen)
+	standIn := Vec3{moved[0], moved[1] + 300, moved[2]}
+	tr := &h.b.Tracks[0]
+	tr.Visible, tr.Loc, tr.LocKnown = false, standIn, true
+	h.tick(1)
+	if p, ok := h.x.Target(); !ok || dist3(p, Vec3{standIn[0], standIn[1], standIn[2] + 4}) > 1 {
+		t.Fatalf("kill target %v (%v) once heard elsewhere, want hearing's stand-in", p, ok)
+	}
+	tr.Visible, tr.Loc, tr.LocSeen = true, moved, true
 	// the kill done: a goto and the exit are left
 	h.b.Tracks[0].Life, h.b.Tracks[0].LifeAt = worldmodel.LifeDead, h.now
 	h.tick(dyingConfirm/100 + 2)

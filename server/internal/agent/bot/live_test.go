@@ -211,7 +211,8 @@ func TestPolicyModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.Route().Start(0)
-	bel := &worldmodel.Belief{Tracks: []worldmodel.Track{{ID: "e1", Life: worldmodel.LifeAlive, Pos: Vec3{0, 0, 24}, PosKnown: true}},
+	bel := &worldmodel.Belief{Tracks: []worldmodel.Track{{ID: "e1", Life: worldmodel.LifeAlive, Pos: Vec3{0, 0, 24}, PosKnown: true,
+		Loc: Vec3{0, 0, 24}, LocKnown: true, LocSeen: true}},
 		Items: []worldmodel.Item{{ID: "i1", Lump: 155, Pos: md.Entity(155).Origin, Life: worldmodel.LifeAlive}}}
 	bel.Self.Health, bel.Self.Weapon = 100, "Blaster"
 	c.Netchan.Message.SZ_Init(make([]byte, 4096)) // a passive client has no outgoing buffer

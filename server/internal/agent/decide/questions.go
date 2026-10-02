@@ -45,7 +45,11 @@ func targetQuestion(st *State) (Question, bool) {
 		if e.Wounded {
 			b.WriteString(", wounded")
 		}
-		if !e.Visible {
+		if e.Heard != "" {
+			// placed by ear alone: a side (ahead and behind alike until I
+			// turn) and a loudness, not a position
+			fmt.Fprintf(&b, ", not in view, only heard (%s): bearing and distance rough, ahead or behind", e.Heard)
+		} else if !e.Visible {
 			b.WriteString(", not in view")
 		}
 		if e.Current {

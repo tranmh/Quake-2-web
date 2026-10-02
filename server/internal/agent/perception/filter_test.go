@@ -1,6 +1,7 @@
 package perception
 
 import (
+	"math"
 	"reflect"
 	"testing"
 
@@ -102,42 +103,104 @@ func TestObservationFilter(t *testing.T) {
 		t.Fatalf("item sighting %+v", it)
 	}
 
-	// sounds: the hidden soldier's cry positions it; the unseen entity's
-	// cry has no position; the far one and the own one are dropped; the
-	// door sound carries the door pose; the near speaker loop is heard
+	// sounds: the hidden soldier's cry gives a cue, not its origin; the
+	// unseen entity's cry has no cue; the far one and the own one are
+	// dropped; the door sound carries the door pose; the near speaker loop
+	// is heard
 	type hk struct {
-		num        int32
-		posKnown   bool
-		fromEntity bool
-		mover      bool
-		loop       bool
+		num    int32
+		placed bool
+		seen   bool
+		cue    Cue
+		mover  bool
+		loop   bool
 	}
 	var heard []hk
 	for _, h := range pc.Heard {
-		heard = append(heard, hk{h.Num, h.PosKnown, h.FromEntity, h.Mover != nil, h.Loop})
+		heard = append(heard, hk{h.Num, h.Placed, h.Seen, h.Cue, h.Mover != nil, h.Loop})
 	}
-	want := []hk{{21, true, true, false, false}, {99, false, false, false, false}, {27, true, false, true, false},
-		{25, true, true, false, true}}
+	below := Cue{PanCenter, LoudNear}
+	want := []hk{{21, true, false, below, false, false}, {99, false, false, Cue{}, false, false},
+		{27, true, false, below, true, false}, {25, true, false, Cue{PanCenter, LoudFar}, false, true}}
 	if !reflect.DeepEqual(heard, want) {
 		t.Fatalf("heard %+v\nwant  %+v", heard, want)
 	}
-	if h := pc.Heard[0]; h.Kind != SoundSight || h.Family != "soldier" || h.Pos != (Vec3{0, 0, -60}) {
+	if h := pc.Heard[0]; h.Kind != SoundSight || h.Family != "soldier" {
 		t.Fatalf("sight cry %+v", h)
 	}
-	// flashes: the visible soldier's and the one behind (audible)
+	// flashes: the visible soldier's (seen) and the one behind (heard: a
+	// cue only)
 	fl := nums(pc.Flashes, func(f *Flash) int32 { return f.Num })
-	if !reflect.DeepEqual(fl, []int32{20, 22}) || pc.Flashes[0].Weapon != WeaponShotgun || !pc.Flashes[1].PosKnown {
+	if !reflect.DeepEqual(fl, []int32{20, 22}) || pc.Flashes[0].Weapon != WeaponShotgun || !pc.Flashes[0].Seen ||
+		!pc.Flashes[1].Placed || pc.Flashes[1].Seen || pc.Flashes[1].Cue != (Cue{PanCenter, LoudNear}) {
 		t.Fatalf("flashes %+v", pc.Flashes)
 	}
-	// temp entities: the explosion behind is heard, the gunshot in view seen
+	// temp entities: the explosion behind is heard (its type and cue, no
+	// position), the gunshot in view seen
 	if len(pc.TempEnts) != 2 || !pc.TempEnts[0].Heard || pc.TempEnts[0].Seen ||
-		pc.TempEnts[1].Type != q2const.TE_GUNSHOT || !pc.TempEnts[1].Seen {
+		pc.TempEnts[0].TempEnt != (fakeclient.TempEnt{Type: q2const.TE_ROCKET_EXPLOSION}) ||
+		pc.TempEnts[0].Cue != (Cue{PanCenter, LoudNear}) ||
+		pc.TempEnts[1].Type != q2const.TE_GUNSHOT || !pc.TempEnts[1].Seen || pc.TempEnts[1].Pos != (Vec3{300, 10, 30}) {
 		t.Fatalf("temp ents %+v", pc.TempEnts)
 	}
-	// admitted: seen 20, 24; the cry of 21; the door 27 by its sound; the
-	// speaker loop 25; the flash of 22
-	if got := pc.Admitted(); !reflect.DeepEqual(got, []int32{20, 21, 22, 24, 25, 27}) {
+	// admitted: seen 20, 24; the door 27 by its sound. The cry of 21, the
+	// speaker loop 25 and the flash of 22 admit only their cues
+	if got := pc.Admitted(); !reflect.DeepEqual(got, []int32{20, 24, 27}) {
 		t.Fatalf("admitted %v", got)
+	}
+}
+
+// TestHearingCues: the cue of a sound is the mixer's stereo balance and
+// loudness steps; a source ahead and its mirror image behind sound alike,
+// and so do two sources at the same balance and loudness anywhere.
+func TestHearingCues(t *testing.T) {
+	p := newFloorPerceiver(t)
+	at := func(pos Vec3, atten float32) Cue {
+		in := floorInput()
+		in.Entities = []shared.EntityState{{Number: 1, ModelIndex: 255, Origin: Vec3{0, 0, 24}, Solid: solidStd},
+			{Number: 30, ModelIndex: 4, Origin: pos, Solid: solidStd}}
+		in.Events = Events{Sounds: []fakeclient.Sound{{SoundNum: 1, Ent: 30, Volume: 1, Attenuation: atten}}}
+		pc := p.Perceive(&in)
+		if len(pc.Heard) != 1 {
+			return Cue{}
+		}
+		return pc.Heard[0].Cue
+	}
+	eye := Vec3{0, 0, 46}
+	polar := func(deg, dist float32) Vec3 {
+		s, c := math.Sincos(float64(deg) * math.Pi / 180)
+		return Vec3{eye[0] + dist*float32(c), eye[1] + dist*float32(s), eye[2]}
+	}
+	for _, tc := range []struct {
+		deg, dist float32
+		atten     float32
+		want      Cue
+	}{
+		{0, 300, q2const.ATTN_NORM, Cue{PanCenter, LoudNear}},
+		{180, 300, q2const.ATTN_NORM, Cue{PanCenter, LoudNear}},
+		{90, 300, q2const.ATTN_NORM, Cue{PanHardLeft, LoudNear}},
+		{45, 300, q2const.ATTN_NORM, Cue{PanLeft, LoudNear}},
+		{135, 300, q2const.ATTN_NORM, Cue{PanLeft, LoudNear}},
+		{-60, 900, q2const.ATTN_NORM, Cue{PanRight, LoudMid}},
+		{-90, 1500, q2const.ATTN_NORM, Cue{PanHardRight, LoudFar}},
+		{-90, 500, q2const.ATTN_IDLE, Cue{PanHardRight, LoudMid}},
+		{30, 300, q2const.ATTN_NONE, Cue{}}, // not spatialized: no direction, no distance
+	} {
+		if got := at(polar(tc.deg, tc.dist), tc.atten); got != tc.want {
+			t.Errorf("%v° at %v (atten %v): cue %+v, want %+v", tc.deg, tc.dist, tc.atten, got, tc.want)
+		}
+	}
+	// every distance the loudness steps give for a sound lands in its step
+	for _, atten := range []float32{q2const.ATTN_NORM, q2const.ATTN_IDLE, q2const.ATTN_STATIC} {
+		for _, l := range []Loudness{LoudNear, LoudMid, LoudFar} {
+			lo, mid, hi, ok := LoudnessRange(l, atten, false)
+			if !ok || !(lo <= mid && mid <= hi) {
+				t.Fatalf("range of %v at %v: %v %v %v %v", l, atten, lo, mid, hi, ok)
+			}
+			if got := at(polar(-90, mid), atten); got.Loud != l {
+				t.Errorf("atten %v: the middle of %v (%v units) plays %v", atten, l, mid, got.Loud)
+			}
+		}
 	}
 }
 

@@ -258,13 +258,13 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 		f.repositioning = true
 		f.noteReflex("reposition")
 	}
-	from := tr.Pos
+	from := tr.Loc
 	switch k := b.keepOff(bel); {
 	case k != nil && m != control.MoveRetreat:
-		m, from = control.MoveRetreat, k.Pos
+		m, from = control.MoveRetreat, k.Loc
 		b.moveBy = "keep_off"
 	case k != nil:
-		from = k.Pos
+		from = k.Loc
 	case m == control.MoveAdvance && bel.Self.Health < lowHealth && tr.Visible && tr.Awareness == worldmodel.Attacking &&
 		dist3(bel.Self.Origin, tr.Pos) < lowHealthNear:
 		m = control.MoveStrafe
@@ -278,13 +278,13 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 			b.moveBy = "in_range"
 			break
 		}
-		if !b.nav.CanReturn(bel.Self.Origin, tr.Pos) {
+		if !b.nav.CanReturn(bel.Self.Origin, tr.Loc) {
 			m = control.MoveHold // down a drop the bot could not climb back from: wait for it
 			b.moveBy = "no_return"
 			break
 		}
-		if f.goal != goalAdvance || b.now-f.goalAt > advanceRepath || dist3(f.goalFor, tr.Pos) > advanceMove || b.navFailed() {
-			b.setFightGoal(goalAdvance, navrt.PointGoal(tr.Pos, 96), tr.Pos)
+		if f.goal != goalAdvance || b.now-f.goalAt > advanceRepath || dist3(f.goalFor, tr.Loc) > advanceMove || b.navFailed() {
+			b.setFightGoal(goalAdvance, navrt.PointGoal(tr.Loc, 96), tr.Loc)
 		}
 	case control.MoveRetreat:
 		if f.goal != goalRetreat || b.now-f.goalAt > retreatRepath || b.navDone() {
@@ -313,14 +313,16 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 // keepOffDrain or keepOffMelee of the bot; in view, or for a drain monster
 // that was awake and seen or heard within drainMemory, out of view while
 // the bot takes hits it cannot place (drainSuspected: the drain does no
-// knockback, so its hits carry no bearing). nil: none.
+// knockback, so its hits carry no bearing). A drain monster only heard has
+// no position: it counts when it sounded near, and the bot backs away
+// from hearing's stand-in (Loc). nil: none.
 func (b *Bot) keepOff(bel *worldmodel.Belief) *worldmodel.Track {
 	var best *worldmodel.Track
 	bd := float32(0)
 	drained := drainSuspected(bel)
 	for i := range bel.Tracks {
 		t := &bel.Tracks[i]
-		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.PosKnown {
+		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.LocKnown {
 			continue
 		}
 		c := b.classes.ByName(t.Class)
@@ -339,7 +341,12 @@ func (b *Bot) keepOff(bel *worldmodel.Belief) *worldmodel.Track {
 		if !t.Visible && (!drained || c.Weapon != perception.WeaponDrain || t.Awareness == worldmodel.Idle || bel.Time-t.LastUpdate > drainMemory) {
 			continue
 		}
-		if d := dist3(bel.Self.Origin, t.Pos); d < reach && (best == nil || d < bd) {
+		d := dist3(bel.Self.Origin, t.Loc)
+		near := d < reach
+		if !t.LocSeen {
+			near = t.Ear.Loud == perception.LoudNear // placed by ear: it sounded near
+		}
+		if near && (best == nil || d < bd) {
 			best, bd = t, d
 		}
 	}
@@ -428,16 +435,16 @@ func (b *Bot) navDone() bool {
 }
 
 // threat returns the most dangerous monster the bot knows of now (alive,
-// positioned, seen or heard within threatMemory), nil when none.
+// located, seen or heard within threatMemory), nil when none.
 func (b *Bot) threat(bel *worldmodel.Belief) *worldmodel.Track {
 	var best *worldmodel.Track
 	bs := float32(-1)
 	for i := range bel.Tracks {
 		t := &bel.Tracks[i]
-		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.PosKnown || bel.Time-t.LastUpdate > threatMemory {
+		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.LocKnown || bel.Time-t.LastUpdate > threatMemory {
 			continue
 		}
-		s := (t.Threat + 1) / max(dist3(bel.Self.Origin, t.Pos), 64)
+		s := (t.Threat + 1) / max(dist3(bel.Self.Origin, t.Loc), 64)
 		if t.Awareness == worldmodel.Idle && !t.Visible {
 			s *= 0.25
 		}
@@ -541,7 +548,7 @@ func (b *Bot) retreatTick(bel *worldmodel.Belief, th *worldmodel.Track) {
 		return
 	}
 	if f.goal != goalRetreat || b.now-f.goalAt > retreatRepath || b.navDone() {
-		b.retreatGoal(bel, th.Pos)
+		b.retreatGoal(bel, th.Loc)
 	}
 }
 
@@ -613,14 +620,14 @@ func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 	case control.MoveStrafe:
 		prefer := 0
 		if f.sideDir != (Vec3{}) {
-			prefer = control.SideOf(f.sideDir, o, tr.Pos)
+			prefer = control.SideOf(f.sideDir, o, tr.Loc)
 		}
 		side := f.strafe.Side(now, prefer, func(side int) bool {
-			dir := control.SideDir(side, o, tr.Pos)
+			dir := control.SideDir(side, o, tr.Loc)
 			return b.nav.SafeDir(dir, strafeLook) && b.nav.Clearance(dir, strafeRoom) >= strafeRoom
 		})
 		if side != 0 {
-			return run(control.SideDir(side, o, tr.Pos), false)
+			return run(control.SideDir(side, o, tr.Loc), false)
 		}
 		f.blockedAt = now
 	}
@@ -632,7 +639,12 @@ func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 func (b *Bot) aimAt(eye Vec3, view Vec3, tr *worldmodel.Track, mode control.FireMode) (float32, float32) {
 	bel := b.belief()
 	w, _ := control.WeaponByPickup(bel.Self.Weapon)
-	body := control.Body{Origin: tr.Pos, Mins: tr.Mins, Maxs: tr.Maxs, Vel: tr.Vel, OnGround: true}
+	// where the bot believes it is: a position seen, or hearing's stand-in
+	// (no motion known: hearing gives no velocity)
+	body := control.Body{Origin: tr.Loc, Mins: tr.Mins, Maxs: tr.Maxs, OnGround: true}
+	if tr.LocSeen {
+		body.Vel = tr.Vel
+	}
 	if c := b.classes.ByName(tr.Class); c != nil && (c.Flying || c.Swimming) {
 		body.OnGround = false
 	}
@@ -657,6 +669,10 @@ func (b *Bot) aimAt(eye Vec3, view Vec3, tr *worldmodel.Track, mode control.Fire
 	}
 	y, pt := b.shoot.Turn(eye, view[q2const.YAW], view[q2const.PITCH], p, navrt.CmdMsec)
 	c := body.Center()
+	if !tr.LocSeen && mode == control.FireSuppress {
+		// placed by ear: no spot to suppress, only a side to turn to
+		mode = control.FireAligned
+	}
 	in := control.FireInput{Mode: mode, Weapon: w, Eye: eye, Yaw: y, Pitch: pt, Aim: p, Radius: body.Radius(), TargetDist: dist3(eye, c),
 		Visible: tr.Visible, Shootable: line}
 	reach := shotReach(w, dist3(eye, p), body.Radius())
@@ -833,7 +849,7 @@ func (b *Bot) searchTick(bel *worldmodel.Belief) {
 	}
 	yaw := bel.Self.ViewAngles[q2const.YAW] + [...]float32{180, 90, -90}[b.scans%3]
 	if t := b.scanSuspect(bel); t != nil {
-		yaw = float32(math.Atan2(float64(t.Pos[1]-bel.Self.Origin[1]), float64(t.Pos[0]-bel.Self.Origin[0])) * 180 / math.Pi)
+		yaw = float32(math.Atan2(float64(t.Loc[1]-bel.Self.Origin[1]), float64(t.Loc[0]-bel.Self.Origin[0])) * 180 / math.Pi)
 	} else {
 		b.scans++
 	}
@@ -842,18 +858,19 @@ func (b *Bot) searchTick(bel *worldmodel.Belief) {
 }
 
 // scanSuspect is the nearest monster out of view that may have dealt a
-// hit the bot cannot place: alive, positioned, awake, seen or heard within
-// scanMemory, within scanNear (nil: none).
+// hit the bot cannot place: alive, located (its last position seen, or
+// hearing's stand-in: the side it sounded from), awake, seen or heard
+// within scanMemory, within scanNear (nil: none).
 func (b *Bot) scanSuspect(bel *worldmodel.Belief) *worldmodel.Track {
 	var best *worldmodel.Track
 	bd := float32(scanNear)
 	for i := range bel.Tracks {
 		t := &bel.Tracks[i]
-		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.PosKnown || t.Visible ||
+		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.LocKnown || t.Visible ||
 			t.Awareness == worldmodel.Idle || bel.Time-t.LastUpdate > scanMemory {
 			continue
 		}
-		if d := dist3(bel.Self.Origin, t.Pos); d < bd {
+		if d := dist3(bel.Self.Origin, t.Loc); d < bd {
 			best, bd = t, d
 		}
 	}

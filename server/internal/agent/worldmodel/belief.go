@@ -85,23 +85,36 @@ type Track struct {
 	Kind  string // perception kind name
 	Lump  int    // matched entity lump index, -1 if unknown
 
-	Pos      Vec3 // origin when last observed
-	PosKnown bool // false: only heard, without a position
-	Vel      Vec3 // velocity estimate (EMA of observed displacements)
+	// Pos, PosKnown and Vel come from sight alone: hearing never gives a
+	// position (Ear).
+	Pos      Vec3 // origin when last seen
+	PosKnown bool // it was seen: Pos is a position seen
+	Vel      Vec3 // velocity estimate (EMA of the displacements seen)
 	Yaw      float32
 	Mins     Vec3
 	Maxs     Vec3
-	Dist     float32 // from the eye, at the last observation
+	Dist     float32 // from the eye to Loc (at the last sighting while in view)
+	// Ear is what the bot heard of it out of view: a coarse direction and
+	// distance, never a position.
+	Ear Ear
+	// Loc is where the bot believes it is now: Pos while in view; out of
+	// view the last position seen unless a sound heard since disagrees
+	// with it (Ear.Agrees), else the stand-in of what it heard (Ear.Est).
+	// LocKnown: there is a Loc at all (seen, or heard with a direction);
+	// LocSeen: Loc is a position seen (Pos), not hearing's stand-in.
+	Loc      Vec3
+	LocKnown bool
+	LocSeen  bool
 
 	Visible   bool // in view this frame
-	Heard     bool // heard this frame
+	Heard     bool // heard this frame (with or without a direction)
 	Shootable bool // a shot reached it when last seen
 	// Missing: its last position is in view but it is not there.
 	Missing    bool
 	FirstSeen  int64
 	LastSeen   int64 // last time in view (0: never seen)
 	LastHeard  int64
-	LastUpdate int64 // last admitted observation of any kind
+	LastUpdate int64 // last sighting or sound heard with a direction
 	// Confidence decays with exp(-age/τ) after the last observation.
 	Confidence float32
 
@@ -256,16 +269,19 @@ type DamageEvent struct {
 	Source string
 }
 
-// SoundEvent is a recently heard sound.
+// SoundEvent is a recently heard sound: what it was and how it played,
+// never where its emitter is.
 type SoundEvent struct {
-	At       int64
-	Kind     string
-	Path     string
-	Family   string
-	Num      int32
-	Pos      Vec3
-	PosKnown bool
-	Track    string // the track it was attributed to
+	At     int64
+	Kind   string
+	Path   string
+	Family string
+	Num    int32
+	// Cue is its stereo balance and loudness (zero: no direction, or not
+	// placed this frame); Seen: its emitter was in view.
+	Cue   perception.Cue
+	Seen  bool
+	Track string // the track it was attributed to
 }
 
 // InvItem is one inventory entry.

@@ -82,8 +82,15 @@ type Enemy struct {
 	// the distance from the eye.
 	Dist  string `json:"dist"`
 	Units int    `json:"units"`
-	// Visible: in view now (else remembered: the last known position).
+	// Visible: in view now (else remembered: the last known position, or
+	// where it was heard: Heard).
 	Visible bool `json:"visible"`
+	// Heard is set for an enemy out of view that only hearing places (how
+	// loud it sounded: near, mid or far). Hearing gives no position: its
+	// bearing is then the side it sounded from in steps of 45° (ahead and
+	// behind alike until a turn of the bot tells them apart), elev 0, and
+	// units the middle distance of its loudness, in steps of 50.
+	Heard string `json:"heard,omitempty"`
 	// Shootable: a shot reached it when it was last seen.
 	Shootable bool `json:"shootable"`
 	// Aim is how close the crosshair is: on (the view ray meets the
@@ -489,7 +496,7 @@ func (p *Projector) me(b *worldmodel.Belief, v *view) Me {
 // isEnemy reports whether a track belongs in the enemies list (the
 // objective's monster, objective, however long ago it was observed).
 func (p *Projector) isEnemy(b *worldmodel.Belief, t *worldmodel.Track, objective string) bool {
-	if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.PosKnown {
+	if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.LocKnown {
 		return false
 	}
 	return t.Visible || t.ID == objective || b.Time-t.LastUpdate <= p.cfg.EnemyMemory
@@ -508,14 +515,26 @@ func (p *Projector) enemies(b *worldmodel.Belief, v *view, target, objective str
 		if !p.isEnemy(b, t, objective) {
 			continue
 		}
-		center := Vec3{t.Pos[0] + (t.Mins[0]+t.Maxs[0])/2, t.Pos[1] + (t.Mins[1]+t.Maxs[1])/2, t.Pos[2] + (t.Mins[2]+t.Maxs[2])/2}
-		d := distance(center, v.eye)
-		lo := Vec3{t.Pos[0] + t.Mins[0], t.Pos[1] + t.Mins[1], t.Pos[2] + t.Mins[2]}
-		hi := Vec3{t.Pos[0] + t.Maxs[0], t.Pos[1] + t.Maxs[1], t.Pos[2] + t.Maxs[2]}
-		e := Enemy{ID: t.ID, Class: t.Class, Bearing: v.bearing(center), Elev: v.elev(center), Dist: distBucket(d),
-			Units: int(math.Round(d)), Visible: t.Visible, Shootable: t.Shootable, Aim: v.aim(lo, hi, center),
-			State: t.Awareness.String(), Wounded: t.Wounded, Threat: threatBucket(t.Threat), Current: t.ID == target,
-			Objective: t.ID == objective}
+		var e Enemy
+		var d float64
+		if t.LocSeen {
+			center := Vec3{t.Loc[0] + (t.Mins[0]+t.Maxs[0])/2, t.Loc[1] + (t.Mins[1]+t.Maxs[1])/2, t.Loc[2] + (t.Mins[2]+t.Maxs[2])/2}
+			d = distance(center, v.eye)
+			lo := Vec3{t.Loc[0] + t.Mins[0], t.Loc[1] + t.Mins[1], t.Loc[2] + t.Mins[2]}
+			hi := Vec3{t.Loc[0] + t.Maxs[0], t.Loc[1] + t.Maxs[1], t.Loc[2] + t.Maxs[2]}
+			e = Enemy{Bearing: v.bearing(center), Elev: v.elev(center), Dist: distBucket(d), Units: int(math.Round(d)),
+				Shootable: t.Shootable, Aim: v.aim(lo, hi, center)}
+		} else {
+			// placed by ear: a side and a loudness, never a position
+			d = distance(t.Loc, v.eye)
+			e = Enemy{Bearing: int(45 * math.Round(float64(v.bearing(t.Loc))/45)), Dist: distBucket(d),
+				Units: int(50 * math.Round(d/50)), Aim: "off", Heard: t.Ear.Loud.String()}
+			if e.Bearing == -180 {
+				e.Bearing = 180
+			}
+		}
+		e.ID, e.Class, e.Visible, e.State, e.Wounded = t.ID, t.Class, t.Visible, t.Awareness.String(), t.Wounded
+		e.Threat, e.Current, e.Objective = threatBucket(t.Threat), t.ID == target, t.ID == objective
 		all = append(all, rankedEnemy{e: e, threat: t.Threat, dist: d})
 	}
 	sort.SliceStable(all, func(i, j int) bool {

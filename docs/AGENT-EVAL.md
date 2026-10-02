@@ -9,12 +9,20 @@ It covers three rounds of change to the decision layer and the bot that this eva
 - **Wave 8**: the fire policy and the movement are standing rules the controller applies to fresh state, the
   bot gains reflexes that act inside the latency, and the route tables add optional detours for the weapons
   and the quad damage demo3 is played with.
+- **Fairness hardening: hearing** (after wave 8): a sound no longer gives the bot its emitter's position, only
+  what the client's mixer renders of it. [Its section](#fairness-hardening-hearing) re-measures the bot; the
+  sections after it are the earlier builds' and say which.
 
 Every number comes from a lockstep run you can repeat with the commands in [Reproduce](#reproduce) and
 [Reproduce (wave 8)](#reproduce-wave-8). The design is in [ADR-0006](adr/0006-ai-agent.md) and the tools are in
 [AGENT.md](AGENT.md).
 
 ## Read this first: what decides a run
+
+*This section and [Wave 8](#wave-8-combat-under-latency) are the wave-8 evaluation, measured on the wave-8
+build (committed as `bd85f91`), before the hearing hardening and before the review fixes of `a8c9e01`. "This
+tree" there means that build. The current numbers are in [Fairness hardening:
+hearing](#fairness-hardening-hearing).*
 
 A run is decided on demo3. Every death there reloads the save made on arrival, so the bot plays the level
 from the same start until it gets through. The useful number is **demo3 survival**: demo3 exits ÷ demo3

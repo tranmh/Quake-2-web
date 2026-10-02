@@ -30,13 +30,19 @@ const (
 	trackMatch = 384
 )
 
-// killOrder returns the monster of kill step p as the bot knows it.
+// killOrder returns the monster of kill step p as the bot knows it: where
+// it was last seen (its spawn origin before), or where hearing places it
+// when it was heard since from where that disagrees with.
 func (x *Executor) killOrder(p *plan) *KillOrder {
 	k := &KillOrder{Lump: p.ent, Class: p.class, Pos: x.spawnCenter(p)}
 	if t := x.killTrack(p); t != nil {
 		k.Track = t.ID
 		if t.PosKnown {
-			k.Pos = trackCenter(t)
+			k.Pos = boxCenter(t, t.Pos)
+		}
+		k.Seen = k.Pos
+		if t.LocKnown && !t.LocSeen {
+			k.Pos, k.ByEar = boxCenter(t, t.Loc), true
 		}
 		k.Visible = t.Visible && t.Shootable
 	}
@@ -54,8 +60,9 @@ func (x *Executor) spawnCenter(p *plan) Vec3 {
 	return o
 }
 
-func trackCenter(t *worldmodel.Track) Vec3 {
-	return add(t.Pos, Vec3{(t.Mins[0] + t.Maxs[0]) / 2, (t.Mins[1] + t.Maxs[1]) / 2, (t.Mins[2] + t.Maxs[2]) / 2})
+// boxCenter is the middle of track t's box at origin o.
+func boxCenter(t *worldmodel.Track, o Vec3) Vec3 {
+	return add(o, Vec3{(t.Mins[0] + t.Maxs[0]) / 2, (t.Mins[1] + t.Maxs[1]) / 2, (t.Mins[2] + t.Maxs[2]) / 2})
 }
 
 // killTrack finds the track of kill step p's monster: the one the world
@@ -144,14 +151,23 @@ func (x *Executor) runKill(p *plan) Directive {
 	approach := x.issued && (st.Follow == navrt.Arrived && x.now-x.killGoalAt > lookAround ||
 		st.Follow == navrt.Failed && x.now-x.killGoalAt > lookAround)
 	if !x.issued || dist3(x.killAnchor, k.Pos) > 96 || approach {
+		at := k.Pos
+		nodes := x.firingNodes(at, approach)
+		if len(nodes) == 0 && k.ByEar {
+			// hearing's stand-in has no firing position (it is only a side
+			// and a loudness: past a wall, in one): go on from where the
+			// monster was seen, looking where it sounded from
+			at = k.Seen
+			nodes = x.firingNodes(at, approach)
+		}
 		var goal navrt.Goal
-		if nodes := x.firingNodes(k.Pos, approach); len(nodes) > 0 {
+		if len(nodes) > 0 {
 			goal = navrt.NodeGoal(nodes...)
 		} else {
-			goal = navrt.PointGoal(k.Pos, 96)
+			goal = navrt.PointGoal(at, 96)
 		}
 		if err := x.nav.SetGoal(goal, x.now); err != nil {
-			if err := x.nav.SetGoal(navrt.PointGoal(k.Pos, 192), x.now); err != nil {
+			if err := x.nav.SetGoal(navrt.PointGoal(at, 192), x.now); err != nil {
 				x.fail(err.Error())
 				return Directive{Hold: true}
 			}

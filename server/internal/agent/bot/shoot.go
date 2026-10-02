@@ -261,12 +261,16 @@ func (s *Shooter) Aim(eye Vec3, yaw, pitch float32, t AimTarget, msec int) (floa
 
 // aimFor returns the aim target for track tr with weapon k from eye.
 func aimFor(eye Vec3, tr *worldmodel.Track, k decide.WeaponKey) (Vec3, float32) {
-	c := Vec3{tr.Pos[0] + (tr.Mins[0]+tr.Maxs[0])/2, tr.Pos[1] + (tr.Mins[1]+tr.Maxs[1])/2, tr.Pos[2] + (tr.Mins[2]+tr.Maxs[2])/2}
+	c := Vec3{tr.Loc[0] + (tr.Mins[0]+tr.Maxs[0])/2, tr.Loc[1] + (tr.Mins[1]+tr.Maxs[1])/2, tr.Loc[2] + (tr.Mins[2]+tr.Maxs[2])/2}
 	r := min(tr.Maxs[0]-tr.Mins[0], tr.Maxs[2]-tr.Mins[2]) / 2
 	if r <= 0 {
 		r = 16
 	}
-	return control.Lead(eye, c, tr.Vel, weaponSpeed(k)), r
+	var vel Vec3
+	if tr.LocSeen {
+		vel = tr.Vel // hearing gives no velocity
+	}
+	return control.Lead(eye, c, vel, weaponSpeed(k)), r
 }
 
 func dist3(a, b Vec3) float32 {

@@ -74,7 +74,8 @@ func (m *cmdBot) reflexed(name string) bool {
 }
 
 func neutralAt(id string, p Vec3) worldmodel.Track {
-	return worldmodel.Track{ID: id, Kind: "neutral", Class: "insane", Life: worldmodel.LifeAlive, Pos: p, PosKnown: true, Visible: true}
+	return worldmodel.Track{ID: id, Kind: "neutral", Class: "insane", Life: worldmodel.LifeAlive, Pos: p, PosKnown: true, Loc: p, LocKnown: true, LocSeen: true,
+		Visible: true}
 }
 
 // at returns o moved d units along yaw (degrees) horizontally.

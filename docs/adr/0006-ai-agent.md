@@ -107,8 +107,42 @@ Everything the bot knows comes from one of the following:
      brush is itself visible.
    - Sounds, looping sounds, muzzle flashes and explosions count only when the client mixer would play them
      above zero volume (`S_SpatializeOrigin`, attenuation, `SOUND_FULLVOLUME`).
-   - A sound whose emitter is not in the packet has no position. It is accepted only if it is `ATTN_NONE`, or
-     if the emitter's last perceived position is within earshot. It never moves a track.
+   - **Hearing never gives a position.** A player hears what the mixer renders: per channel a stereo balance
+     (the listener's right vector against the direction to the source) and a distance attenuation. So the
+     perceiver passes on, for a sound or a muzzle flash whose emitter is not in view, only a coarse cue
+     (`perception.Cue`), the sound's class (attack, sight, pain, idle, step, death, ...) and the time:
+     - the *pan*, in five steps of the lateral part of the direction: hard left or right (|dot| ≥ sin 67.5°),
+       left or right (≥ sin 22.5°), center;
+     - the *loudness*, in three steps of the attenuation against the sound's own level up close: near
+       (≥ 0.75), mid (≥ 0.4), far. An `ATTN_NONE` sound is not spatialized: no direction, no distance.
+
+     Never the emitter's origin, its velocity, its height or its box. A heard explosion keeps only its type
+     and cue. A muzzle flash whose shooter is in view is seen (the sighting places the shooter), and one out
+     of view is hearing.
+   - **Strict stereo, not sectors.** Quake II's mixer has no front/back or height cue: a source 30° to the
+     left ahead and one 30° to the left behind sound the same, and a source above sounds more central than
+     its bearing. The cue is therefore the stereo balance, not a 45° sector, which would hand the bot the
+     front/back bit on every sound for free. A *turn* tells front from back, as a player's turn of the head
+     does: the world model keeps, per track, the world yaws the recent cues allow (64 sectors; each cue's
+     arcs widened by 11.25° for height and motion) and narrows them with every cue heard within 1.5 s of the
+     last one. A side heard before and after a turn of 90° towards it leaves one arc about 70° wide (from the
+     140° each soft side allows alone). A hit whose bearing the view kick gives (the bot's own state, rule 3),
+     attributed to a track placed by ear, narrows its arc to that bearing ±30°.
+   - **Positions come from sight alone.** A track's `Pos`, `PosKnown` and `Vel` change only on a sighting.
+     Out of view, the bot locates a track (`Track.Loc`) at its last position seen while what it hears from it
+     agrees (the bearing in the arc, the same loudness step), and otherwise at a stand-in derived from the cue
+     alone: the middle of the arc, at the middle distance of the loudness step for that sound's attenuation,
+     from where the bot stood when it heard it. Consumers that need a point use `Loc`: aiming and turning,
+     keeping away, the scan, a retreat's threat, damage attribution, and a route kill step's look and firing
+     position (from the last position seen when the stand-in has none). The navigator's obstacles and the
+     line-of-fire checks use positions seen only. A lane state lists an enemy placed by ear with `heard` (near,
+     mid or far), its bearing in steps of 45°, no elevation, its units in steps of 50 and no aim.
+   - A sound whose emitter is not in the packet has no cue (the mixer plays it at a stale origin the
+     perceiver cannot know). It is accepted only if it is `ATTN_NONE`, or if the emitter's believed location
+     (`Loc`) is within earshot. It never locates a track.
+   - A door's, plat's or button's sound admits the brush's pose. That is a stated exception: the brush's
+     geometry and travel are static map knowledge, and a player who hears a plat knows it moves, though not
+     exactly where it is.
    - Entity numbers identify an entity across frames, standing in for a player's visual re-identification.
 3. **Its own state:**
    - Damage bearing comes from the change in `kick_angles` on frames where `STAT_FLASHES` pulses, after
@@ -156,11 +190,16 @@ still hears.
 - **Perturbation invariance** (`worldmodel.TestPerturbationInvariance`). A 60 s demo1 run is recorded and
   replayed through a passive client twice: once verbatim, and once with everything the percept did not admit
   rewritten at random:
-  - hidden monsters' states, heard-only fields and brushes outside the frustum;
+  - hidden monsters' states and brushes outside the frustum;
+  - the entities only heard: everything but what makes their sound, *their origins included* (and so their
+    velocities), moved anywhere that keeps every cue of the frame the same; a third of the draws mirror the
+    origin front to back about the listener;
   - unseen `old_origin`s and packet membership;
   - injected unpositioned sounds from out of earshot.
-  The two beliefs must have identical digests at every frame. A control run, in which the *admitted* monsters
-  are moved, must change the belief, so the comparison is not blind.
+  The two beliefs must have identical digests at every frame, and so must the decisions made from them: both
+  lane states and the scripted policy's answers. Two control runs must change the belief, so the comparison
+  is not blind: one moves the *seen* monsters by 8 units, the other mirrors the heard-only ones to the other
+  ear.
 - **`.dm2` differential** (`fairness.TestDifferential`). A lockstep episode is recorded the way its client saw
   it: the `.dm2` holds the server messages verbatim. The trace records every decision tick and usercmd.
   `fairness.Rebuild` then plays the recording into a fresh bot on a passive client. That test binary does not
@@ -286,7 +325,9 @@ Rejected alternatives:
     HelpComputer's kill counters are no longer `%!i(...)`.
 - **Bounded fairness claims.** The fairness claims are exactly the rules above, and the three tests check
   them. Their stated assumptions are part of the claim: the FOV, that bodies do not occlude, class priors,
-  and entity numbers standing in for re-identification.
+  entity numbers standing in for re-identification, that a player knows how loud a familiar sound is up close
+  (the loudness steps are judged against the sound's own attenuation) and that hearing a brush move admits its
+  pose. The pan ignores the view kick, which the client's listener vector includes.
 - **Bounded determinism claims.** Determinism is claimed for lockstep runs with local backends only, on one
   machine and Go version. Nav graphs are byte-stable on one machine and Go version.
   - `game` `func_clock` with spawnflags 0 reads the wall clock. It is absent from demo1–3, so other maps would
