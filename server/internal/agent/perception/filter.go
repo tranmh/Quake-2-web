@@ -50,12 +50,14 @@ func (s *Sighting) Center() Vec3 {
 	return Vec3{(s.AbsMin[0] + s.AbsMax[0]) / 2, (s.AbsMin[1] + s.AbsMax[1]) / 2, (s.AbsMin[2] + s.AbsMax[2]) / 2}
 }
 
-// Hearing is an audible sound: a svc_sound event, or the loop sound of an
-// entity in the frame. It says what the sound is and where it seems to
-// come from (Cue), never where its emitter is: the client's mixer renders
-// a stereo balance and a distance attenuation, not a position.
+// Hearing is an audible sound: a svc_sound event, or a loop sound of the
+// frame's entities. It says what the sound is and where it seems to come
+// from (Cue), never where its emitter is: the client's mixer renders a
+// stereo balance and a distance attenuation, not a position. A loop sound
+// is the blend of every entity of the frame making it (Num 0), except a
+// brush entity's.
 type Hearing struct {
-	Num     int32 // emitting entity (0: the world or none)
+	Num     int32 // emitting entity (0: the world, none, or a blended loop)
 	Channel int32
 	Index   int32 // CS_SOUNDS index
 	Path    string
@@ -436,6 +438,21 @@ func (p *Perceiver) hear(pc *Percept, in *FrameInput, byNum map[int32]*shared.En
 		h.Mover = p.brushPose(e)
 		pc.Heard = append(pc.Heard, h)
 	}
+	// Loop sounds. The mixer sums every entity of the frame that has the
+	// same loop sound into one channel, adding up their spatialized left
+	// and right volumes: a player hears one blended loop per sound, not how
+	// many entities make it nor which. So a loop is one Hearing per sound
+	// index, with the cue of the sum, no entity number and no Seen. A brush
+	// entity's loop (a door or plat under way) is the stated exception: it
+	// keeps its entity, whose pose it admits.
+	// C: client/snd_dma.c S_AddLoopSounds
+	type loopSum struct {
+		l, r  float32
+		n     int
+		first Vec3 // the origin of the first audible entity
+	}
+	sums := map[int32]*loopSum{}
+	var order []int32
 	for i := range in.Entities {
 		e := &in.Entities[i]
 		if e.Sound == 0 || e.Number == own {
@@ -444,11 +461,34 @@ func (p *Perceiver) hear(pc *Percept, in *FrameInput, byNum map[int32]*shared.En
 		if !audible(p.vision, e.Origin, 255, soundLoopAttenuate) {
 			continue
 		}
-		path := p.soundName(e.Sound, in.CS)
+		if mv := p.brushPose(e); mv != nil {
+			path := p.soundName(e.Sound, in.CS)
+			kind, fam := ClassifySound(path)
+			pc.Heard = append(pc.Heard, Hearing{Num: e.Number, Index: e.Sound, Path: path, Kind: kind, Family: fam,
+				Cue: cueAt(p.vision, e.Origin, soundLoopAttenuate), Placed: true, Seen: pc.Sighting(e.Number) != nil,
+				Mover: mv, Volume: 1, Attenuation: q2const.ATTN_STATIC, Loop: true})
+			continue
+		}
+		ls := sums[e.Sound]
+		if ls == nil {
+			ls = &loopSum{first: e.Origin}
+			sums[e.Sound] = ls
+			order = append(order, e.Sound)
+		}
+		l, r := spatialize(p.vision, e.Origin, soundLoopAttenuate)
+		ls.l, ls.r, ls.n = ls.l+l, ls.r+r, ls.n+1
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	for _, idx := range order {
+		ls := sums[idx]
+		cue := cueAt(p.vision, ls.first, soundLoopAttenuate)
+		if ls.n > 1 {
+			cue = cueOf(min(ls.l, 1), min(ls.r, 1))
+		}
+		path := p.soundName(idx, in.CS)
 		kind, fam := ClassifySound(path)
-		pc.Heard = append(pc.Heard, Hearing{Num: e.Number, Index: e.Sound, Path: path, Kind: kind, Family: fam,
-			Cue: cueAt(p.vision, e.Origin, soundLoopAttenuate), Placed: true, Seen: pc.Sighting(e.Number) != nil,
-			Mover: p.brushPose(e), Volume: 1, Attenuation: q2const.ATTN_STATIC, Loop: true})
+		pc.Heard = append(pc.Heard, Hearing{Index: idx, Path: path, Kind: kind, Family: fam, Cue: cue, Placed: true,
+			Volume: 1, Attenuation: q2const.ATTN_STATIC, Loop: true})
 	}
 }
 

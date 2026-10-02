@@ -108,6 +108,8 @@ type World struct {
 	visits   map[string]int // next unused visit index of each map
 	mem      *LevelMemory
 	match    lumpMatch
+	// spawnsBy caches familySpawns for the level
+	spawnsBy map[string][]int
 
 	actors  []*actor
 	items   []*itemTrack
@@ -178,6 +180,7 @@ func (w *World) Reset(lv Level) {
 	w.nextID = map[byte]int{}
 	w.explode = nil
 	w.match = lumpMatch{}
+	w.spawnsBy = map[string][]int{}
 	w.self = selfTracker{}
 	w.refresh = refresher{}
 	w.b = Belief{Level: lv.Key, Map: lv.Key.Map}

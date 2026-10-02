@@ -23,6 +23,7 @@ const (
 	sSight = 2
 	sGib   = 3
 	sDoor  = 4
+	sLoop  = 5 // set by the tests that use it
 
 	solidStd = 8290 // (-16 -16 -24) (16 16 32)
 )
@@ -99,20 +100,27 @@ func soldierAt(num int32, o Vec3) shared.EntityState {
 	return shared.EntityState{Number: num, ModelIndex: mSoldier, Origin: o, Solid: solidStd}
 }
 
-// step sends one frame with the current entities and events (then clears
-// the events) and advances 100 ms.
-func (s *sim) step() *Belief {
-	s.frame++
-	s.now += 100
+// input is the frame step sends next (frame number and clock not yet
+// advanced).
+func (s *sim) input() perception.FrameInput {
 	own := shared.EntityState{Number: 1, ModelIndex: 255, Solid: solidStd, Event: s.ownEvent,
 		Origin: Vec3{float32(s.ps.PMove.Origin[0]) / 8, float32(s.ps.PMove.Origin[1]) / 8, float32(s.ps.PMove.Origin[2]) / 8}}
-	s.ownEvent = 0
 	in := perception.FrameInput{
-		Level: s.level, CS: s.cs, ServerFrame: s.frame, ServerTime: s.frame * 100,
+		Level: s.level, CS: s.cs, ServerFrame: s.frame + 1, ServerTime: (s.frame + 1) * 100,
 		PlayerState: s.ps, AreaBytes: 1, Entities: append([]shared.EntityState{own}, s.ents...),
 		Events: s.ev, Inventory: s.inv, InventorySeq: s.invSeq,
 	}
 	in.AreaBits[0] = 0x02
+	return in
+}
+
+// step sends one frame with the current entities and events (then clears
+// the events) and advances 100 ms.
+func (s *sim) step() *Belief {
+	in := s.input()
+	s.frame++
+	s.now += 100
+	s.ownEvent = 0
 	s.w.Update(in, s.now)
 	s.ev = perception.Events{}
 	s.ps.Stats[q2const.STAT_FLASHES] = 0

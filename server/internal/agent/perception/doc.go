@@ -35,13 +35,17 @@
 // a Hearing carries as a coarse Cue (Pan: five steps of left/right, with
 // ahead and behind alike; Loudness: near, mid, far), never the emitter's
 // position. Muzzle flashes and explosions heard but not seen are the same;
-// seen ones carry what is seen. A sound or muzzle flash whose emitter is
-// not in the packet arrives without a cue (the mixer would use a stale
-// origin the Perceiver cannot know): it is passed on with Placed false,
-// and the consumer must gate it with Percept.Audible at the position it
-// believes the emitter is at. A brush entity's sound (door, plat) admits
-// the brush's pose. Without a collision map the Perceiver fails closed:
-// nothing is seen, sounds are still heard.
+// seen ones carry what is seen. A loop sound is the blend the mixer makes
+// of every entity of the frame with that sound (S_AddLoopSounds): one
+// Hearing per sound, with the cue of the sum and no entity number. A sound
+// or muzzle flash whose emitter is not in the packet arrives without a cue
+// (the mixer would use a stale origin the Perceiver cannot know): it is
+// passed on with Placed false, and the consumer must gate it with
+// Percept.Audible at the position it believes the emitter is at; that the
+// bot can tell this case (a player hears such a sound from the stale
+// origin) is a stated assumption. A brush entity's sound (door, plat)
+// admits the brush's pose. Without a collision map the Perceiver fails
+// closed: nothing is seen, sounds are still heard.
 //
 // Nothing here imports the server or the game: the import guard test keeps
 // the package on the client side of the wire.

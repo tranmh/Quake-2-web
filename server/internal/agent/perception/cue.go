@@ -168,7 +168,12 @@ func cueAt(v *Vision, pos Vec3, distMult float32) Cue {
 	}
 	g := 1 - dist*distMult
 	_, right, _ := v.Axes()
-	dot := shared.DotProduct(right, d)
+	return cueStep(shared.DotProduct(right, d), g)
+}
+
+// cueStep steps a stereo balance dot (right · direction) and a distance
+// attenuation g into a Cue.
+func cueStep(dot, g float32) Cue {
 	var c Cue
 	switch {
 	case dot >= panHard:
@@ -191,6 +196,37 @@ func cueAt(v *Vision, pos Vec3, distMult float32) Cue {
 		c.Loud = LoudFar
 	}
 	return c
+}
+
+// spatialize returns the left and right volume (0..1 of the master
+// volume) the mixer gives a sound at pos with distance multiplier
+// distMult: for one source, l+r is its distance attenuation and (r-l)/(r+l)
+// its stereo balance.
+// C: client/snd_dma.c:425 S_SpatializeOrigin
+func spatialize(v *Vision, pos Vec3, distMult float32) (l, r float32) {
+	d := shared.VectorSubtract(pos, v.Eye())
+	dist := shared.VectorNormalize(&d) - soundFullVolume
+	if dist < 0 {
+		dist = 0
+	}
+	g := 1 - dist*distMult
+	if g <= 0 {
+		return 0, 0
+	}
+	_, right, _ := v.Axes()
+	dot := shared.DotProduct(right, d)
+	return g * 0.5 * (1 - dot), g * 0.5 * (1 + dot)
+}
+
+// cueOf is the cue of a channel with left and right volumes l and r (0..1
+// of the master volume): the blend of several sources the mixer sums
+// into one loop channel.
+// C: client/snd_dma.c S_AddLoopSounds
+func cueOf(l, r float32) Cue {
+	if l+r <= 0 {
+		return Cue{}
+	}
+	return cueStep((r-l)/(r+l), l+r)
 }
 
 // CueAt returns the cue a sound of attenuation atten (loop: an entity's
