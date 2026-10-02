@@ -118,14 +118,70 @@ func Resolve(r Ref, m *mapdata.Map) (*mapdata.Entity, error) {
 //     an earlier step used up (a fired trigger_once, a pressed wait -1
 //     button, a killed monster, a removed killtarget, ...);
 //   - the last step leads to the table's exit and no step to another exit;
-//   - every avoid entry is an activator of another exit.
+//   - every avoid entry is an activator of another exit;
+//   - optional steps are gotos, presses, waits or pickups of items other
+//     than keys, the last step is not optional, and the table without its
+//     optional steps passes every check above too (no required step relies
+//     on an optional one).
 func Validate(t *Table, m *mapdata.Map) error {
-	v := newValidator(t, m, nil)
-	v.run()
-	if len(v.problems) > 0 {
-		return &Error{Problems: v.problems}
+	if p, _ := validateFull(t, m, nil); len(p) > 0 {
+		return &Error{Problems: p}
 	}
 	return nil
+}
+
+// validateFull runs the checks of Validate on t, with what earlier visits
+// used up, and returns the problems and the validator of the full table
+// (its consumption is what later visits see).
+func validateFull(t *Table, m *mapdata.Map, earlier map[int]usage) ([]Problem, *validator) {
+	v := newValidator(t, m, earlier)
+	v.run()
+	problems := v.problems
+	required, index := stripOptional(t)
+	for i := range t.Steps {
+		s := &t.Steps[i]
+		if !s.Optional {
+			continue
+		}
+		where := fmt.Sprintf("step %d (%s)", i, s.Op)
+		switch {
+		case i == len(t.Steps)-1:
+			problems = append(problems, Problem{Table: t.Name, Where: where, Msg: "the last step cannot be optional"})
+		case s.Op != OpGoto && s.Op != OpPress && s.Op != OpWait && s.Op != OpPickup:
+			problems = append(problems, Problem{Table: t.Name, Where: where, Msg: fmt.Sprintf("a %s cannot be optional (only goto, press, wait, pickup)", s.Op)})
+		case s.Op == OpPickup && strings.HasPrefix(s.Class, "key_"):
+			problems = append(problems, Problem{Table: t.Name, Where: where, Msg: "a key pickup cannot be optional"})
+		}
+	}
+	if required != nil && len(problems) == 0 {
+		w := newValidator(required, m, earlier)
+		w.index = index
+		w.run()
+		for _, p := range w.problems {
+			p.Where += " (without the optional steps)"
+			problems = append(problems, p)
+		}
+	}
+	return problems, v
+}
+
+// stripOptional returns t without its optional steps and the index in t
+// of each step left (nil, nil when t has none).
+func stripOptional(t *Table) (*Table, []int) {
+	var steps []Step
+	var index []int
+	for i := range t.Steps {
+		if !t.Steps[i].Optional {
+			steps = append(steps, t.Steps[i])
+			index = append(index, i)
+		}
+	}
+	if len(steps) == len(t.Steps) {
+		return nil, nil
+	}
+	c := *t
+	c.Steps = steps
+	return &c, index
 }
 
 // usage records how a single-use entity was used up.
@@ -158,6 +214,9 @@ type validator struct {
 	// pending the current step's until the step has been checked.
 	used, consumed, pending map[int]usage
 	exit                    *mapdata.Exit
+	// index maps the table's step numbers to the ones reported (a table
+	// stripped of its optional steps; nil: the same)
+	index []int
 }
 
 // newValidator returns a validator for t on m; earlier lists what earlier
@@ -228,7 +287,11 @@ func (v *validator) run() {
 
 	for i := range t.Steps {
 		s := &t.Steps[i]
-		v.step, v.where = i, fmt.Sprintf("step %d (%s)", i, s.Op)
+		at := i
+		if v.index != nil {
+			at = v.index[i]
+		}
+		v.step, v.where = i, fmt.Sprintf("step %d (%s)", at, s.Op)
 		start, reach := v.runStep(s)
 		for _, r := range reach {
 			if x := m.Exit(r.Entity); x != nil && r.Response == mapdata.RespExit && x.Level.Raw != t.Exit.Map {
@@ -805,10 +868,10 @@ func ValidateCampaign(c *Campaign, load func(name string) (*mapdata.Map, error))
 			add(t.Name, "table", "loading %s: %v", t.Map, err)
 			continue
 		}
-		// a revisit restores the level as it was left (SV_ReadLevelFile)
-		v := newValidator(t, m, used[key])
-		v.run()
-		problems = append(problems, v.problems...)
+		// a revisit restores the level as it was left (SV_ReadLevelFile);
+		// what optional steps may have used up counts as used
+		ps, v := validateFull(t, m, used[key])
+		problems = append(problems, ps...)
 		if used[key] == nil {
 			used[key] = map[int]usage{}
 		}

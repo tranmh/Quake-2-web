@@ -8,6 +8,34 @@
   "exit": {"map": "demo2$base3b"},
   "steps": [
     {
+      "op": "pickup",
+      "class": "item_quad",
+      "pos": [464, 544, -544],
+      "optional": true,
+      "note": "optional detour (about 5 s) for the quad damage: the bot uses it in its next fight (bot.powerupTick: a picked-up quad is only stored in single player), 30 s of four times the damage"
+    },
+    {
+      "op": "pickup",
+      "class": "weapon_chaingun",
+      "pos": [1232, -120, -496],
+      "optional": true,
+      "note": "optional: the chaingun next to the way to the gunner (no detour); every attempt starts from the arrival save, so it is fetched on each"
+    },
+    {
+      "op": "pickup",
+      "class": "ammo_bullets",
+      "pos": [1144, -136, -488],
+      "optional": true,
+      "note": "optional: bullets next to the chaingun"
+    },
+    {
+      "op": "pickup",
+      "class": "ammo_bullets",
+      "pos": [1184, -96, -488],
+      "optional": true,
+      "note": "optional: bullets next to the chaingun"
+    },
+    {
       "op": "kill",
       "class": "monster_gunner",
       "pos": [-536, -472, -272],

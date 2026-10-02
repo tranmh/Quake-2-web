@@ -175,25 +175,21 @@ func TestCmdStrafe(t *testing.T) {
 	// the target to -x: strafe right runs +y (the wall), left -y
 	m := newCmdBot(t, wallSpot)
 	m.bel.Tracks = []worldmodel.Track{monster("e1", along(wallSpot, 180, 300))}
-	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireHold, Movement: decide.MoveStrafeRight}
-	m.frame(100)
-	m.cmd()
-	in := m.intents[len(m.intents)-1]
-	if in.Speed <= 0 || in.WishDir[1] > -0.99 || m.fight.strafe.Current() != -1 {
-		t.Fatalf("strafe right into the wall: intent %+v side %d", in, m.fight.strafe.Current())
-	}
-	// the open side is kept while it is open
-	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireHold, Movement: decide.MoveStrafeLeft}
-	m.frame(200)
-	m.cmd()
-	if in := m.intents[len(m.intents)-1]; in.WishDir[1] > -0.99 {
-		t.Errorf("strafe left on the open side: %+v", in)
+	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireHold, Movement: decide.MoveStrafe}
+	for _, now := range []int64{100, 200, 1500, 2600} {
+		// whatever side the rhythm is on, the open side is taken
+		m.frame(now)
+		m.cmd()
+		in := m.intents[len(m.intents)-1]
+		if in.Speed <= 0 || in.WishDir[1] > -0.99 || m.fight.strafe.Current() != -1 {
+			t.Fatalf("strafe at %d ms: intent %+v side %d, want the open side", now, in, m.fight.strafe.Current())
+		}
 	}
 
 	// the target down the corridor (-y): both strafe sides are walls
 	m = newCmdBot(t, corridorSpot)
 	m.bel.Tracks = []worldmodel.Track{monster("e1", along(corridorSpot, 270, 300))}
-	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireHold, Movement: decide.MoveStrafeLeft}
+	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireHold, Movement: decide.MoveStrafe}
 	m.frame(100)
 	m.cmd()
 	if in := m.intents[len(m.intents)-1]; in.Speed != 0 || m.fight.blockedAt == 0 {
@@ -288,21 +284,17 @@ func TestKeepOff(t *testing.T) {
 		move   control.Move
 		reflex string
 	}{
-		{"soldier", 100, decide.MoveStrafeRight, []worldmodel.Track{mon("e1", "soldier", 200)}, control.MoveStrafeRight, ""},
-		{"parasite near", 100, decide.MoveStrafeRight, []worldmodel.Track{mon("e1", "parasite", 200)}, control.MoveRetreat, "keep_off"},
-		{"parasite far", 100, decide.MoveStrafeRight, []worldmodel.Track{mon("e1", "parasite", 400)}, control.MoveStrafeRight, ""},
+		{"soldier", 100, decide.MoveStrafe, []worldmodel.Track{mon("e1", "soldier", 200)}, control.MoveStrafe, ""},
+		{"parasite near", 100, decide.MoveStrafe, []worldmodel.Track{mon("e1", "parasite", 200)}, control.MoveRetreat, "keep_off"},
+		{"parasite far", 100, decide.MoveStrafe, []worldmodel.Track{mon("e1", "parasite", 400)}, control.MoveStrafe, ""},
 		{"berserk near", 100, decide.MoveAdvance, []worldmodel.Track{mon("e1", "soldier", 500), mon("e2", "berserk", 120)}, control.MoveRetreat, "keep_off"},
-		{"berserk far", 100, decide.MoveStrafeLeft, []worldmodel.Track{mon("e1", "berserk", 250)}, control.MoveStrafeLeft, ""},
-		{"low health", 20, decide.MoveAdvance, []worldmodel.Track{mon("e1", "soldier", 500)}, control.MoveStrafeRight, "low_health"},
+		{"berserk far", 100, decide.MoveStrafe, []worldmodel.Track{mon("e1", "berserk", 250)}, control.MoveStrafe, ""},
+		{"low health", 20, decide.MoveAdvance, []worldmodel.Track{mon("e1", "soldier", 500)}, control.MoveStrafe, "low_health"},
 		{"healthy", 60, decide.MoveAdvance, []worldmodel.Track{mon("e1", "soldier", 500)}, control.MoveAdvance, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, f := run(tc.health, tc.intent, tc.tracks...)
-			move := m.fight.move
-			if tc.move == control.MoveStrafeRight && tc.reflex == "low_health" && move == control.MoveStrafeLeft {
-				move = control.MoveStrafeRight // either side
-			}
-			if move != tc.move {
+			if move := m.fight.move; move != tc.move {
 				t.Fatalf("move %s, want %s", m.fight.move, tc.move)
 			}
 			if tc.reflex != "" && (f.Source != trace.SourceReflex || f.Fallback != tc.reflex) || tc.reflex == "" && f.Source == trace.SourceReflex {

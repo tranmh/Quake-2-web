@@ -49,16 +49,22 @@ const (
 //     is the mode executed (done: objective).
 //   - target: route_kill (the route's kill monster), retreat_threat (the
 //     main threat a retreat shoots back at), target_gone (the decided
-//     target is dead or unknown: none).
+//     target is dead or unknown: none), retarget (the decided target is
+//     dead, unknown or none: the most dangerous awake monster in view with
+//     a line of fire, fought in a fight, shot back at on the move when it
+//     attacks).
 //   - fire_policy: route_kill (a hold forced to fire_when_aligned at the
-//     route's kill).
+//     route's kill), retarget (likewise at a retarget's monster).
 //   - movement, in a fight only: reposition (backed off after standing
 //     still), in_range (an advance within the weapon's range strafes),
 //     no_return (an advance down a one-way drop holds), no_cover (a
 //     retreat with nowhere to go strafes), keep_off (a drain or melee
-//     monster in view within its reach is backed away from at once),
-//     low_health (an advance on an attacker in view under 25 health
-//     sidesteps).
+//     monster in view within its reach is backed away from at once; a
+//     drain monster out of view too, while the bot takes hits without a
+//     bearing), low_health (an advance on an attacker in view under 25
+//     health sidesteps). The movement vocabulary is advance, retreat,
+//     strafe, hold; traces before wave 8 also carry strafe_left and
+//     strafe_right.
 //   - weapon: dry (the weapon in hand ran dry), splash (a splash weapon
 //     at a target or a route shoot goal too close), unusable (the decided
 //     weapon is not held or has no ammo: keep).
@@ -103,8 +109,10 @@ type Tick struct {
 	// Cmds, each once, in the order they first acted: dodge, grenade,
 	// hold_fire:<reason> (the fire gate held the trigger: hold, neutral,
 	// barrel, splash_close, splash_wall; a route shoot goal's trigger held
-	// too), reposition (backed off after standing still in a fight),
-	// disengage (the fight budget ran out), trapped_kill (typed "kill" in
+	// too), reposition (backed off after standing still in a fight), scan
+	// (a hit without a bearing and no target: the bot turns to the nearest
+	// awake monster it knows of out of view, else behind it and to the
+	// sides), disengage (the fight budget ran out), trapped_kill (typed "kill" in
 	// a pit), wedged_kill (typed "kill" wedged: on one spot for 120 s
 	// while the navigator kept recovering, or for 60 s off the nav graph),
 	// stalled_kill (typed "kill" after 250 s without progress).

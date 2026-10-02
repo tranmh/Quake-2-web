@@ -5,9 +5,12 @@
 // carries), jevtest's fake server can run the very same rules on the JSON
 // it receives.
 //
-// The policy is stateless and seeded: its only time dependence is the
-// strafe rhythm, a pure function of the seed and the snapshot time, so it
-// is safe for concurrent use and repeats exactly.
+// The policy is stateless and timeless: its answers are a pure function
+// of the lane state, so it is safe for concurrent use and repeats exactly.
+// Its fire policy and movement are standing rules the controller applies
+// to the fresh state every command (a fire policy is checked against the
+// aim and line of fire of each shot, a strafe's side is the controller's
+// rhythm), so an answer stays right while it is in flight.
 package scripted
 
 import (
@@ -26,7 +29,9 @@ const Name = "scripted"
 
 // Config configures the policy.
 type Config struct {
-	// Seed drives the strafe rhythm.
+	// Seed seeds the policy. The rules use no randomness today (the
+	// strafe rhythm is the controller's, control.Strafer): it is kept for
+	// the callers that pass the run's seed.
 	Seed uint64
 	// Classes is the class table for monster priors (nil: the default).
 	Classes *perception.ClassTable
@@ -37,14 +42,13 @@ type Config struct {
 
 // Policy is the rule policy.
 type Policy struct {
-	seed    uint64
 	classes *perception.ClassTable
 	stick   float64
 }
 
 // NewPolicy returns the policy.
 func NewPolicy(cfg Config) *Policy {
-	p := &Policy{seed: cfg.Seed, classes: cfg.Classes, stick: cfg.Stickiness}
+	p := &Policy{classes: cfg.Classes, stick: cfg.Stickiness}
 	if p.classes == nil {
 		p.classes = perception.NewClassTable()
 	}
@@ -67,17 +71,16 @@ type Decision struct {
 
 // Rule thresholds.
 const (
-	fightRange   = 600  // units: a visible awake enemy this close means fight
-	attackRange  = 850  // units: so does one attacking from up to this far, about level with the bot
-	levelElev    = 20   // degrees: "about level" (an enemy on a far ledge is shot on the move)
-	firstStrike  = 600  // units: a visible idle enemy with a line of fire this close is shot first
-	recallRange  = 700  // units: an attacker out of view this close keeps the fight on
-	meleeKeepOff = 250  // units: stay this far from melee-only monsters
-	drainKeepOff = 320  // units: and this far from a drain (it reaches 256)
-	retreatHP    = 30   // health under which the bot backs off from a fight
-	backOffHP    = 40   // health under which it backs away from an attacker while fighting
-	strafeWindow = 1800 // ms: one left and one right segment
-	strafeMin    = 600  // ms: shortest segment
+	fightRange   = 600 // units: a visible awake enemy this close means fight
+	attackRange  = 850 // units: so does one attacking from up to this far, about level with the bot
+	levelElev    = 20  // degrees: "about level" (an enemy on a far ledge is shot on the move)
+	firstStrike  = 600 // units: a visible idle enemy with a line of fire this close is shot first
+	recallRange  = 700 // units: an attacker out of view this close keeps the fight on
+	meleeKeepOff = 250 // units: stay this far from melee-only monsters
+	drainKeepOff = 320 // units: and this far from a drain (it reaches 256)
+	retreatHP    = 30  // health under which the bot backs off from a fight
+	outnumberHP  = 50  // ... and under which it does so at high danger (outnumbered, or a strong threat close)
+	backOffHP    = 40  // health under which it backs away from an attacker while fighting
 )
 
 // Pickup thresholds: the health under which a health item is worth a
@@ -101,7 +104,8 @@ const (
 	urgentNear         = 400 // a weapon, ammo for an empty one, or health when low: taken even in a fight
 )
 
-// Decide applies the rules to st at now (the snapshot time, ms).
+// Decide applies the rules to st. now is the snapshot time (ms); the
+// rules do not depend on it.
 func (p *Policy) Decide(st *decide.State, now int64) Decision {
 	d := Decision{Danger: p.danger(st)}
 	t := p.target(st)
@@ -109,7 +113,7 @@ func (p *Policy) Decide(st *decide.State, now int64) Decision {
 		d.Target = t.ID
 	}
 	d.FirePolicy = p.firePolicy(st, t)
-	d.Movement = p.movement(st, t, now)
+	d.Movement = p.movement(st, t)
 	d.Weapon = p.weapon(st, t)
 	d.Pickup = p.pickup(st)
 	d.Mode = p.mode(st, d.Danger, d.Pickup)
@@ -191,14 +195,20 @@ func weaponRange(w string) int {
 	return 1000 // blaster, bfg
 }
 
+// firePolicy is a standing rule: the controller checks every shot's aim,
+// view and line of fire (control.FireGate), so a target out of view or
+// behind cover now is still fired at when aligned, the moment it shows
+// (a rule of "hold until it shows" would hold for an answer's latency
+// after it does). Hold is for no target, no ammo or a target out of the
+// weapon's range; suppression for a close, dangerous one in view.
 func (p *Policy) firePolicy(st *decide.State, t *decide.Enemy) decide.FirePolicy {
-	if t == nil || !t.Visible || st.Me.Ammo == "none" {
+	if t == nil || st.Me.Ammo == "none" {
 		return decide.FireHold
 	}
 	switch {
-	case t.Dist == "close" && t.Threat == "high" && t.Shootable:
+	case t.Visible && t.Shootable && t.Dist == "close" && t.Threat == "high":
 		return decide.FireSuppress
-	case t.Shootable && t.Units <= weaponRange(st.Me.Weapon):
+	case t.Units <= weaponRange(st.Me.Weapon):
 		return decide.FireWhenAligned
 	}
 	return decide.FireHold
@@ -243,31 +253,20 @@ func (p *Policy) keepOff(class string) int {
 	return 0
 }
 
-// StrafeLeft is the strafe rhythm: alternating left and right segments of
-// 0.6 to 1.2 s, a pure function of the seed and the time.
-func StrafeLeft(seed uint64, now int64) bool {
-	w := now / strafeWindow
-	if now < 0 && now%strafeWindow != 0 {
-		w--
-	}
-	off := now - w*strafeWindow
-	split := strafeMin + int64(decide.Mix64(seed^decide.Mix64(uint64(w)))%uint64(strafeWindow-2*strafeMin+1))
-	return off < split
-}
-
 func blocked(s string) bool { return s == "blocked" }
 
-func (p *Policy) movement(st *decide.State, t *decide.Enemy, now int64) decide.Movement {
+// movement is a standing rule relative to the target: advance, retreat,
+// strafe (the controller alternates the sides, flips a blocked one and
+// takes a projectile's dodge side) or hold.
+func (p *Policy) movement(st *decide.State, t *decide.Enemy) decide.Movement {
 	sp := st.Space
-	open := func(side decide.Movement) bool {
+	open := func(m decide.Movement) bool {
 		if sp == nil {
 			return true
 		}
-		switch side {
-		case decide.MoveStrafeLeft:
-			return !blocked(sp.Left)
-		case decide.MoveStrafeRight:
-			return !blocked(sp.Right)
+		switch m {
+		case decide.MoveStrafe:
+			return !blocked(sp.Left) || !blocked(sp.Right)
 		case decide.MoveAdvance:
 			return !blocked(sp.Front)
 		case decide.MoveRetreat:
@@ -275,16 +274,10 @@ func (p *Policy) movement(st *decide.State, t *decide.Enemy, now int64) decide.M
 		}
 		return true
 	}
-	strafe := func(prefer decide.Movement) decide.Movement {
-		other := decide.MoveStrafeRight
-		if prefer == decide.MoveStrafeRight {
-			other = decide.MoveStrafeLeft
-		}
+	strafe := func() decide.Movement {
 		switch {
-		case open(prefer):
-			return prefer
-		case open(other):
-			return other
+		case open(decide.MoveStrafe):
+			return decide.MoveStrafe
 		case t != nil && open(decide.MoveRetreat):
 			return decide.MoveRetreat // cornered: get out of the corner
 		case t != nil && open(decide.MoveAdvance):
@@ -292,32 +285,24 @@ func (p *Policy) movement(st *decide.State, t *decide.Enemy, now int64) decide.M
 		}
 		return decide.MoveHold
 	}
-	dodge := func(eta ...string) (decide.Movement, bool) {
+	dodge := func(eta ...string) bool {
 		for _, in := range st.Incoming {
 			for _, e := range eta {
 				if in.ETA == e && in.Dodge != "none" {
-					side := decide.MoveStrafeLeft
-					if in.Dodge == "right" {
-						side = decide.MoveStrafeRight
-					}
-					return strafe(side), true
+					return true
 				}
 			}
 		}
-		return "", false
+		return false
 	}
-	if m, ok := dodge("imminent"); ok {
-		return m
+	if dodge("imminent") {
+		return strafe()
 	}
 	if t == nil {
-		if m, ok := dodge("soon"); ok {
-			return m
+		if dodge("soon") {
+			return strafe()
 		}
 		return decide.MoveHold
-	}
-	rhythm := decide.MoveStrafeRight
-	if StrafeLeft(p.seed, now) {
-		rhythm = decide.MoveStrafeLeft
 	}
 	var want decide.Movement
 	_, hi, backoff := preferredRange(st.Me.Weapon)
@@ -329,16 +314,16 @@ func (p *Policy) movement(st *decide.State, t *decide.Enemy, now int64) decide.M
 	case st.Me.Health < backOffHP && t.Visible && t.State == "attacking" && t.Units < 600:
 		want = decide.MoveRetreat
 	case !t.Visible && st.Me.DamageLast1s > 0:
-		return strafe(rhythm) // hit by something unseen: do not stand still
+		return strafe() // hit by something unseen: do not stand still
 	case !t.Visible:
 		return decide.MoveHold // wait for it where it was: do not walk into the unknown
 	case t.Units > hi:
 		want = decide.MoveAdvance
 	default:
-		return strafe(rhythm)
+		return strafe()
 	}
 	if !open(want) {
-		return strafe(rhythm)
+		return strafe()
 	}
 	return want
 }
@@ -357,10 +342,16 @@ func weaponOrder(band string) []decide.WeaponKey {
 		decide.WeaponBFG, decide.WeaponSuperShotgun, decide.WeaponRailgun, decide.WeaponShotgun, decide.WeaponBlaster}
 }
 
-// keepTop is how high in a band's order the weapon in hand may rank and
-// still be kept (switching costs the drop and raise animations: a good
-// weapon is not traded for a slightly better one).
-const keepTop = 3
+// keepSlack is how many places of a band's order the weapon in hand may
+// rank below the best owned one and still be kept: switching costs the
+// drop and raise animations, so a good weapon is not traded for a slightly
+// better one (the chaingun for the super shotgun up close), but a poor one
+// is (the shotgun for the machinegun at mid range), and the blaster, the
+// weapon of last resort, is kept only as the best owned for the range.
+// The ranking counts places in the band's whole order, not among the owned
+// weapons only: with three weapons owned a top-three rule would keep any
+// of them.
+const keepSlack = 2
 
 func has(list []string, s string) bool {
 	for _, x := range list {
@@ -383,17 +374,21 @@ func (p *Policy) weapon(st *decide.State, t *decide.Enemy) decide.WeaponKey {
 	}
 	order := weaponOrder(band)
 	if st.Me.Ammo != "none" {
-		owned := 0
-		for _, k := range order {
-			if !has(st.Me.Weapons, string(k)) {
+		best, cur := -1, -1
+		for i, k := range order {
+			if !has(st.Me.Weapons, string(k)) && string(k) != st.Me.Weapon {
 				continue
 			}
+			if best < 0 {
+				best = i
+			}
 			if string(k) == st.Me.Weapon {
-				return decide.WeaponKeep // among the best owned for the range
+				cur = i
 			}
-			if owned++; owned == keepTop {
-				break
-			}
+		}
+		blaster := st.Me.Weapon == string(decide.WeaponBlaster) && order[best] != decide.WeaponBlaster
+		if cur >= 0 && cur-best <= keepSlack && !blaster {
+			return decide.WeaponKeep // close enough to the best owned for the range
 		}
 	}
 	for _, k := range order {
@@ -575,7 +570,7 @@ func (p *Policy) mode(st *decide.State, danger int, pickup string) decide.Mode {
 		e := &st.Enemies[i]
 		threatened = threatened || e.State != "idle" && e.Units <= 800
 	}
-	if st.Me.Health < retreatHP && danger >= decide.DangerModerate && threatened {
+	if threatened && (st.Me.Health < retreatHP && danger >= decide.DangerModerate || st.Me.Health < outnumberHP && danger >= decide.DangerHigh) {
 		return decide.ModeRetreat
 	}
 	if pickup != "" && p.urgent(st, pickup) {

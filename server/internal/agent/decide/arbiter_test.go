@@ -419,7 +419,7 @@ func TestArbiterNotAsked(t *testing.T) {
 	if req.Question(QTarget) != nil {
 		t.Fatal("target asked without enemies")
 	}
-	step(t, a, req, map[string]Answer{QMovement: choice("strafe_left", 0.9, nil)})
+	step(t, a, req, map[string]Answer{QMovement: choice("strafe", 0.9, nil)})
 	in := a.Intent(1100, quiet)
 	if in.Target != "" || in.Provenance.Target.Source != SourceDefault || in.Provenance.Target.Reason != "not_asked" {
 		t.Fatalf("not asked: %q %+v", in.Target, in.Provenance.Target)

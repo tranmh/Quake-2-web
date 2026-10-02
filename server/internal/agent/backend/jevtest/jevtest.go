@@ -81,12 +81,13 @@ type PolicyFunc func(c *Call) (*Reply, error)
 // Answer implements Policy.
 func (f PolicyFunc) Answer(c *Call) (*Reply, error) { return f(c) }
 
-// Scripted answers with the scripted policy from the received lane state.
+// Scripted answers with the scripted policy from the received lane state:
+// its answers depend on the content only (the policy is timeless; a
+// strafe's side is the bot's controller's).
 type Scripted struct {
 	Policy *scripted.Policy
-	// Now gives the policy's time for a call (it drives the strafe
-	// rhythm); nil: a time drawn from the call's digest, so answers depend
-	// on the content only (the strafe side then varies by request).
+	// Now gives the policy's snapshot time for a call (nil: 0). The rules
+	// do not depend on it.
 	Now func(c *Call) int64
 }
 
@@ -110,7 +111,7 @@ func (s *Scripted) Answer(c *Call) (*Reply, error) {
 	if err := json.Unmarshal(c.State, &st); err != nil {
 		return nil, fmt.Errorf("jevtest: lane state: %w", err)
 	}
-	now := int64(decide.Mix64(digestHash(c.Digest)) % (1 << 31))
+	var now int64
 	if s.Now != nil {
 		now = s.Now(c)
 	}

@@ -157,6 +157,15 @@ func TestBrokenTables(t *testing.T) {
 		t.Fatalf("%s has no %s %s step", tb.Name, op, model)
 		return nil
 	}
+	pickup := func(tb *route.Table, class string) *route.Step {
+		for i := range tb.Steps {
+			if s := &tb.Steps[i]; s.Op == route.OpPickup && s.Class == class {
+				return s
+			}
+		}
+		t.Fatalf("%s has no pickup of %s", tb.Name, class)
+		return nil
+	}
 	remove := func(tb *route.Table, s *route.Step) {
 		for i := range tb.Steps {
 			if &tb.Steps[i] == s {
@@ -174,7 +183,7 @@ func TestBrokenTables(t *testing.T) {
 	}{
 		{"wrong classname", "demo1", func(tb *route.Table) {
 			stepOp(tb, route.OpPress, "*34").Target.Classname = "func_door"
-		}, []string{"step 2 (press)", "entity is #591 func_button *34"}},
+		}, []string{"step 5 (press)", "entity is #591 func_button *34"}},
 		{"model and entity disagree", "demo1", func(tb *route.Table) {
 			stepOp(tb, route.OpPress, "*34").Target.Entity = intp(590)
 		}, []string{"entity is #590 func_door *33", `model "*33"`}},
@@ -199,8 +208,20 @@ func TestBrokenTables(t *testing.T) {
 			tb.From = "base9"
 		}, []string{`arrival spawnpoint "base9"`}},
 		{"key never picked up", "demo3", func(tb *route.Table) {
-			remove(tb, stepOp(tb, route.OpPickup, ""))
-		}, []string{"step 4 (touch)", "trigger_key that needs key_blue_key, which no earlier step picks up"}},
+			remove(tb, pickup(tb, "key_blue_key"))
+		}, []string{"step 8 (touch)", "trigger_key that needs key_blue_key, which no earlier step picks up"}},
+		{"optional kill", "demo3", func(tb *route.Table) {
+			stepOp(tb, route.OpKill, "").Optional = true
+		}, []string{"step 4 (kill): a kill cannot be optional (only goto, press, wait, pickup)"}},
+		{"optional key", "demo3", func(tb *route.Table) {
+			pickup(tb, "key_blue_key").Optional = true
+		}, []string{"step 8 (pickup): a key pickup cannot be optional"}},
+		{"optional last step", "demo1", func(tb *route.Table) {
+			tb.Steps[len(tb.Steps)-1].Optional = true
+		}, []string{"step 7 (touch): the last step cannot be optional"}},
+		{"required step relies on an optional one", "demo2a", func(tb *route.Table) {
+			stepOp(tb, route.OpPress, "*48").Optional = true
+		}, []string{"step 7 (wait) (without the optional steps): no earlier step causes doorOpen of #538 func_door_rotating *49 (t5)"}},
 		{"directional exit without yaw", "demo3", func(tb *route.Table) {
 			stepOp(tb, route.OpTouch, "*34").Yaw = nil
 		}, []string{"#592 trigger_multiple *34 is directional", "give a yaw or face first"}},
@@ -228,7 +249,7 @@ func TestBrokenTables(t *testing.T) {
 		}, []string{"#667 trigger_once *58 (t85) is TRIGGERED and no earlier step enables it"}},
 		{"wait for an effect nothing caused", "demo2a", func(tb *route.Table) {
 			remove(tb, stepOp(tb, route.OpPress, "*48"))
-		}, []string{"step 1 (wait): no earlier step causes doorOpen of #538 func_door_rotating *49 (t5)"}},
+		}, []string{"step 6 (wait): no earlier step causes doorOpen of #538 func_door_rotating *49 (t5)"}},
 		{"avoid entry that is no exit activator", "demo2a", func(tb *route.Table) {
 			tb.Avoid = append(tb.Avoid, route.Avoid{Target: route.Ref{Model: "*36"}, Why: "x"})
 		}, []string{"avoid 2: #408 func_button *36 does not lead to another exit"}},
@@ -236,7 +257,7 @@ func TestBrokenTables(t *testing.T) {
 			i := len(tb.Steps) - 1
 			tb.Steps = append(tb.Steps[:i], route.Step{Op: route.OpPress, Target: ref("*43"),
 				Effects: []route.Effect{{Kind: route.EffMoverAt, Target: route.Ref{Model: "*46"}}}}, tb.Steps[i])
-		}, []string{`step 3 (press): leads to the wrong exit "demo1$base2"`, "step 3 uses #495 func_button *43, which the table avoids"}},
+		}, []string{`step 8 (press): leads to the wrong exit "demo1$base2"`, "step 8 uses #495 func_button *43, which the table avoids"}},
 		{"unknown op and kind", "demo1", func(tb *route.Table) {
 			tb.Steps[0].Op = "teleport"
 			s := stepOp(tb, route.OpPress, "*34")
@@ -247,7 +268,7 @@ func TestBrokenTables(t *testing.T) {
 		}, []string{`#731 func_plat *40 has no pose "middle" (poses: pos1/top, pos2/bottom)`}},
 		{"mover pose the use does not send it to", "demo1", func(tb *route.Table) {
 			stepOp(tb, route.OpPress, "*34").Effects[0].Pose = "pos1"
-		}, []string{`step 2 (press): effect moverAt: #582 func_door *31 (t4) moves to pos2 when used, not "pos1"`}},
+		}, []string{`step 5 (press): effect moverAt: #582 func_door *31 (t4) moves to pos2 when used, not "pos1"`}},
 		{"START_OPEN door claimed to open", "demo2b", func(tb *route.Table) {
 			s := stepOp(tb, route.OpTouch, "*22")
 			s.Effects = append(s.Effects, route.Effect{Kind: route.EffDoorOpen, Target: route.Ref{Model: "*42"}})
@@ -307,8 +328,8 @@ func TestCampaignContinuity(t *testing.T) {
 			tb.Steps = append(tb.Steps[:i], route.Step{Op: route.OpPress, Target: ref("*48"),
 				Effects: []route.Effect{{Kind: route.EffDoorOpen, Target: route.Ref{Model: "*49"}}}}, tb.Steps[i])
 		}, []string{
-			"demo2b: step 6 (press): #533 func_button *48 was already pressed by demo2a step 1",
-			"demo2b: step 6 (press): effect doorOpen: #538 func_door_rotating *49 (t5) was already moved by demo2a step 1 and does not move again",
+			"demo2b: step 6 (press): #533 func_button *48 was already pressed by demo2a step 6",
+			"demo2b: step 6 (press): effect doorOpen: #538 func_door_rotating *49 (t5) was already moved by demo2a step 6 and does not move again",
 		}},
 		{"revisit refers to entities the first visit removed", func(c *route.Campaign) {
 			// the first visit pulls the lever: t6 kills the 'block' walls
@@ -319,10 +340,10 @@ func TestCampaignContinuity(t *testing.T) {
 			b := c.Tables[3]
 			b.Steps = append([]route.Step{{Op: route.OpGoto, Target: ref("*17")}}, b.Steps...)
 		}, []string{
-			"demo2b: step 0 (goto): goto: #186 func_wall *17 (block) was already removed by demo2a step 3",
-			"demo2b: step 2 (touch): #284 trigger_once *22 was already fired by demo2a step 3",
-			"demo2b: step 2 (touch): effect remove: #186 func_wall *17 (block) was already removed by demo2a step 3",
-			"demo2b: step 2 (touch): effect moverAt: #558 func_door_rotating *51 (t67) was already moved by demo2a step 3",
+			"demo2b: step 0 (goto): goto: #186 func_wall *17 (block) was already removed by demo2a step 8",
+			"demo2b: step 2 (touch): #284 trigger_once *22 was already fired by demo2a step 8",
+			"demo2b: step 2 (touch): effect remove: #186 func_wall *17 (block) was already removed by demo2a step 8",
+			"demo2b: step 2 (touch): effect moverAt: #558 func_door_rotating *51 (t67) was already moved by demo2a step 8",
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

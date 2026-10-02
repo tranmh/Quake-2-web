@@ -50,6 +50,26 @@ edict numbers.
 | `pickup` | `class`, `pos`, `effects` | pick the item up (adds it to the inventory keys need) |
 | `confirm` | `effects` | guard: effects caused earlier must be observed |
 
+Any `goto`, `press`, `wait` or `pickup` (of an item other than a key) may
+carry `"optional": true`: an opportunistic detour the route does not need,
+such as a weapon, ammo or armor the next levels start with. The executor
+gives an optional step one attempt; when it fails (no path, timeout, the
+effects not seen) it skips it together with the optional steps right after
+it (one detour: the button, the wait for the door, the pickups behind it),
+and it skips an optional pickup of a weapon the bot already holds. The last
+step cannot be optional, and the table must also validate with its optional
+steps removed, so no required step relies on one. What an optional step
+uses up counts as used for later visits.
+
+The demo tables use this for the weapons demo3 is played with (every demo3
+attempt starts from the save made on arrival): the shotgun and two boxes
+of shells near the demo1 start, and the machinegun and two boxes of bullets
+in the closet behind button `*36` next to the way from the demo2 car to the
+hatch. demo3 itself starts with the quad damage (a detour of about 5 s;
+the bot uses it in its next fight) and the chaingun and two boxes of
+bullets next to the way to the ambush gunner, fetched on every attempt (a
+reload restores them).
+
 Effect kinds: `exit`, `laserOff`, `laserOn`, `doorOpen`, `moverAt` (with
 `pose`), `enable`, `remove`, `wake`, `use`. A step's claimed effects must be
 reached by its entity's logic chain (targets through relays, delays, doors

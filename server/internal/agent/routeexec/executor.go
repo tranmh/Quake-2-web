@@ -97,6 +97,9 @@ const (
 	// StepStalled: the step failed MaxAttempts times; the executor holds
 	// until Retry.
 	StepStalled
+	// StepSkipped: an optional step that failed (or was not needed: a
+	// weapon already owned); the route went on without it.
+	StepSkipped
 )
 
 // String returns the status name.
@@ -108,6 +111,8 @@ func (s Status) String() string {
 		return "done"
 	case StepStalled:
 		return "stalled"
+	case StepSkipped:
+		return "skipped"
 	}
 	return "pending"
 }
@@ -480,8 +485,13 @@ func (x *Executor) complete(why string) {
 }
 
 // fail ends the current attempt: the next one starts after RetryPause,
-// unless the step used up its attempts (stalled).
+// unless the step used up its attempts (stalled). An optional step is
+// skipped instead (skip).
 func (x *Executor) fail(why string) {
+	if x.plans[x.cur].optional() {
+		x.skip(why, false)
+		return
+	}
 	st := &x.steps[x.cur]
 	st.Reason = why
 	x.nav.ClearGoal()
@@ -497,8 +507,12 @@ func (x *Executor) fail(why string) {
 }
 
 // back re-attempts the action step before the current wait or confirm
-// (its effects did not happen).
+// (its effects did not happen). An optional wait is skipped instead.
 func (x *Executor) back(why string) {
+	if x.plans[x.cur].optional() {
+		x.skip(why, false)
+		return
+	}
 	st := &x.steps[x.cur]
 	st.Reason = why
 	if st.Attempts >= x.cfg.MaxAttempts {
@@ -526,6 +540,28 @@ func (x *Executor) back(why string) {
 	x.nav.ClearGoal()
 	x.cur = prev
 	x.pauseUntil = x.now + RetryPause
+	x.begin()
+}
+
+// skip gives up the current optional step and the optional steps right
+// after it (they belong to the same detour: the wait for a closet door,
+// the pickups inside) and starts the next required one; with alone, only
+// the current step (it is not needed: the weapon is owned, the detour
+// goes on). It counts as progress: the route goes on.
+func (x *Executor) skip(why string, alone bool) {
+	x.nav.ClearGoal()
+	x.issued = false
+	first := x.cur
+	for x.cur < len(x.plans) && x.plans[x.cur].optional() && (x.cur == first || !alone && x.steps[x.cur].Status == StepPending) {
+		st := &x.steps[x.cur]
+		st.Status, st.Reason = StepSkipped, why
+		if x.cur != first {
+			st.Reason = "skipped with step " + fmt.Sprint(first)
+		}
+		x.logf("step %d %s: skipped (optional): %s", x.cur, st.Desc, st.Reason)
+		x.cur++
+	}
+	x.noteProgress()
 	x.begin()
 }
 
@@ -684,6 +720,10 @@ func (x *Executor) assumeClaims() {
 // level's exit is never done here: the level change ends it, and when
 // none came ExitGrace after its goal was reached the attempt fails.
 func (x *Executor) runMove(p *plan) Directive {
+	if p.optional() && p.op == route.OpPickup && x.owned(p) {
+		x.skip("already owned", true)
+		return Directive{Hold: true}
+	}
 	d := Directive{}
 	if p.hasPoint {
 		d.Look, d.HasLook = p.point, true
@@ -800,6 +840,17 @@ func (x *Executor) onMover(b int32) bool {
 		}
 	}
 	return false
+}
+
+// owned reports whether the bot already holds the weapon a pickup step is
+// for (the last inventory lists it; false for other items).
+func (x *Executor) owned(p *plan) bool {
+	b := x.belief
+	if b == nil || !b.Inventory.Known || !strings.HasPrefix(p.class, "weapon_") {
+		return false
+	}
+	name := x.pickupName(p.class)
+	return name != "" && b.Inventory.Count(name) > 0
 }
 
 func (x *Executor) pickupName(class string) string {

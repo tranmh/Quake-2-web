@@ -4,6 +4,10 @@ on:
     branches: [main]
   pull_request:
 
+# read-only GITHUB_TOKEN for every job (checkout; the artifact and cache actions use their own tokens)
+permissions:
+  contents: read
+
 jobs:
   parity:
     runs-on: ubuntu-latest
@@ -26,6 +30,14 @@ jobs:
       - run: git diff --exit-code fixtures/MANIFEST.sha256
       - uses: actions/upload-artifact@v4
         with: { name: fixtures, path: fixtures/generated, retention-days: 3 }
+
+  # the agent-nightly scripts (.github/scripts): the report's cross-run gates on synthetic artifacts
+  nightly-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n .github/scripts/agent_nightly_seeds.sh
+      - run: python3 -B .github/scripts/test_agent_nightly_report.py
 
   gen-check:
     runs-on: ubuntu-latest

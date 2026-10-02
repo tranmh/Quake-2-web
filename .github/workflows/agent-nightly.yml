@@ -31,35 +31,45 @@ concurrency:
 env:
   GOAMD64: v1
   # the settings of every run, as in docs/AGENT-EVAL.md: deaths reload the level-entry save, 25 per level
-  Q2BOT_COMMON: -session lockstep -skill 1 -seed 1 -max-deaths 25 -level-timeout 60m
+  # (the seeds are per matrix entry)
+  Q2BOT_COMMON: -session lockstep -skill 1 -max-deaths 25 -level-timeout 60m
 
 jobs:
   campaign:
     name: campaign (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       TYPESAFE_API_KEY: ""
     strategy:
       fail-fast: false
       matrix:
         include:
-          # expect: pass = exit 0; fail = exit 1 (the run fails, the report checks it is worse than
-          # scripted); measure = exit 0 or 1 (a data point). Anything else (2: a usage error) fails.
+          # expect (checked per seed): pass = exit 0; fail = exit 1 (the run fails, the report checks it is
+          # worse than scripted); measure = exit 0 or 1 (a data point). Anything else (2: a usage error)
+          # fails. seeds: the seeds played (default 1). min_wins: the report's cross-seed gate, at least
+          # that many of the seeds reach victory.pcx (docs/AGENT.md, "Nightly"). gate: every run must pass
+          # the provenance gate (-min-model-share 0.7 in the run, and again in q2bot validate).
           - { name: scripted, expect: pass, replay: true, args: "-backend scripted -require-complete" }
-          # the jev client against the in-process fake Jev server, 212 ms simulated latency
+          # the jev client against the in-process fake Jev server, 212 ms simulated latency. A fixed seed's
+          # victory is a lottery at the documented demo3 survival (docs/AGENT-EVAL.md), so completion is
+          # judged over six seeds, not required of each one
           - name: mock-clean
             expect: pass
             gate: true
-            args: "-backend mock -mock-policy scripted -sim-latency 212ms -require-complete -min-model-share 0.7"
+            seeds: "1 2 3 4 5 6"
+            min_wins: 3
+            args: "-backend mock -mock-policy scripted -sim-latency 212ms -min-model-share 0.7"
           - name: mock-noisy
             expect: pass
             gate: true
-            args: "-backend mock -mock-policy noisy -sim-latency 212ms -require-complete -min-model-share 0.7"
+            seeds: "1 2 3 4 5 6"
+            min_wins: 2
+            args: "-backend mock -mock-policy noisy -sim-latency 212ms -min-model-share 0.7"
           # ablations: must be measurably worse than scripted
           - { name: ablate-constant, expect: fail, args: "-backend constant -require-complete" }
           - { name: ablate-random, expect: fail, args: "-backend random -require-complete" }
-          # SimLatency sweep with the clean mock (mock-clean is the 212 ms point)
+          # SimLatency sweep with the clean mock, seed 1 (mock-clean is the 212 ms point): data points
           - { name: latency-100ms, expect: measure, args: "-backend mock -mock-policy scripted -sim-latency 100ms -require-complete" }
           - { name: latency-400ms, expect: measure, args: "-backend mock -mock-policy scripted -sim-latency 400ms -require-complete" }
           - { name: latency-500ms, expect: measure, args: "-backend mock -mock-policy scripted -sim-latency 500ms -require-complete" }
@@ -75,37 +85,42 @@ jobs:
       - run: make nav
       - name: build q2bot
         run: cd server && go build -o "$RUNNER_TEMP/q2bot" ./cmd/q2bot
+      # one run per seed (up to 3 at a time), each exit code checked against expect
       - name: q2bot run
         env:
           NAME: ${{ matrix.name }}
           ARGS: ${{ matrix.args }}
           EXPECT: ${{ matrix.expect }}
-        run: |
-          set +e -uo pipefail
-          out="$GITHUB_WORKSPACE/runs/$NAME"
-          mkdir -p "$out"
-          # $ARGS and $Q2BOT_COMMON are flag lists: word splitting is intended
-          "$RUNNER_TEMP/q2bot" run $ARGS $Q2BOT_COMMON -out "$out" 2>&1 | tee "$out/q2bot-run.txt"
-          code=${PIPESTATUS[0]}
-          echo "$code" > "$out/exit-code"
-          case "$EXPECT:$code" in
-            pass:0 | fail:1 | measure:0 | measure:1) echo "q2bot run $NAME exited $code (expected: $EXPECT)" ;;
-            *) echo "::error::q2bot run $NAME exited $code, expected $EXPECT"; exit 1 ;;
-          esac
-      - name: q2bot validate
+          SEEDS: ${{ matrix.seeds || '1' }}
+          MIN_WINS: ${{ matrix.min_wins || 0 }}
+          GATE: ${{ matrix.gate && 'true' || 'false' }}
+        run: .github/scripts/agent_nightly_seeds.sh "$RUNNER_TEMP/q2bot" "$GITHUB_WORKSPACE/runs/$NAME"
+      - name: q2bot validate (every seed)
         env:
           NAME: ${{ matrix.name }}
           GATE: ${{ matrix.gate && '-min-model-share 0.7' || '' }}
         run: |
-          dir=$(ls -d "$GITHUB_WORKSPACE/runs/$NAME"/*/ | head -1)
-          "$RUNNER_TEMP/q2bot" validate "$dir" $GATE
+          set -uo pipefail
+          read -ra gate_flags <<< "$GATE"
+          rc=0
+          for seed in "$GITHUB_WORKSPACE/runs/$NAME"/seed-*/; do
+            dirs=("$seed"*/)
+            if [[ -d "${dirs[0]}" ]]; then
+              "$RUNNER_TEMP/q2bot" validate "${dirs[0]}" "${gate_flags[@]}" || rc=1
+            else
+              echo "::error::$NAME ${seed}: no run directory"
+              rc=1
+            fi
+          done
+          exit "$rc"
       - name: q2bot replay -strict (lockstep determinism)
         if: matrix.replay
         env:
           NAME: ${{ matrix.name }}
         run: |
-          dir=$(ls -d "$GITHUB_WORKSPACE/runs/$NAME"/*/ | head -1)
-          "$RUNNER_TEMP/q2bot" replay -trace "${dir}ep-000/trace.jsonl.gz" -strict | tee "$GITHUB_WORKSPACE/runs/$NAME/replay.txt"
+          set -o pipefail
+          dirs=("$GITHUB_WORKSPACE/runs/$NAME"/seed-1/*/)
+          "$RUNNER_TEMP/q2bot" replay -trace "${dirs[0]}ep-000/trace.jsonl.gz" -strict | tee "$GITHUB_WORKSPACE/runs/$NAME/replay.txt"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -200,11 +215,17 @@ jobs:
           set +e -uo pipefail
           maps=()
           [[ -n "$MAPS" ]] && maps=(-maps "$MAPS")
+          read -ra common <<< "$Q2BOT_COMMON"
           "$RUNNER_TEMP/q2bot" run -backend jev -sim-latency 212ms -budget-usd "$BUDGET" -on-exhausted stop \
-            -require-complete -min-model-share 0.7 "${maps[@]}" $Q2BOT_COMMON -out runs/jev-live 2>&1 | tee runs/jev-live/q2bot-run.txt
+            -require-complete -min-model-share 0.7 "${maps[@]}" "${common[@]}" -out runs/jev-live 2>&1 | tee runs/jev-live/q2bot-run.txt
           code=${PIPESTATUS[0]}
-          dir=$(ls -d runs/jev-live/*/ | head -1)
-          [[ -n "$dir" ]] && "$RUNNER_TEMP/q2bot" validate "$dir" -min-model-share 0.7 || code=1
+          dirs=(runs/jev-live/*/)
+          if [[ -d "${dirs[0]}" ]]; then
+            "$RUNNER_TEMP/q2bot" validate "${dirs[0]}" -min-model-share 0.7 || code=1
+          else
+            echo "::error::jev-live: no run directory"
+            code=1
+          fi
           exit "$code"
       - uses: actions/upload-artifact@v4
         if: always()

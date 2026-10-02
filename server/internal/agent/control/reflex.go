@@ -27,9 +27,11 @@ import (
 //   - AimPoint and Slew (aim.go) aim: the box centre for hitscan weapons,
 //     led for projectiles, the feet of a target on the ground for splash
 //     weapons; a rate-capped exponential slew turns the view.
-//   - MoveDir and Strafer turn a movement relative to the target (advance,
-//     retreat, strafe left or right, hold) into a direction, keeping a
-//     strafe side at least StrafeHold and flipping it when it is blocked.
+//   - MoveDir, SideDir and Strafer turn a movement relative to the target
+//     (advance, retreat, strafe, hold) into a direction. The decision layer
+//     only says strafe; the Strafer picks the side every command: a seeded
+//     rhythm of StrafeMin to StrafeMax ms segments that alternate, a side
+//     whose way is blocked flipping at once, a dodge side taken at once.
 
 // Reflex thresholds.
 const (
@@ -52,8 +54,10 @@ const (
 	// a live grenade; GrenadeJump the one within which it also jumps.
 	GrenadeRadius = 192
 	GrenadeJump   = 112
-	// StrafeHold is the least time (ms) a strafe keeps its side.
-	StrafeHold = 400
+	// StrafeMin and StrafeMax bound a segment of the strafe rhythm (ms):
+	// the Strafer keeps a side that long, then takes the other.
+	StrafeMin = 600
+	StrafeMax = 1200
 	// MinAimTol and MaxAimTol bound the aim tolerance (degrees).
 	MinAimTol = 0.75
 	MaxAimTol = 10
@@ -305,8 +309,7 @@ const (
 	MoveHold Move = iota
 	MoveAdvance
 	MoveRetreat
-	MoveStrafeLeft
-	MoveStrafeRight
+	MoveStrafe // sidestep; the Strafer picks the side
 )
 
 // String returns the decide vocabulary name of the movement.
@@ -316,32 +319,19 @@ func (m Move) String() string {
 		return "advance"
 	case MoveRetreat:
 		return "retreat"
-	case MoveStrafeLeft:
-		return "strafe_left"
-	case MoveStrafeRight:
-		return "strafe_right"
+	case MoveStrafe:
+		return "strafe"
 	}
 	return "hold"
 }
 
-// Side returns +1 for strafe_right, -1 for strafe_left, else 0.
-func (m Move) Side() int {
-	switch m {
-	case MoveStrafeRight:
-		return 1
-	case MoveStrafeLeft:
-		return -1
-	}
-	return 0
-}
-
 // MoveDir returns the horizontal unit direction of movement m for a bot at
-// self engaging a target at target (zero for hold, or with the target on
-// top of the bot): towards it, away from it, or perpendicular to the line
-// to it, to the bot's left or right as it faces the target.
+// self engaging a target at target (zero for hold or a strafe, which needs
+// a side: SideDir, or with the target on top of the bot): towards it or
+// away from it.
 func MoveDir(m Move, self, target Vec3) Vec3 {
 	to := Vec3{target[0] - self[0], target[1] - self[1], 0}
-	if m == MoveHold || shared.VectorNormalize(&to) == 0 {
+	if shared.VectorNormalize(&to) == 0 {
 		return Vec3{}
 	}
 	switch m {
@@ -349,64 +339,97 @@ func MoveDir(m Move, self, target Vec3) Vec3 {
 		return to
 	case MoveRetreat:
 		return Vec3{-to[0], -to[1], 0}
-	case MoveStrafeLeft:
-		return Vec3{-to[1], to[0], 0}
-	case MoveStrafeRight:
-		return Vec3{to[1], -to[0], 0}
 	}
 	return Vec3{}
 }
 
 // SideDir returns the strafe direction of side (+1 right, -1 left) for a
-// bot at self facing target.
+// bot at self facing target: perpendicular to the line to it (zero for
+// side 0 or with the target on top of the bot).
 func SideDir(side int, self, target Vec3) Vec3 {
-	switch {
-	case side > 0:
-		return MoveDir(MoveStrafeRight, self, target)
-	case side < 0:
-		return MoveDir(MoveStrafeLeft, self, target)
+	to := Vec3{target[0] - self[0], target[1] - self[1], 0}
+	if side == 0 || shared.VectorNormalize(&to) == 0 {
+		return Vec3{}
 	}
-	return Vec3{}
+	if side > 0 {
+		return Vec3{to[1], -to[0], 0}
+	}
+	return Vec3{-to[1], to[0], 0}
 }
 
-// Strafer keeps a strafe side: a new side is taken only once the current
-// one was held Hold ms (StrafeHold when 0), and a side whose way is
-// blocked flips to the other at once. The zero value is ready.
+// SideOf returns the strafe side (+1 right, -1 left, 0 neither) whose
+// direction for a bot at self facing target points along dir (a dodge
+// direction).
+func SideOf(dir, self, target Vec3) int {
+	r := SideDir(1, self, target)
+	switch d := dir[0]*r[0] + dir[1]*r[1]; {
+	case d > 0.1:
+		return 1
+	case d < -0.1:
+		return -1
+	}
+	return 0
+}
+
+// Strafer keeps the strafe rhythm. It strafes to one side for a segment
+// of StrafeMin to StrafeMax ms, then to the other; each segment's length
+// (and the first side) is drawn from Seed and the segment's number, so a
+// run repeats exactly. A side whose way is blocked flips to the other at
+// once (a new segment), and a preferred side (the dodge side of an
+// incoming projectile) is taken at once, for a new segment. The rhythm runs on across pauses: a strafe resumed
+// after a hold or an advance continues the current segment, or starts the
+// next one when it is over. The zero value is ready (seed 0).
 type Strafer struct {
-	Hold  int64
+	Seed  uint64
 	side  int
-	since int64
+	until int64  // the current segment's end
+	n     uint64 // segments drawn
 }
 
-// Side returns the side (+1 right, -1 left, 0 none) to strafe to at now
-// (ms) when the intent wants side want (0: no strafe), with open telling
-// whether a side's way is clear. It returns 0 when both sides are blocked.
-func (s *Strafer) Side(now int64, want int, open func(side int) bool) int {
-	if want == 0 {
-		s.side = 0
-		return 0
+// mix is the splitmix64 finalizer (decide.Mix64).
+func mix(x uint64) uint64 {
+	x += 0x9e3779b97f4a7c15
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+	return x ^ (x >> 31)
+}
+
+// segment starts a new segment of side at now.
+func (s *Strafer) segment(side int, now int64) {
+	h := mix(s.Seed ^ mix(s.n))
+	s.n++
+	s.side, s.until = side, now+StrafeMin+int64(h%uint64(StrafeMax-StrafeMin+1))
+}
+
+// Side returns the side (+1 right, -1 left, 0 both blocked) to strafe to
+// at now (ms): the rhythm's, or prefer when it is not 0, with open telling
+// whether a side's way is clear.
+func (s *Strafer) Side(now int64, prefer int, open func(side int) bool) int {
+	switch {
+	case s.side == 0:
+		first := 1
+		if mix(s.Seed^0x5bd1e995)&1 == 0 {
+			first = -1
+		}
+		if prefer != 0 {
+			first = prefer
+		}
+		s.segment(first, now)
+	case prefer != 0 && prefer != s.side:
+		s.segment(prefer, now)
+	case now >= s.until:
+		s.segment(-s.side, now)
 	}
-	hold := s.Hold
-	if hold <= 0 {
-		hold = StrafeHold
-	}
-	cand := s.side
-	if cand == 0 || cand != want && now-s.since >= hold {
-		cand = want
-	}
-	if !open(cand) {
-		if !open(-cand) {
+	if !open(s.side) {
+		if !open(-s.side) {
 			return 0
 		}
-		cand = -cand
+		s.segment(-s.side, now)
 	}
-	if cand != s.side {
-		s.side, s.since = cand, now
-	}
-	return cand
+	return s.side
 }
 
-// Current returns the side held (0: none).
+// Current returns the side held (0: none yet).
 func (s *Strafer) Current() int { return s.side }
 
 func dist3(a, b Vec3) float32 {

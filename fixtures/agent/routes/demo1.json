@@ -8,6 +8,27 @@
   "exit": {"map": "demo2$base1"},
   "steps": [
     {
+      "op": "pickup",
+      "class": "weapon_shotgun",
+      "pos": [800, -96, -168],
+      "optional": true,
+      "note": "optional detour (about 20 s) for the shotgun on the lower floor east of the start: every demo3 attempt starts with what the bot carries in; picking it up spawns two soldiers (t55)"
+    },
+    {
+      "op": "pickup",
+      "class": "ammo_shells",
+      "pos": [928, 24, -168],
+      "optional": true,
+      "note": "optional: shells next to the shotgun"
+    },
+    {
+      "op": "pickup",
+      "class": "ammo_shells",
+      "pos": [992, 24, -168],
+      "optional": true,
+      "note": "optional: shells next to the shotgun"
+    },
+    {
       "op": "goto",
       "target": {"entity": 589, "model": "*32", "classname": "func_door"},
       "note": "cross the base to the elevator: the auto doors *32/*33 (team master *32) open from the trigger box around the pair"

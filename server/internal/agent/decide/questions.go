@@ -59,22 +59,21 @@ func targetQuestion(st *State) (Question, bool) {
 
 func firePolicyQuestion() Question {
 	return Question{ID: QFirePolicy, Type: Choice,
-		Instructions: instructions("When should I fire at my target?"),
+		Instructions: instructions("When should I fire at my target? This is a standing rule: the aim, the view and the line of fire are checked again for every shot."),
 		Options: []Option{
-			{string(FireHold), "do not fire: no clear shot, or the target is out of range"},
-			{string(FireWhenAligned), "fire only while the crosshair is on the target"},
-			{string(FireSuppress), "fire continuously, even slightly off target: a close, dangerous enemy"},
+			{string(FireHold), "do not fire: the target is out of my weapon's range, or not worth the ammo"},
+			{string(FireWhenAligned), "fire whenever it is in view, the shot is clear and the crosshair is on it"},
+			{string(FireSuppress), "fire continuously, even slightly off target or where it was last seen: a close, dangerous enemy"},
 		}}
 }
 
 func movementQuestion() Question {
 	return Question{ID: QMovement, Type: Choice,
-		Instructions: instructions("How should I move relative to my target or the incoming fire? Keep my weapon's best range and dodge projectiles."),
+		Instructions: instructions("How should I move relative to my target or the incoming fire? Keep my weapon's best range and dodge projectiles. This is a standing rule, applied to where the target is at every moment."),
 		Options: []Option{
 			{string(MoveAdvance), "move toward the target"},
 			{string(MoveRetreat), "back away from the target"},
-			{string(MoveStrafeLeft), "sidestep to my left"},
-			{string(MoveStrafeRight), "sidestep to my right"},
+			{string(MoveStrafe), "sidestep around it, alternating sides (the side is picked for me: away from walls and incoming projectiles)"},
 			{string(MoveHold), "stay where I am"},
 		}}
 }

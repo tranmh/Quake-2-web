@@ -1,6 +1,7 @@
 package control
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -188,51 +189,86 @@ func TestGrenadeEscape(t *testing.T) {
 
 func TestMoveDir(t *testing.T) {
 	self, target := Vec3{0, 0, 0}, Vec3{100, 0, 50}
-	cases := map[Move]Vec3{MoveAdvance: {1, 0, 0}, MoveRetreat: {-1, 0, 0}, MoveStrafeLeft: {0, 1, 0}, MoveStrafeRight: {0, -1, 0}, MoveHold: {}}
-	for m, want := range cases {
-		got := MoveDir(m, self, target)
+	near := func(got, want Vec3) bool {
 		for k := 0; k < 3; k++ {
 			if math.Abs(float64(got[k]-want[k])) > 1e-6 {
-				t.Errorf("%s: %v, want %v", m, got, want)
-				break
+				return false
 			}
+		}
+		return true
+	}
+	cases := map[Move]Vec3{MoveAdvance: {1, 0, 0}, MoveRetreat: {-1, 0, 0}, MoveStrafe: {}, MoveHold: {}}
+	for m, want := range cases {
+		if got := MoveDir(m, self, target); !near(got, want) {
+			t.Errorf("%s: %v, want %v", m, got, want)
 		}
 	}
 	if d := MoveDir(MoveAdvance, self, Vec3{0, 0, 80}); d != (Vec3{}) {
 		t.Errorf("target overhead: %v", d)
 	}
-	if SideDir(1, self, target) != MoveDir(MoveStrafeRight, self, target) || SideDir(0, self, target) != (Vec3{}) {
+	if !near(SideDir(-1, self, target), Vec3{0, 1, 0}) || !near(SideDir(1, self, target), Vec3{0, -1, 0}) || SideDir(0, self, target) != (Vec3{}) {
 		t.Error("SideDir")
 	}
-	if MoveStrafeLeft.Side() != -1 || MoveStrafeRight.Side() != 1 || MoveAdvance.Side() != 0 {
-		t.Error("Side")
+	if SideOf(Vec3{0.2, -0.98, 0}, self, target) != 1 || SideOf(Vec3{0, 1, 0}, self, target) != -1 || SideOf(Vec3{1, 0, 0}, self, target) != 0 {
+		t.Error("SideOf")
 	}
 }
 
-// TestStrafer: a side is kept StrafeHold, flips at once when blocked, and
-// gives up when both sides are.
+// TestStrafer: the rhythm alternates sides in segments of StrafeMin to
+// StrafeMax ms drawn from the seed (the same seed repeats them), a blocked
+// side flips at once, a preferred (dodge) side is taken at once, and both
+// sides blocked give 0.
 func TestStrafer(t *testing.T) {
-	var s Strafer
 	all := func(int) bool { return true }
-	if got := s.Side(0, -1, all); got != -1 {
-		t.Fatalf("start: %d", got)
+	run := func(seed uint64) []int {
+		s := Strafer{Seed: seed}
+		var sides []int
+		for now := int64(0); now < 10000; now += 25 {
+			sides = append(sides, s.Side(now, 0, all))
+		}
+		return sides
 	}
-	if got := s.Side(StrafeHold-25, 1, all); got != -1 {
-		t.Fatalf("flipped after %d ms: %d", StrafeHold-25, got)
+	a := run(7)
+	segs, last, start := 0, 0, 0
+	for i, side := range a {
+		if side == 0 {
+			t.Fatalf("no side at %d ms", i*25)
+		}
+		if side != last {
+			if last != 0 {
+				if d := (i - start) * 25; d < StrafeMin || d > StrafeMax+25 {
+					t.Errorf("segment of %d ms", d)
+				}
+				segs++
+			}
+			last, start = side, i
+		}
 	}
-	if got := s.Side(StrafeHold, 1, all); got != 1 {
-		t.Fatalf("not flipped after the hold: %d", got)
+	if segs < 8 || segs > 17 {
+		t.Errorf("%d segments in 10 s", segs)
 	}
-	// right blocked: flip to the left at once, though just switched
-	leftOnly := func(side int) bool { return side < 0 }
-	if got := s.Side(StrafeHold+25, 1, leftOnly); got != -1 {
+	if b := run(7); fmt.Sprint(a) != fmt.Sprint(b) {
+		t.Error("the same seed gave another rhythm")
+	}
+	if b := run(8); fmt.Sprint(a) == fmt.Sprint(b) {
+		t.Error("another seed gave the same rhythm")
+	}
+
+	var s Strafer
+	first := s.Side(0, 0, all)
+	if got := s.Side(25, -first, all); got != -first {
+		t.Fatalf("dodge side not taken: %d", got)
+	}
+	if got := s.Side(50, 0, all); got != -first {
+		t.Fatalf("dodge side not kept: %d", got)
+	}
+	// that side blocked: flip at once
+	only := func(side int) bool { return side == first }
+	if got := s.Side(75, 0, only); got != first {
 		t.Fatalf("blocked side kept: %d", got)
 	}
-	if got := s.Side(StrafeHold+50, 1, func(int) bool { return false }); got != 0 {
+	if got := s.Side(100, 0, func(int) bool { return false }); got != 0 {
 		t.Fatalf("both blocked: %d", got)
-	}
-	if got := s.Side(StrafeHold+75, 0, all); got != 0 || s.Current() != 0 {
-		t.Fatalf("no strafe wanted: %d (held %d)", got, s.Current())
 	}
 }
 

@@ -121,8 +121,8 @@ func TestEvidenceSustainedChangeFlips(t *testing.T) {
 			func(in Intent) bool { return in.FirePolicy == FireWhenAligned }},
 		"target": {LaneFast, 100, map[string]string{QTarget: "e1"}, map[string]string{QTarget: "e3"},
 			func(in Intent) bool { return in.Target == "e3" }},
-		"movement": {LaneFast, 100, map[string]string{QMovement: "hold"}, map[string]string{QMovement: "strafe_left"},
-			func(in Intent) bool { return in.Movement == MoveStrafeLeft }},
+		"movement": {LaneFast, 100, map[string]string{QMovement: "hold"}, map[string]string{QMovement: "strafe"},
+			func(in Intent) bool { return in.Movement == MoveStrafe }},
 		"mode": {LaneSlow, 500, map[string]string{QMode: "objective"}, map[string]string{QMode: "fight"},
 			func(in Intent) bool { return in.Mode == ModeFight }},
 	} {

@@ -27,7 +27,8 @@ go run ./cmd/q2bot run -backend mock -mock-policy noisy -maps demo1 -min-model-s
 ```
 
 `q2bot run` prints a summary like this one (scripted, whole campaign, seed 1, `-max-deaths 25
--level-timeout 60m`):
+-level-timeout 60m`; the numbers move with every change to the bot, and the measured ones are in
+[AGENT-EVAL.md](AGENT-EVAL.md)):
 
 ```
 run 20261002T053302Z-3bdee0cf: completed (1 of 1 episodes to victory.pcx)
@@ -83,7 +84,9 @@ Each package's `doc.go` describes it in detail; this is the overview.
     spawnpoint); any other arrival ends the episode with `ErrUnplannedExit`.
   - **Watchdogs** (game time): level 20 min, episode 90 min, 5 deaths per level, 10 s without a frame. After
     120 s without progress the bot explores for 30 s; after 300 s the level fails as `stalled`. Progress is a
-    route step done, or a monster the bot fought killed.
+    route step done, the current step's path getting shorter, or a monster the bot fought killed. The bot
+    gives up a stalled attempt itself at 250 s (see the bot's `kill` recoveries below), before this watchdog
+    would end the run.
   - **Mid-campaign starts.** `Config.EntryCommands` (the `-cheats`) are re-sent at every level entry and must
     be idempotent. `Config.Visits`/`StopAfter` start or stop mid-campaign.
 - **Route executor** (`routeexec`).
@@ -123,16 +126,27 @@ Each package's `doc.go` describes it in detail; this is the overview.
     - no splash weapon closer than 150 units;
     - no shot with a neutral or a barrel in the line, including the spread cone;
     - dodging and repositioning;
-    - weapon switches when dry.
+    - weapon switches when dry;
+    - in a fight, backing away at once from a drain monster (the parasite) within 304 units or a melee-only
+      one (such as the berserker) within 160, whatever the Intent's movement (`keep_off`). The monster is in
+      view, or, for a drain monster, was seen or heard awake in the last 2 s while hits arrive without a
+      bearing (a drain does no knockback);
+    - under 25 health, no advance on an attacker in view within 600 units: it sidesteps instead
+      (`low_health`).
   - It reads the inventory and the help computer as described in ADR-0006.
-  - It types `kill` (a death, then `load save0`) when it cannot go on: in a pit the route's goal cannot be
-    reached from, for 12 s (`trapTick`, reflex `trapped_kill`), or wedged, standing within 24 units for 30 s
-    while its navigator kept trying to move it and reported itself stuck at least 8 times (`wedgeTick`,
-    reflex `wedged_kill`). At most one such `kill` goes out every 6 s.
+  - It types `kill` (a death, then `load save0`) when it cannot go on:
+    - in a pit the route's goal cannot be reached from, for 12 s (`trapTick`, reflex `trapped_kill`);
+    - wedged: within 24 units of one spot for 120 s while its navigator was under way on at least 75 % of the
+      frames and recovered at least 8 times (stuck reports plus repaths), or for 60 s off the nav graph with a
+      goal (`wedgeTick`, reflex `wedged_kill`);
+    - after 250 s without progress as the campaign counts it, 50 s before the campaign's no-progress
+      watchdog would end the run (`stallTick`, reflex `stalled_kill`).
+
+    At most one such `kill` goes out every 6 s. Each one counts as a death in every evaluation.
 - **Jev client** (`backend/jev`).
   - **Concurrency and retries.** The fast lane is never retried, and an attempt is capped at 800 ms (cut at
-    the arbiter's TTL in realtime). A slow-lane attempt gets 1.2 s and one retry within the scheduler's 2.5 s
-    deadline.
+    the arbiter's TTL in realtime; a lockstep mock run lifts the cap: `jev.Config.UncapFast`, 30 s attempts on
+    both lanes). A slow-lane attempt gets 1.2 s and one retry within the scheduler's 2.5 s deadline.
   - **Error handling.**
     - 400/422 refuse that question-set shape locally for 1 min and count toward the breaker.
     - 401/403 disable the client.
@@ -194,10 +208,10 @@ runner rejects, and `jev-probe` without a key).
 |---|---|---|
 | `-maps demo1,demo2,demo3` | whole campaign | The campaign's first visits to play: `demo1` alone, or a prefix. |
 | `-campaign dir` | `fixtures/agent/routes` | Route tables (`campaign.json` or its directory). |
-| `-backend` | `scripted` | `scripted`, `jev`, `mock`, `replay`, `constant`, `random`. |
+| `-backend` | `scripted` | `scripted`, `jev`, `mock`, `replay`, `constant` (always the same option of each question), `random` (a seeded random option, answered one-hot with full confidence). |
 | `-session` | `lockstep` | `lockstep` (virtual clock, deterministic) or `inproc` (realtime host instance). |
 | `-sim-latency 212ms` / `80ms,150ms,300ms` | 212ms for jev/mock, none for local backends, recorded for replay | Simulated backend latency in lockstep: fixed, or drawn per request from the samples by a hash of the seed and the request number. With an inproc mock it delays the fake server's replies. |
-| `-mock-policy` | `noisy` | Mock answers: `scripted` (the scripted policy through the real jev client: a clean model) or `noisy`. `-mock-noise 0.3`, `-mock-swap 0.1` and `-mock-lowconf 0.1` tune the noise. |
+| `-mock-policy` | `noisy` | Mock answers: `scripted` (the scripted policy through the real jev client: a clean model) or `noisy`. `-mock-noise 0.3`, `-mock-swap 0.1` and `-mock-lowconf 0.1` tune the noise (0 turns an effect off). |
 | `-episodes n`, `-seed n` | 1, 1 | Episode i plays with seed+i. |
 | `-skill n` | the campaign's (1) | 0..3. |
 | `-out dir` | `runs` | Where the run directory `<id>` is made. |
@@ -234,13 +248,15 @@ status and retry are not compared. Output:
 ### `q2bot summarize runs/<id> [-dry-run] [-force] [-json]`
 
 Recomputes `run.json` from the traces. On a partial or unreadable trace it exits 1 and keeps the existing
-`run.json`, unless `-force`.
+`run.json`, unless `-force`. It also adds the `config` section to a `run.json` written before that section
+existed.
 
 ### `q2bot validate runs/<id> [-min-model-share x] [-max-stale-rate x] [-json]`
 
 Checks the trace schema and envelopes of every episode, every demo (`demo.Validate`: frame count, map) and
-`run.json`. With `-min-model-share` it also checks the provenance gate. It prints `valid` or
-`INVALID (n errors)` with one line per demo (`ep-000/demos/00-demo1.dm2: 791 frames, 121863 bytes,
+`run.json`, which must equal what the traces recompute. A `run.json` without a `config` section (written
+before it existed) is compared without it and gets a warning. With `-min-model-share` it also checks the
+provenance gate. It prints `valid` or `INVALID (n errors)` with one line per demo (`ep-000/demos/00-demo1.dm2: 791 frames, 121863 bytes,
 maps/demo1.bsp: ok`).
 
 ### `q2bot jev-probe [-lane fast|slow] [-n 1] [-out file] [-state lane-state.json]`
@@ -325,7 +341,8 @@ runs/<run id>/                      id: <UTC time>-<8 hex>, generated outside ev
 | Field | Meaning |
 |---|---|
 | `schema`, `run`, `outcome` (`completed`/`failed`/`aborted`/`incomplete`), `reason` | The verdict, e.g. `1 of 1 episodes to victory.pcx` or `episode 0: 26 deaths on demo3`. |
-| `backend`, `model`, `session`, `maps`, `skill`, `seed`, `episode_seeds` | The configuration. |
+| `backend`, `model`, `session`, `maps`, `skill`, `seed`, `episode_seeds` | The configuration in short. |
+| `config` | The configuration as `run_start` recorded it (`metrics.RunConfig`): `backend`, `model_backend`, `model`, `session`, `campaign`, `maps`, `stop_after`, `skill`, `seed`, `episodes`, `sim_latency` (as `-sim-latency` reads it; `0s`: none) and `sim_latency_ms`, `mock` (`policy` `noisy` or `scripted`, the noisy policy's `noise` in effect as `{noise, swap, low_confidence}`, and the server's `faults`), `budget` (`usd`, `queries`, `max_qps`, `on_exhausted`), the watchdogs `max_deaths`, `level_timeout` and `episode_timeout`, the gate thresholds asked for, `entry_commands` (cheats), `trace`, `record`, `replay_trace`. It never holds a key; a process-wide account limit (`-account-qps`, `Q2_JEV_MAX_QPS`) is not recorded. |
 | `model_driven`, `gate` | The provenance gate (below): `min_model_share`, `max_stale_rate`, `basis` (`ticks`), `model_shares` and `stale_shares` per gate field, `tick_stale_share`, `stale_rate`, `model_backend`, `budget_exhausted`, `passed`, `reasons`. |
 | `wall_ms`, `game_ms`, `events`, `errors`, `last_error` | Size and time. |
 | `totals` | `levels`, `levels_completed`, `deaths`, `reloads`, `damage_taken`, `bot_kills` (what the bot perceived), `stuck`, `combat_ms`, and the game's `kills`/`monsters`/`secrets`/`total_secrets` (metrics only). |
@@ -356,7 +373,7 @@ own fields follow in the same object.
 
 | type | Fields |
 |---|---|
-| `run_start` | `schema`, `backend`, `model_backend`, `model`, `session`, `maps`, `skill`, `seed`, `episodes`, `sim_latency_ms`, `budget_usd`, `config` (string map: campaign, record, sim_latency, stop_after, trace, mock settings) |
+| `run_start` | `schema`, `backend`, `model_backend`, `model`, `session`, `maps`, `skill`, `seed`, `episodes`, `sim_latency_ms`, `budget_usd`, `config` (string map: `campaign`, `stop_after`, `trace`, `record`, `sim_latency`, `entry_commands`, `budget.*`, `gate.*`, `replay_trace`, `level_timeout`, `episode_timeout`, `max_deaths`, `mock.faults`, `mock.policy`; `run.json`'s `config` section is built from it) |
 | `episode_start` | `seed` |
 | `level_start` | `visit`, `gen` (the client's level generation), `checksum` (CS_MAPCHECKSUM) |
 | `decision` | See below. |
@@ -419,14 +436,16 @@ JSON text frames on `/ws/v1/bots/{id}/decisions`, distinguished by `"t"`:
 
 ## Lane states and questions
 
-The decide package projects the fair belief into one compact state per lane. The goldens are in
-`server/internal/agent/decide/testdata/*.golden.json`.
+The decide package projects the fair belief into one compact state per lane. The schema is `decide.State`
+(`decide/state.go`), the questions and their options are in `decide/questions.go` and `decide/vocab.go`, and
+the goldens are in `server/internal/agent/decide/testdata/*.golden.json`. The lists below are an overview;
+the code is the reference.
 
 - **Fast (combat) lane.** It runs up to 10 Hz while enemies or projectiles are known. The state holds `me`
   (hp bucket, health, armor, weapon, ammo bucket, on_ground, damage in the last second, the bearing of the
-  last hit), the top `enemies` (id, class, bearing, elev, dist bucket, units, visible, shootable, aim, state,
-  wounded, threat, current), the top `incoming` projectiles (kind, bearing, eta, dodge) and `space` (front,
-  back, left, right). Questions: `target`, `fire_policy`, `movement`.
+  last hit, ...), the top `enemies` (id, class, bearing, elev, dist bucket, units, visible, shootable, aim,
+  state, wounded, threat, current), the top `incoming` projectiles (kind, bearing, eta, dodge) and `space`
+  (front, back, left, right). Questions: `target`, `fire_policy`, `movement`.
 - **Slow (strategy) lane.** It runs at 2 Hz and early on events. The state adds the mode, the owned weapons,
   the top items, the objective (route step, path distance and bearing, stalled), level stats and recent
   events. Questions: `mode`, `weapon`, `pickup`, `danger`.
@@ -442,20 +461,41 @@ The decide package projects the fair belief into one compact state per lane. The
   |---|---|---|
   | `target` | choice | Enemy ids + `none` |
   | `fire_policy` | choice | `hold`, `fire_when_aligned`, `suppress` |
-  | `movement` | choice | `advance`, `retreat`, `strafe_left`, `strafe_right`, `hold` |
+  | `movement` | choice | `advance`, `retreat`, `hold` and the strafe option(s) of `decide.Movement` |
   | `mode` | choice | `fight`, `objective`, `pickup`, `retreat`, `explore` |
   | `weapon` | choice | Owned weapons with ammo + `keep` |
   | `pickup` | choice | Item ids + `none` |
   | `danger` | score | 0..4: safe … critical |
 
-The arbiter is documented in `decide/doc.go` and `decide/arbiter.go`. It checks answers and accumulates
-them per field as time-decayed (`ArbiterConfig.Tau`, by field), confidence-weighted evidence. The posterior
-decides a field while the newest answer is within its TTL, the evidence's weight is at least `MinConfidence`
-and, for a choice, its top option is at least `MinPosterior`; otherwise the field falls back to the scripted
-policy, with reason `weak` for too little or split evidence. Hysteresis applies to the posterior, and a held
-value stays model-sourced while the posterior still backs it. The reflexes in `control` and `bot` execute the
-fire policy every 25 ms and always win. Goldens are regenerated with
-`cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide ./internal/agent/backend/jev`.
+**The arbiter** (`decide/arbiter.go`, `ArbiterConfig`; the design is in `decide/doc.go`) turns the answers
+into the Intent, field by field.
+
+- **Evidence.** Each accepted answer is evidence: its confidence (a noul's |2p−1|) × exp(−age/τ), with τ per
+  field (`Tau`): 300 ms for target, fire_policy and movement, 1 s for mode, 500 ms for danger, 1.5 s for
+  weapon and pickup. The posterior is the weighted mixture over the options still in the latest state (a dead
+  target or a taken item is dropped). A weapon `keep` counts for the weapon in hand when it was asked: once the
+  bot switched, an older `keep` backs the old weapon, not the new one. Danger is the weighted mean.
+- **Decision.** The posterior decides while the newest answer is within its TTL, the evidence weighs at least
+  `MinConfidence` (0.35; `MinNoulMargin` 0.2 for a noul) and, for a choice, the top option has at least
+  `MinPosterior` (0.4). Otherwise the field falls back to the scripted policy: reason `weak` for too little or
+  split evidence (or `ttl`, `error`, `timeout`, ...).
+- **Trust and confirmation.** Per choice field the arbiter estimates the model's blip rate: how often a
+  confident answer names a new top option that the next answer reverts (a lone swap). The estimate decays over
+  the last few hundred answers and outlives a level change. A field under `TrustBelow` (4 %) takes the model at
+  its word: one confident answer (top ≥ `ConfirmProb`, 0.6) naming a new option is a change point, the older
+  evidence is dropped, and the field follows its newest answer. Otherwise a change needs `Confirm` (2)
+  agreeing confident answers, so a lone swap never flips a field and a sustained change takes exactly 2
+  answers at any rate.
+- **Safety asymmetry.** Danger rises at once to a fresh answer's level and falls only with the evidence. At
+  danger ≥ 3.5 (`RetreatDanger`) the newest answer's `retreat` is acted on at once, past the mode hysteresis.
+- **Hysteresis and provenance.** Hysteresis applies to the posterior (mode 1.5 s and 0.2 more probability,
+  target 0.15, fire_policy and movement 0.4 s, weapon and pickup 0.5 s). A held value stays `model` while its
+  answer is within its TTL or the fresh posterior gives it at least 0.4; otherwise it is `stale`.
+- **The scripted backend** (`AnswerSource` `scripted`) decides every field from its latest answer alone: its
+  answers are exact, not evidence.
+
+The reflexes in `control` and `bot` execute the Intent every 25 ms and always win. Goldens are regenerated
+with `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide ./internal/agent/backend/jev`.
 
 ## Metrics (Prometheus, `/metrics` of q2server)
 
@@ -481,9 +521,10 @@ fire policy every 25 ms and always win. Goldens are regenerated with
   `cmd/q2bot TestGate`). So do the `.dm2` files: `demo.TestFixtureDemo1Walker` regenerates the committed
   fixture byte for byte.
 - **Mock runs.** A lockstep `mock` run is exact too: its jev client keeps the breaker, cooldowns and refused
-  question sets, which run on the wall clock, out of the answers. The exception is a loopback attempt slower
-  than the 800 ms fast-lane cap (`jev.MaxFastTimeout`), which only happens on a machine loaded far beyond a
-  test run.
+  question sets, which run on the wall clock, out of the answers. It also lifts the fast-lane cap
+  (`jev.Config.UncapFast`) and uses 30 s attempt timeouts on both lanes, so only a loopback hang longer than
+  30 s could make it depart from the seed's run. Several mock runs may therefore share a machine (the nightly
+  plays three seeds at a time).
 - **Budgets.** A budgeted lockstep run repeats too, because the requests to refuse are planned from game time
   before each tick. The wall-clock `-account-qps` limiter is outside that guarantee.
 - **Not deterministic.**
@@ -528,15 +569,43 @@ fire policy every 25 ms and always win. Goldens are regenerated with
     tests there.
   - `make e2e` runs Playwright: `play.spec.ts` and `watch.spec.ts`, which starts a scripted bot, watches it
     live, stops it and replays it. `Q2_E2E_REQUIRE=1` turns its self-skips into failures.
-- **CI** (`.github/workflows/ci.yml`). The go job sets `TYPESAFE_API_KEY: ""` and runs `make demo nav` and
-  `make agent-smoke`, then `go test -race ./...`. The `e2e` job runs both Playwright suites with
-  `Q2_E2E_REQUIRE=1`.
-- **Nightly** (`.github/workflows/agent-nightly.yml`).
-  - Full lockstep campaigns: scripted with `-require-complete` plus `validate` and `replay -strict`; clean and
-    noisy mock with `-min-model-share 0.7`; constant and random ablations, which must exit 1 and do measurably
-    worse than scripted; a latency sweep at 100, 400 and 500 ms (212 ms is the clean mock run).
+- **CI** (`.github/workflows/ci.yml`, a read-only `GITHUB_TOKEN`: `permissions: contents: read`). The go job
+  sets `TYPESAFE_API_KEY: ""` and runs `make demo nav` and `make agent-smoke`, then `go test -race ./...`. The
+  `e2e` job runs both Playwright suites with `Q2_E2E_REQUIRE=1`. The `nightly-scripts` job tests the nightly
+  report's gates on synthetic artifacts (`.github/scripts/test_agent_nightly_report.py`).
+- **Nightly** (`.github/workflows/agent-nightly.yml`, also read-only). Every run is a full lockstep campaign
+  at skill 1 with `-max-deaths 25 -level-timeout 60m`, the protocol of AGENT-EVAL.md. The matrix job of each
+  entry plays its seeds (`.github/scripts/agent_nightly_seeds.sh`, three at a time), checks each exit code and
+  runs `q2bot validate` on every run; the `report` job (`.github/scripts/agent_nightly_report.py`) writes the
+  table to the job summary and checks the gates across runs.
+
+  | Entry | Seeds | Gate |
+  |---|---|---|
+  | `scripted` | 1 | `-require-complete`, `validate`, `replay -strict` |
+  | `mock-clean` (`-mock-policy scripted`, 212 ms) | 1–6 | every run passes the provenance gate (`-min-model-share 0.7`, in the run and in `validate`); at least 3 of 6 reach `victory.pcx` |
+  | `mock-noisy` (`-mock-policy noisy`, 212 ms) | 1–6 | every run passes the provenance gate; at least 2 of 6 reach `victory.pcx` |
+  | `ablate-constant`, `ablate-random` | 1 | exit 1 (`-require-complete`), and measurably worse than scripted: fewer levels done, or as many with more deaths |
+  | `latency-100ms`, `-400ms`, `-500ms` (clean mock) | 1 | none: data points (212 ms is `mock-clean`) |
+
+  **Why several seeds.**
+  - A run is decided on demo3. With up to 26 attempts there, it wins with probability about 1 − (1 − s)^26
+    for a per-attempt demo3 survival s, so one seed's victory is a lottery at the measured rates. A
+    single-seed `-require-complete` would flip with any change to the bot.
+  - The thresholds come from the round-2 rates of AGENT-EVAL.md: noisy mock demo3 survival 7/187 with 7 of
+    11 seeds won, clean mock 7/109 with 7 of 9 won. At those win rates an unchanged bot misses its gate with
+    probability 2.7 % (noisy, under 2 of 6) and 2.5 % (clean, under 3 of 6). A bot whose win rate fell to
+    0.2 (demo3 survival under 1 %) is caught 66 % (noisy) and 90 % (clean) of the time.
+  - The runs are deterministic, so a red gate repeats on the same commit: it is a change's draw, not a
+    night's. When AGENT-EVAL.md's rates move, re-derive `min_wins` in the workflow's matrix.
+  - The job summary also gives each entry's victories and pooled demo3 survival with its counts, which says
+    more than either gate. Its attempts are a visit's deaths plus the attempt that exited or was under way
+    when the level ended; a visit lost at the death cap holds 26 deaths and 26 attempts. AGENT-EVAL.md counts
+    deaths + 1 for every visit, one attempt more per visit lost at the cap, so its denominators run slightly
+    higher than the summary's for the same runs.
+
+  **Also nightly.**
   - The `long-tests` job and a 60 s `FuzzRelayViewerPacket`.
-  - Every run directory is uploaded.
+  - Every run directory is uploaded, with each entry's `matrix.json` (its seeds and gates).
   - A manual `jev-live` job (`workflow_dispatch` with `jev_live`) runs `jev-probe`, then a budget-capped
     `-backend jev` campaign. It uses the `TYPESAFE_API_KEY` secret of the protected `jev-live` environment.
     A repo admin must create that environment before the first dispatch, with required reviewers and

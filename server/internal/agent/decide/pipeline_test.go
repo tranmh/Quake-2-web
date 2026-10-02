@@ -14,7 +14,7 @@ import (
 // frames of 100 ms; the level changes at changeAt (0: never).
 func runPipeline(t *testing.T, n, changeAt int) ([]Intent, []*Record, PipelineStats) {
 	t.Helper()
-	model := constBackend(map[string]string{QTarget: "e1", QFirePolicy: "fire_when_aligned", QMovement: "strafe_left",
+	model := constBackend(map[string]string{QTarget: "e1", QFirePolicy: "fire_when_aligned", QMovement: "strafe",
 		QMode: "fight", QWeapon: "machinegun", QPickup: "i1", QDanger: "2"})
 	var recs []*Record
 	p, err := NewPipeline(PipelineConfig{
@@ -57,7 +57,7 @@ func TestPipelineLockstep(t *testing.T) {
 		if in.Provenance.Target.Source != SourceModel || in.Target != "e1" {
 			t.Fatalf("tick %d: %+v", i, in)
 		}
-		if i >= 4 && (in.Provenance.Movement.Source != SourceModel || in.Movement != MoveStrafeLeft) {
+		if i >= 4 && (in.Provenance.Movement.Source != SourceModel || in.Movement != MoveStrafe) {
 			t.Fatalf("tick %d: movement %s %+v", i, in.Movement, in.Provenance.Movement)
 		}
 	}

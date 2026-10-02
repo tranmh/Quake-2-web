@@ -80,7 +80,7 @@ How to run, schemas and metrics: [`docs/AGENT.md`](docs/AGENT.md). Design and fa
 | Full stack | Go e2e (SP save/restore, DM, CTF over WebSocket, Postgres) and Playwright e2e in the browser (play a game; start, watch and replay a bot) |
 | AI agent: fairness | Import guards in every agent package the bot's decisions depend on (no `sv`/`game`/`host`/`session` linked); perturbation invariance (rewriting everything not perceived leaves the belief unchanged); a `.dm2` differential that rebuilds every decision byte for byte from the recording alone |
 | AI agent: navigation | Nav graph edges validated by bit-exact pmove simulation; sampled edges re-run on a live server 100/100 bit-exact per map; route tables re-derived from the entity lump and validated (`q2nav plan`) |
-| AI agent: play | Scripted lockstep campaign to `victory.pcx` without cheats (CI and nightly); lockstep runs replay with no divergence; a mock-Jev demo1 run against the provenance gate (≥ 70 % of target/fire_policy/mode decided by the model) in CI (`make agent-smoke`) and full mock-Jev campaigns against it nightly, next to ablations that must do measurably worse. Results: [`docs/AGENT-EVAL.md`](docs/AGENT-EVAL.md) |
+| AI agent: play | Scripted lockstep campaign to `victory.pcx` without cheats (CI and nightly); lockstep runs replay with no divergence; a mock-Jev demo1 run against the provenance gate (≥ 70 % of target/fire_policy/mode decided by the model) in CI (`make agent-smoke`); nightly, six full mock-Jev campaigns per mock policy, every one held to the gate and a set share of them to `victory.pcx`, next to ablations that must do measurably worse. Results: [`docs/AGENT-EVAL.md`](docs/AGENT-EVAL.md) |
 
 ## Legal
 

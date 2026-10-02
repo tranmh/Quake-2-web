@@ -55,6 +55,10 @@ type plan struct {
 	exit bool
 }
 
+// optional reports an opportunistic step (route.Step.Optional): one
+// attempt, skipped when it fails.
+func (p *plan) optional() bool { return p.step != nil && p.step.Optional }
+
 // effect is a claimed effect resolved to what the belief can show.
 type effect struct {
 	kind  route.EffectKind

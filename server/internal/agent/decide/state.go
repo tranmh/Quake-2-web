@@ -59,6 +59,12 @@ type Me struct {
 	// HitFromBearing is the bearing of the last hit of the last second
 	// whose direction is known.
 	HitFromBearing *int `json:"hit_from_bearing,omitempty"`
+	// Moving is the movement of my current decision (advance, retreat,
+	// strafe, hold; fast lane): what I am doing now, for continuity.
+	Moving string `json:"moving,omitempty"`
+	// TargetSinceS is how long (seconds, one decimal) my current target
+	// has been my target (present only with a current target).
+	TargetSinceS *float64 `json:"target_since_s,omitempty"`
 	// Weapons are the owned weapons with ammo (slow lane).
 	Weapons []string `json:"weapons,omitempty"`
 	// Empty are the owned weapons without ammo (slow lane; present only
@@ -220,9 +226,13 @@ type ProjectorConfig struct {
 // Context is what the caller adds to a projection: its current intent
 // and objective.
 type Context struct {
-	Target    string // current target track id ("" none)
-	Mode      Mode   // current mode ("" unknown)
-	Objective *ObjectiveView
+	Target string // current target track id ("" none)
+	// TargetSince is when (session ms) Target became the current target
+	// (0: unknown).
+	TargetSince int64
+	Mode        Mode     // current mode ("" unknown)
+	Moving      Movement // current movement ("" unknown)
+	Objective   *ObjectiveView
 }
 
 // Projector turns beliefs into lane states. It is not safe for concurrent
@@ -426,6 +436,16 @@ func ammoBucket(k WeaponKey, ammo int) string {
 func (p *Projector) Fast(b *worldmodel.Belief, cx Context) State {
 	v := viewOf(b)
 	st := State{Me: p.me(b, &v), Enemies: p.enemies(b, &v, cx.Target), Incoming: p.incoming(b, &v)}
+	st.Me.Moving = string(cx.Moving)
+	if cx.TargetSince > 0 && cx.TargetSince <= b.Time {
+		for i := range st.Enemies {
+			if st.Enemies[i].Current {
+				s := math.Round(float64(b.Time-cx.TargetSince)/100) / 10
+				st.Me.TargetSinceS = &s
+				break
+			}
+		}
+	}
 	if p.cfg.Space != nil {
 		c := p.cfg.Space.Clearance(b.Self.Origin, v.yaw)
 		st.Space = &Space{Front: spaceBucket(c[0]), Back: spaceBucket(c[1]), Left: spaceBucket(c[2]), Right: spaceBucket(c[3])}

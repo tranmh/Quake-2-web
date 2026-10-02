@@ -193,9 +193,15 @@ type Bot struct {
 	killTarget, killFight bool
 	fight                 fight
 	// search: the bot looks towards searchYaw until searchUntil (a hit it
-	// did not see coming, at searchAt)
+	// did not see coming, at searchAt); scans counts the scans without a
+	// suspect (they turn behind, then to the sides)
 	searchAt, searchUntil int64
 	searchYaw             float32
+	scans                 int
+
+	// quad: a quad damage picked up (at quadAt) and not used yet
+	quadHeld bool
+	quadAt   int64
 
 	freezeSince int64
 	pressed     bool
@@ -266,6 +272,7 @@ func New(cfg Config) *Bot {
 	}
 	b.world = worldmodel.New(worldmodel.Config{ReadFile: cfg.ReadFile, Perception: cfg.Perception, Classes: cfg.Classes, Anims: cfg.Anims})
 	b.rng = rand.New(rand.NewSource(cfg.Seed))
+	b.fight.strafe.Seed = uint64(cfg.Seed)
 	return b
 }
 
@@ -335,7 +342,8 @@ func (b *Bot) Enter(lv Level) error {
 	b.routeKill, b.killTarget, b.killFight = "", false, false
 	b.bel, b.navVeto = nil, false
 	b.fight.reset()
-	b.searchAt, b.searchUntil = 0, 0
+	b.searchAt, b.searchUntil, b.scans = 0, 0, 0
+	b.quadHeld, b.quadAt = false, b.now // a pickup message from before the entry does not count
 	b.freezeSince, b.pressed = 0, false
 	b.exploreUntil, b.exploreAt = 0, 0
 	b.regions = map[int32]bool{}
@@ -409,13 +417,19 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 	b.killTarget, b.killFight = false, false
 
 	mode := ModeObjective
-	var foe, threat *worldmodel.Track
+	var foe, threat, re *worldmodel.Track
 	rk := b.routeKillTrack(bel)
+	gone := b.liveTrack(bel, b.intent.Target) == nil
 	switch {
 	case b.intent.Mode == decide.ModeRetreat && b.threatOrNil(bel, &threat):
 		mode = ModeRetreat
-	case b.intent.Mode == decide.ModeFight && b.liveTrack(bel, b.intent.Target) != nil && !b.disengaged(b.intent.Target):
+	case b.intent.Mode == decide.ModeFight && !gone && !b.disengaged(b.intent.Target):
 		mode, foe = ModeFight, b.liveTrack(bel, b.intent.Target)
+	case b.intent.Mode == decide.ModeFight && gone && b.retargetOrNil(bel, false, &re):
+		// the fight's target is dead or not known yet: fight the most
+		// dangerous awake monster in view until the decision layer names
+		// one (a latency away)
+		mode, foe = ModeFight, re
 	case rk != nil:
 		mode, foe = ModeFight, rk
 		b.killTarget, b.killFight = true, true
@@ -457,6 +471,9 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 		}
 	case ModeFight:
 		b.target = foe.ID
+		if foe == re {
+			b.retargeted()
+		}
 		b.fightTick(bel, foe)
 		b.fightClock(foe.ID)
 	case ModeRetreat:
@@ -481,6 +498,12 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 			b.target = t.ID
 		}
 	}
+	if b.target == "" && b.mode != ModeFight && gone && b.retargetOrNil(bel, true, &re) {
+		// on the move without a live target: shoot back at a monster in
+		// view attacking the bot
+		b.target = re.ID
+		b.retargeted()
+	}
 	if b.target == "" && b.targetBy == "" && b.intent.Target != "" && b.liveTrack(bel, b.intent.Target) == nil {
 		b.targetBy = "target_gone" // dead, or a track the bot does not know
 	}
@@ -488,8 +511,47 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 	b.noteFought(b.target)
 
 	b.weaponTick(c, bel)
+	b.powerupTick(c, bel)
 	b.sideCommands(c, bel)
 	b.traceTick(bel)
+}
+
+// quadName is quad damage's pickup name (C: game/g_items.c itemlist).
+const quadName = "Quad Damage"
+
+// powerupTick uses a quad damage the bot picked up once it fights a
+// monster in view that is awake (reflex quad): in single player the game
+// only stores a picked-up quad (Pickup_Powerup), the player types "use
+// Quad Damage" when it pays, and it lasts 30 s from then.
+func (b *Bot) powerupTick(c *fakeclient.Client, bel *worldmodel.Belief) {
+	if s := &bel.Self; s.Pickup == quadName && s.PickupAt > b.quadAt {
+		b.quadHeld, b.quadAt = true, s.PickupAt
+	}
+	if !b.quadHeld || b.mode != ModeFight {
+		return
+	}
+	if tr := b.liveTrack(bel, b.target); tr == nil || !tr.Visible || tr.Awareness == worldmodel.Idle {
+		return
+	}
+	c.StringCmd("use " + quadName)
+	b.quadHeld = false
+	b.fight.noteReflex("quad")
+}
+
+// retargetOrNil sets *t to the retarget reflex's pick and reports whether
+// there is one (see retarget).
+func (b *Bot) retargetOrNil(bel *worldmodel.Belief, attacking bool, t **worldmodel.Track) bool {
+	*t = b.retarget(bel, attacking)
+	return *t != nil
+}
+
+// retargeted marks the target as the retarget reflex's: the target and,
+// when the intent holds fire, the fire policy (fire when aligned).
+func (b *Bot) retargeted() {
+	b.targetBy = "retarget"
+	if b.firePolicy == decide.FireHold || b.firePolicy == "" {
+		b.firePolicy, b.fireBy = decide.FireWhenAligned, "retarget"
+	}
 }
 
 // actedMode is mode m in the decision layer's vocabulary (done waits on

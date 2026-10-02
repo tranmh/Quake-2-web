@@ -162,8 +162,10 @@ type Pipeline struct {
 	frames   int
 	started  bool
 	last     Intent
-	stats    PipelineStats
-	tick     TickInfo
+	// targetSince is when last.Target became the target (session ms)
+	targetSince int64
+	stats       PipelineStats
+	tick        TickInfo
 }
 
 // ErrNoBackend is returned by NewPipeline without a backend.
@@ -223,13 +225,14 @@ func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Int
 			p.arb.Reset()
 			p.last = DefaultIntent()
 		}
+		p.targetSince = 0
 		p.trig.reset()
 		p.event = false
 		p.started, p.level, p.epochSeq = true, b.Level, p.seq+1
 	}
 	p.frames = b.Frames
 
-	cx := Context{Target: p.last.Target, Mode: p.last.Mode, Objective: obj}
+	cx := Context{Target: p.last.Target, TargetSince: p.targetSince, Mode: p.last.Mode, Moving: p.last.Movement, Objective: obj}
 	fast := p.proj.Fast(b, cx)
 	p.tick = TickInfo{Fast: fast}
 	act := Activity{Combat: len(fast.Enemies) > 0 || len(fast.Incoming) > 0}
@@ -272,7 +275,11 @@ func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Int
 			p.cfg.OnRecord(rec)
 		}
 	}
+	prev := p.last.Target
 	p.last = p.arb.Intent(now, b)
+	if p.last.Target != prev || p.targetSince == 0 {
+		p.targetSince = now
+	}
 	return p.last
 }
 

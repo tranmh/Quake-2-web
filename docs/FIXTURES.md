@@ -208,7 +208,7 @@ byte for byte and `Q2_UPDATE_FIXTURES=1` rewrites them:
 | `server/internal/agent/decide/testdata/{fast_state,slow_state,request_fast,request_slow}.golden.json` | lane state projection and request bodies (size caps) | `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide` |
 | `server/internal/agent/backend/jev/testdata/request_fast.golden.json` | the jev client's request body (documented field names) | `Q2_UPDATE_FIXTURES=1 go test ./internal/agent/backend/jev` |
 | `server/internal/agent/trace/testdata/events.golden.jsonl` | trace event encoding (`TestEventJSONGolden`) | `Q2_UPDATE_FIXTURES=1 go test ./internal/agent/trace` |
-| `server/internal/agent/metrics/testdata/run.golden.json` | run.json (`q2bot.run/1`) from a synthetic trace (`TestSummaryGolden`) | `Q2_UPDATE_FIXTURES=1 go test ./internal/agent/metrics` |
+| `server/internal/agent/metrics/testdata/run.golden.json` | run.json (`q2bot.run/1`) from a synthetic trace and config section (`TestSummaryGolden`) | `Q2_UPDATE_FIXTURES=1 go test ./internal/agent/metrics` |
 | `server/internal/agent/runner/testdata/decisions.golden.jsonl` | the decision feed translation (`q2bot.decisions/1`) | `go test ./internal/agent/runner -run TestFeedTranslationGolden -update` |
 
 `server/cmd/q2bot/probe_{fast,slow}.json` are the decide goldens' lane states that `q2bot jev-probe` sends; its

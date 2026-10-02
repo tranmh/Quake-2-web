@@ -172,8 +172,12 @@ func TestTargetAndFire(t *testing.T) {
 		{"out of shotgun range", enemy("e1", "soldier", 650, "med", "attacking"), "ok", decide.FireHold},
 		{"close and dangerous", enemy("e1", "gunner", 200, "high", "attacking"), "ok", decide.FireSuppress},
 		{"no ammo", enemy("e1", "soldier", 300, "med", "attacking"), "none", decide.FireHold},
-		{"not shootable", func() decide.Enemy { e := enemy("e1", "soldier", 300, "med", "alert"); e.Shootable = false; return e }(), "ok", decide.FireHold},
-		{"not in view", func() decide.Enemy { e := enemy("e1", "soldier", 300, "med", "alert"); e.Visible = false; return e }(), "ok", decide.FireHold},
+		// standing rules: the fire gate checks every shot, so a target
+		// behind cover or out of view now is fired at once it shows
+		{"not shootable", func() decide.Enemy { e := enemy("e1", "soldier", 300, "med", "alert"); e.Shootable = false; return e }(), "ok", decide.FireWhenAligned},
+		{"not in view", func() decide.Enemy { e := enemy("e1", "soldier", 300, "med", "alert"); e.Visible = false; return e }(), "ok", decide.FireWhenAligned},
+		{"close and dangerous out of view", func() decide.Enemy { e := enemy("e1", "gunner", 200, "high", "attacking"); e.Visible = false; return e }(), "ok", decide.FireWhenAligned},
+		{"out of view and out of range", func() decide.Enemy { e := enemy("e1", "soldier", 650, "med", "alert"); e.Visible = false; return e }(), "ok", decide.FireHold},
 	} {
 		s := baseState()
 		s.Me.Ammo = tc.ammo
@@ -189,7 +193,6 @@ func TestTargetAndFire(t *testing.T) {
 
 func TestMovementRanges(t *testing.T) {
 	p := NewPolicy(Config{})
-	strafe := func(m decide.Movement) bool { return m == decide.MoveStrafeLeft || m == decide.MoveStrafeRight }
 	for _, tc := range []struct {
 		weapon, class string
 		units         int
@@ -220,8 +223,7 @@ func TestMovementRanges(t *testing.T) {
 		s.Me.Weapon = tc.weapon
 		s.Enemies = []decide.Enemy{enemy("e1", tc.class, tc.units, "med", "attacking")}
 		m := p.Decide(s, 0).Movement
-		ok := string(m) == tc.want || tc.want == "strafe" && strafe(m)
-		if !ok {
+		if string(m) != tc.want {
 			t.Errorf("%s vs %s at %d: %s, want %s", tc.weapon, tc.class, tc.units, m, tc.want)
 		}
 	}
@@ -240,68 +242,57 @@ func TestMovementRanges(t *testing.T) {
 	}
 }
 
-func TestStrafeRhythm(t *testing.T) {
-	for seed := uint64(0); seed < 5; seed++ {
-		var runs []int64
-		last, since := StrafeLeft(seed, 0), int64(0)
-		if !last {
-			t.Fatalf("seed %d: a window starts left", seed)
-		}
-		for now := int64(1); now <= 60000; now++ {
-			if l := StrafeLeft(seed, now); l != last {
-				runs = append(runs, now-since)
-				last, since = l, now
-			}
-		}
-		if len(runs) < 60 {
-			t.Fatalf("seed %d: %d flips in 60 s", seed, len(runs))
-		}
-		for i, d := range runs {
-			if d < 600 || d > 1200 {
-				t.Fatalf("seed %d: segment %d lasts %d ms", seed, i, d)
-			}
-		}
-	}
-	// negative times fall into the window before 0, which ends right
-	if StrafeLeft(1, -1) || !StrafeLeft(1, -1800) {
-		t.Fatal("negative times")
-	}
-
-	// blocked sides flip the strafe; both blocked hold; dodges win
+// TestStrafeRules: a strafe needs one open side; cornered, the bot backs
+// out (or advances, or holds when boxed in); an imminent projectile with a
+// dodge side makes a strafe whatever the range rule says, a soon one too
+// without a target. The side is the controller's.
+func TestStrafeRules(t *testing.T) {
 	p := NewPolicy(Config{Seed: 1})
 	s := baseState()
 	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 200, "med", "attacking")}
-	now := int64(0) // left at the start of a window
 	s.Space.Left = "blocked"
-	if m := p.Decide(s, now).Movement; m != decide.MoveStrafeRight {
+	if m := p.Decide(s, 0).Movement; m != decide.MoveStrafe {
 		t.Errorf("left blocked: %s", m)
 	}
 	s.Space.Right = "blocked"
-	if m := p.Decide(s, now).Movement; m != decide.MoveRetreat {
+	if m := p.Decide(s, 0).Movement; m != decide.MoveRetreat {
 		t.Errorf("both sides blocked: %s, want out of the corner", m)
 	}
 	s.Space.Back = "blocked"
-	if m := p.Decide(s, now).Movement; m != decide.MoveAdvance {
+	if m := p.Decide(s, 0).Movement; m != decide.MoveAdvance {
 		t.Errorf("sides and back blocked: %s", m)
 	}
 	s.Space.Front = "blocked"
-	if m := p.Decide(s, now).Movement; m != decide.MoveHold {
+	if m := p.Decide(s, 0).Movement; m != decide.MoveHold {
 		t.Errorf("boxed in: %s", m)
 	}
 	s = baseState()
 	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 100, "med", "attacking")}
 	s.Space.Back = "blocked"
-	if m := p.Decide(s, now).Movement; m != decide.MoveStrafeLeft {
+	if m := p.Decide(s, 0).Movement; m != decide.MoveStrafe {
 		t.Errorf("retreat blocked: %s", m)
 	}
+	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 1200, "med", "attacking")}
+	s.Space.Back = "open"
+	if m := p.Decide(s, 0).Movement; m != decide.MoveAdvance {
+		t.Errorf("far: %s", m)
+	}
 	s.Incoming = []decide.Incoming{{Kind: "rocket", ETA: "imminent", Dodge: "right"}}
-	if m := p.Decide(s, now).Movement; m != decide.MoveStrafeRight {
+	if m := p.Decide(s, 0).Movement; m != decide.MoveStrafe {
 		t.Errorf("dodge: %s", m)
 	}
 	s = baseState()
 	s.Incoming = []decide.Incoming{{Kind: "blaster_bolt", ETA: "soon", Dodge: "left"}}
-	if m := p.Decide(s, now).Movement; m != decide.MoveStrafeLeft {
+	if m := p.Decide(s, 0).Movement; m != decide.MoveStrafe {
 		t.Errorf("dodge without a target: %s", m)
+	}
+	// timeless: the answer does not depend on the snapshot time
+	s = baseState()
+	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 200, "med", "attacking")}
+	for now := int64(0); now < 5000; now += 125 {
+		if d := p.Decide(s, now); d != p.Decide(s, 0) {
+			t.Fatalf("at %d ms: %+v", now, d)
+		}
 	}
 }
 
@@ -319,7 +310,7 @@ func TestWeaponAndPickup(t *testing.T) {
 			t.Errorf("at %d: %s, want %s", tc.units, d.Weapon, tc.want)
 		}
 	}
-	// hysteresis: a weapon among the band's best owned is kept
+	// hysteresis: a weapon close to the band's best owned is kept
 	s.Me.Weapon = "chaingun"
 	for _, units := range []int{150, 500, 1000} {
 		s.Enemies = []decide.Enemy{enemy("e1", "soldier", units, "med", "attacking")}
@@ -327,6 +318,31 @@ func TestWeaponAndPickup(t *testing.T) {
 			t.Errorf("chaingun in hand at %d: %s, want keep", units, d.Weapon)
 		}
 	}
+	// ... but not a poor one, however few weapons are owned: the shotgun
+	// is kept up close, traded for the machinegun at mid range
+	s.Me.Weapons, s.Me.Weapon = []string{"blaster", "shotgun", "machinegun"}, "shotgun"
+	for _, tc := range []struct {
+		units int
+		want  decide.WeaponKey
+	}{{150, decide.WeaponKeep}, {500, decide.WeaponMachinegun}, {1000, decide.WeaponMachinegun}} {
+		s.Enemies = []decide.Enemy{enemy("e1", "soldier", tc.units, "med", "attacking")}
+		if d := p.Decide(s, 0); d.Weapon != tc.want {
+			t.Errorf("shotgun in hand at %d: %s, want %s", tc.units, d.Weapon, tc.want)
+		}
+	}
+	// the blaster is kept only where it is the best owned (far, against
+	// the shotgun's spread)
+	s.Me.Weapons, s.Me.Weapon = []string{"blaster", "shotgun"}, "blaster"
+	for _, tc := range []struct {
+		units int
+		want  decide.WeaponKey
+	}{{150, decide.WeaponShotgun}, {500, decide.WeaponShotgun}, {1000, decide.WeaponKeep}} {
+		s.Enemies = []decide.Enemy{enemy("e1", "soldier", tc.units, "med", "attacking")}
+		if d := p.Decide(s, 0); d.Weapon != tc.want {
+			t.Errorf("blaster in hand at %d: %s, want %s", tc.units, d.Weapon, tc.want)
+		}
+	}
+	s.Me.Weapons, s.Me.Weapon = []string{"blaster", "shotgun", "super_shotgun", "chaingun", "grenade_launcher", "rocket_launcher", "railgun"}, "chaingun"
 	// ... unless it runs dry
 	s.Me.Ammo = "none"
 	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 150, "med", "attacking")}

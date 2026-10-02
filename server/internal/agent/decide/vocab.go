@@ -42,16 +42,19 @@ const (
 )
 
 // Movement is how the bot moves relative to its target or threat
-// (question movement).
+// (question movement). It is a policy the controller executes against the
+// target's current position every command: a strafe's side is the
+// controller's (control.Strafer: a seeded left-right rhythm, a blocked
+// side flipped at once, a projectile's dodge side taken at once). Traces
+// before wave 8 also carry strafe_left and strafe_right.
 type Movement string
 
 // Movements.
 const (
-	MoveAdvance     Movement = "advance"
-	MoveRetreat     Movement = "retreat"
-	MoveStrafeLeft  Movement = "strafe_left"
-	MoveStrafeRight Movement = "strafe_right"
-	MoveHold        Movement = "hold"
+	MoveAdvance Movement = "advance"
+	MoveRetreat Movement = "retreat"
+	MoveStrafe  Movement = "strafe"
+	MoveHold    Movement = "hold"
 )
 
 // Danger levels (question danger, a score over these, 0..4).

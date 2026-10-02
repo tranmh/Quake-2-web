@@ -188,7 +188,7 @@ func validIntent(in decide.Intent) error {
 		return fmt.Errorf("mode %q", in.Mode)
 	case !ok(string(in.FirePolicy), "hold", "fire_when_aligned", "suppress"):
 		return fmt.Errorf("fire_policy %q", in.FirePolicy)
-	case !ok(string(in.Movement), "advance", "retreat", "strafe_left", "strafe_right", "hold"):
+	case !ok(string(in.Movement), "advance", "retreat", "strafe", "hold"):
 		return fmt.Errorf("movement %q", in.Movement)
 	case in.Weapon != "" && !in.Weapon.Known():
 		return fmt.Errorf("weapon %q", in.Weapon)

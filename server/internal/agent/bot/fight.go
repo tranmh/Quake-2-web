@@ -66,6 +66,20 @@ const (
 	// charging monster covers 50 to 100 units meanwhile.
 	keepOffDrain = 304
 	keepOffMelee = 160
+	// strafeDodgeETA is how soon (s) a dangerous projectile must pass for
+	// a strafe to take its dodge side (the dodge reflex itself acts within
+	// control.DodgeETA).
+	strafeDodgeETA = 1.5
+	// drainMemory is how long (ms) after its last observation a drain
+	// monster out of view is still backed away from while the bot takes
+	// hits it cannot place (a drain does no knockback: drainSuspected).
+	drainMemory = 2000
+	// retargetRange bounds the monsters the retarget reflex picks (units).
+	retargetRange = 1000
+	// scanNear bounds the monsters a scan turns to (units), scanMemory how
+	// recently (ms) they must have been seen or heard.
+	scanNear   = 700
+	scanMemory = 5000
 	// lowHealth: under it the bot does not advance on a monster in view
 	// that attacks it within lowHealthNear; it sidesteps instead.
 	lowHealth     = 25
@@ -98,8 +112,12 @@ type fight struct {
 	goalAt  int64
 	goalFor Vec3
 	// reflexes armed by the frame: until when, and where to
-	dodgeUntil   int64
-	dodgeDir     Vec3
+	dodgeUntil int64
+	dodgeDir   Vec3
+	// sideDir is the dodge direction of the most urgent dangerous
+	// projectile passing within strafeDodgeETA (zero: none): a strafe
+	// takes the side it points to
+	sideDir      Vec3
 	grenadeUntil int64
 	grenadeDir   Vec3
 	grenadeJump  bool
@@ -123,7 +141,7 @@ type fight struct {
 }
 
 func (f *fight) reset() {
-	*f = fight{trail: f.trail[:0]}
+	*f = fight{trail: f.trail[:0], strafe: control.Strafer{Seed: f.strafe.Seed}}
 }
 
 // noteReflex records a reflex that acted (each once per tick).
@@ -143,10 +161,8 @@ func moveOf(m decide.Movement) control.Move {
 		return control.MoveAdvance
 	case decide.MoveRetreat:
 		return control.MoveRetreat
-	case decide.MoveStrafeLeft:
-		return control.MoveStrafeLeft
-	case decide.MoveStrafeRight:
-		return control.MoveStrafeRight
+	case decide.MoveStrafe:
+		return control.MoveStrafe
 	}
 	return control.MoveHold
 }
@@ -178,10 +194,13 @@ func (b *Bot) trailUpdate(o Vec3) {
 
 // reflexTick arms the reflexes from the frame's projectiles: a dodge of the
 // most urgent projectile that will pass close soon (control.DodgeFor), an
-// escape from a live grenade near the bot (control.GrenadeEscape).
+// escape from a live grenade near the bot (control.GrenadeEscape), and
+// the side a strafe takes for the most urgent dangerous one (sideDir).
 func (b *Bot) reflexTick(bel *worldmodel.Belief) {
 	var in []control.Incoming
 	var gs []Vec3
+	best := float32(strafeDodgeETA)
+	b.fight.sideDir = Vec3{}
 	for i := range bel.Projectiles {
 		p := &bel.Projectiles[i]
 		if p.Own {
@@ -200,6 +219,9 @@ func (b *Bot) reflexTick(bel *worldmodel.Belief) {
 			}
 		}
 		in = append(in, control.Incoming{TCA: p.TCA, Miss: p.Miss, Splash: splash, Dir: p.DodgeDir})
+		if p.Danger && p.TCA > 0 && p.TCA < strafeDodgeETA && (p.DodgeDir[0] != 0 || p.DodgeDir[1] != 0) && p.TCA < best {
+			best, b.fight.sideDir = p.TCA, p.DodgeDir
+		}
 	}
 	if dir, tca, ok := control.DodgeFor(in); ok {
 		b.fight.dodgeUntil = b.now + max(control.DodgeHold, int64(tca*1000)+100)
@@ -221,7 +243,7 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 	// standing still in a close fight (a hold, or cornered between
 	// blocked strafes) for repositionAfter: back off to another spot, all
 	// the way there (or for retreatRepath)
-	still := m == control.MoveHold || m.Side() != 0 && b.now-f.blockedAt < 300
+	still := m == control.MoveHold || m == control.MoveStrafe && b.now-f.blockedAt < 300
 	switch {
 	case f.repositioning && f.goal == goalRetreat && !b.navDone() && b.now-f.goalAt <= retreatRepath:
 		m = control.MoveRetreat
@@ -245,20 +267,14 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 		from = k.Pos
 	case m == control.MoveAdvance && bel.Self.Health < lowHealth && tr.Visible && tr.Awareness == worldmodel.Attacking &&
 		dist3(bel.Self.Origin, tr.Pos) < lowHealthNear:
-		m = control.MoveStrafeRight
-		if f.strafe.Current() < 0 {
-			m = control.MoveStrafeLeft
-		}
+		m = control.MoveStrafe
 		b.moveBy = "low_health"
 	}
 	switch m {
 	case control.MoveAdvance:
 		if tr.Visible && tr.Shootable && dist3(bel.Self.Eye, tr.Pos) < advanceStop(bel.Self.Weapon) {
 			// close enough: no further, but not standing still either
-			m = control.MoveStrafeRight
-			if f.strafe.Current() < 0 {
-				m = control.MoveStrafeLeft
-			}
+			m = control.MoveStrafe
 			b.moveBy = "in_range"
 			break
 		}
@@ -273,10 +289,7 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 	case control.MoveRetreat:
 		if f.goal != goalRetreat || b.now-f.goalAt > retreatRepath || b.navDone() {
 			if !b.retreatGoal(bel, from) {
-				m = control.MoveStrafeRight // nowhere to go: sidestep instead
-				if f.strafe.Current() < 0 {
-					m = control.MoveStrafeLeft
-				}
+				m = control.MoveStrafe // nowhere to go: sidestep instead
 				b.moveBy = "no_cover"
 			}
 		}
@@ -295,15 +308,19 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 	f.move = m
 }
 
-// keepOff returns the nearest monster in view the bot must back away
-// from at once: alive, fighting with a drain or only in melee, and within
-// keepOffDrain or keepOffMelee of the bot (nil: none).
+// keepOff returns the nearest monster the bot must back away from at
+// once: alive, fighting with a drain or only in melee, and within
+// keepOffDrain or keepOffMelee of the bot; in view, or for a drain monster
+// that was awake and seen or heard within drainMemory, out of view while
+// the bot takes hits it cannot place (drainSuspected: the drain does no
+// knockback, so its hits carry no bearing). nil: none.
 func (b *Bot) keepOff(bel *worldmodel.Belief) *worldmodel.Track {
 	var best *worldmodel.Track
 	bd := float32(0)
+	drained := drainSuspected(bel)
 	for i := range bel.Tracks {
 		t := &bel.Tracks[i]
-		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.Visible || !t.PosKnown {
+		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.PosKnown {
 			continue
 		}
 		c := b.classes.ByName(t.Class)
@@ -319,8 +336,52 @@ func (b *Bot) keepOff(bel *worldmodel.Belief) *worldmodel.Track {
 		default:
 			continue
 		}
+		if !t.Visible && (!drained || c.Weapon != perception.WeaponDrain || t.Awareness == worldmodel.Idle || bel.Time-t.LastUpdate > drainMemory) {
+			continue
+		}
 		if d := dist3(bel.Self.Origin, t.Pos); d < reach && (best == nil || d < bd) {
 			best, bd = t, d
+		}
+	}
+	return best
+}
+
+// drainSuspected reports a hit without a bearing in the last second (no
+// knockback: a drain, or a hit the view kick does not place).
+func drainSuspected(bel *worldmodel.Belief) bool {
+	for i := len(bel.Damage) - 1; i >= 0; i-- {
+		d := &bel.Damage[i]
+		if bel.Time-d.At > 1000 {
+			break
+		}
+		if !d.BearingKnown && d.Cause == "hit" && d.Health+d.Armor > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// retarget picks the monster the bot fights or shoots back at when the
+// intent names no live target (dead, gone, or none yet: the decision
+// layer's next answer is a latency away): the most dangerous by threat
+// over distance among the monsters in view with a line of fire within
+// retargetRange that are awake (attacking only, with attacking set). nil:
+// none.
+func (b *Bot) retarget(bel *worldmodel.Belief, attacking bool) *worldmodel.Track {
+	var best *worldmodel.Track
+	bs := float32(-1)
+	for i := range bel.Tracks {
+		t := &bel.Tracks[i]
+		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.PosKnown || !t.Visible || !t.Shootable ||
+			t.Awareness == worldmodel.Idle || attacking && t.Awareness != worldmodel.Attacking {
+			continue
+		}
+		d := dist3(bel.Self.Origin, t.Pos)
+		if d > retargetRange {
+			continue
+		}
+		if s := (t.Threat + 1) / max(d, 64); s > bs {
+			best, bs = t, s
 		}
 	}
 	return best
@@ -518,9 +579,11 @@ func (b *Bot) cmdNow() int64 { return b.now + int64(b.cmdSub*navrt.CmdMsec) }
 // move is the driver's Move hook: the reflexes and the fight's own
 // movement replace the navigator's intent where the way is safe; edges
 // that need their exact input (jumps, ducks, swims, a required view) are
-// left alone. A strafe side is blocked when its way is unsafe (SafeDir) or
-// a wall or a body leaves it less than strafeRoom; the strafer then flips
-// to the other side, and holds with both blocked.
+// left alone. A strafe's side is the strafer's (control.Strafer): its
+// seeded rhythm, or the dodge side of a dangerous projectile passing soon
+// (sideDir). A side is blocked when its way is unsafe (SafeDir) or a wall
+// or a body leaves it less than strafeRoom; the strafer then flips to the
+// other side, and holds with both blocked.
 func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 	if in.MustFace || in.Jump || in.Crouch || in.Swim || in.SwimUp {
 		return in
@@ -547,8 +610,12 @@ func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 	}
 	o := st.Origin()
 	switch f.move {
-	case control.MoveStrafeLeft, control.MoveStrafeRight:
-		side := f.strafe.Side(now, f.move.Side(), func(side int) bool {
+	case control.MoveStrafe:
+		prefer := 0
+		if f.sideDir != (Vec3{}) {
+			prefer = control.SideOf(f.sideDir, o, tr.Pos)
+		}
+		side := f.strafe.Side(now, prefer, func(side int) bool {
 			dir := control.SideDir(side, o, tr.Pos)
 			return b.nav.SafeDir(dir, strafeLook) && b.nav.Clearance(dir, strafeRoom) >= strafeRoom
 		})
@@ -743,15 +810,52 @@ func segmentHitsBox(a, b, lo, hi Vec3) bool {
 }
 
 // searchTick turns the bot towards the last hit whose source it does not
-// see (a damage bearing without a target): for searchFor after the hit.
+// see (a damage bearing without a target): for searchFor after the hit. A
+// hit it cannot place (no bearing: a drain, a hit without knockback)
+// starts a scan instead, unless one is under way: towards the nearest
+// awake monster it saw or heard within scanMemory and scanNear, else
+// behind it, then to one side and the other (reflex scan).
 func (b *Bot) searchTick(bel *worldmodel.Belief) {
 	n := len(bel.Damage)
 	if n == 0 || b.target != "" {
 		return
 	}
 	d := &bel.Damage[n-1]
-	if !d.BearingKnown || d.At <= b.searchAt || bel.Time-d.At > 300 {
+	if d.At <= b.searchAt || bel.Time-d.At > 300 {
 		return
 	}
-	b.searchAt, b.searchUntil, b.searchYaw = d.At, d.At+searchFor, d.Bearing
+	if d.BearingKnown {
+		b.searchAt, b.searchUntil, b.searchYaw = d.At, d.At+searchFor, d.Bearing
+		return
+	}
+	if d.Cause != "hit" || b.now < b.searchUntil {
+		return
+	}
+	yaw := bel.Self.ViewAngles[q2const.YAW] + [...]float32{180, 90, -90}[b.scans%3]
+	if t := b.scanSuspect(bel); t != nil {
+		yaw = float32(math.Atan2(float64(t.Pos[1]-bel.Self.Origin[1]), float64(t.Pos[0]-bel.Self.Origin[0])) * 180 / math.Pi)
+	} else {
+		b.scans++
+	}
+	b.searchAt, b.searchUntil, b.searchYaw = d.At, d.At+searchFor, yaw
+	b.fight.noteReflex("scan")
+}
+
+// scanSuspect is the nearest monster out of view that may have dealt a
+// hit the bot cannot place: alive, positioned, awake, seen or heard within
+// scanMemory, within scanNear (nil: none).
+func (b *Bot) scanSuspect(bel *worldmodel.Belief) *worldmodel.Track {
+	var best *worldmodel.Track
+	bd := float32(scanNear)
+	for i := range bel.Tracks {
+		t := &bel.Tracks[i]
+		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.PosKnown || t.Visible ||
+			t.Awareness == worldmodel.Idle || bel.Time-t.LastUpdate > scanMemory {
+			continue
+		}
+		if d := dist3(bel.Self.Origin, t.Pos); d < bd {
+			best, bd = t, d
+		}
+	}
+	return best
 }

@@ -56,7 +56,7 @@ func TestUnseenTarget(t *testing.T) {
 		t.Errorf("waiting for an unseen target: %s", m)
 	}
 	st.Me.DamageLast1s = 5
-	if m := p.Decide(st, 1000).Movement; m != decide.MoveStrafeLeft && m != decide.MoveStrafeRight {
+	if m := p.Decide(st, 1000).Movement; m != decide.MoveStrafe {
 		t.Errorf("hit by something unseen: %s, want a strafe", m)
 	}
 }

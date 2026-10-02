@@ -47,7 +47,8 @@ lockstep sv.Server (virtual clock)  ─┐                                    �
   - aim slew and leading;
   - path following on the nav graph;
   - the reflexes (fire gate, no splash at close range, no fire with a neutral or a barrel in the line, dodge,
-    weapon dry);
+    weapon dry, backing away at once from a drain or melee-only monster close by (a drain monster also just
+    out of view while hits arrive without a bearing), no advance on an attacker under 25 health);
   - mover waits and directional triggers.
   Answers arrive late, so the model chooses latency-tolerant policies, not usercmds.
 - **Two lanes.** The fast (combat) lane runs up to 10 Hz while enemies or projectiles are known. The slow
@@ -63,8 +64,17 @@ lockstep sv.Server (virtual clock)  ─┐                                    �
   field), confidence-weighted evidence. The posterior decides a field while its newest answer is within its
   TTL, its weight is at least `MinConfidence` and, for a choice, its top option is at least `MinPosterior`.
   Otherwise the field falls back to the scripted policy (reason `weak` for too little or split evidence). A
-  value held by hysteresis stays model-sourced while the posterior still backs it. The arbiter records the
-  provenance of every field the bot acted on: model, scripted, stale, reflex or default.
+  value held by hysteresis stays model-sourced while the posterior still backs it.
+  - *Trust.* Per choice field the arbiter estimates the model's blip rate: confident answers that the next
+    answer reverts. A field under `TrustBelow` (4 %) follows the newest confident answer; otherwise a change
+    needs `Confirm` (2) agreeing answers, so a lone wrong answer never flips it. A clean model thus decides as
+    fast as from its latest answer, and a noisy one is filtered.
+  - *Safety first.* Danger rises at once to a fresh answer and falls only with the evidence, and at danger ≥
+    3.5 the newest answer's `retreat` is acted on at once. Accumulation never delays a retreat.
+  - *The scripted backend* decides from its latest answer alone: its answers are exact, not evidence.
+
+  The arbiter records the provenance of every field the bot acted on: model, scripted, stale, reflex or
+  default.
 - **Map knowledge.**
   - A nav graph is built from the BSP by simulating the bit-exact `pmove` for every candidate edge. The edges
     carry conditions (mover poses, removed walls) and effects (the triggers they pass through). It is cached
@@ -112,10 +122,16 @@ Everything the bot knows comes from one of the following:
    - a removable wall is assumed gone when the bot stands in a pocket that only it could open;
    - in a pit from which the route's goal cannot be reached, the bot types `kill` (a player command), which
      counts as a death;
-   - when the bot has stood within 24 units of one spot for 30 s of game time while its navigator kept
-     trying to move it (on at least 75 % of the frames) and reported itself stuck at least 8 times, it is
-     wedged and types `kill` too (`bot.wedgeTick`, reflex `wedged_kill`). That also counts as a death and
-     reloads `save0`, so it shows in every evaluation's death count.
+   - when the bot has stood within 24 units of one spot for 120 s of game time while its navigator was under
+     way on at least 75 % of the frames and recovered at least 8 times (stuck reports plus repaths), or for
+     60 s off the nav graph with a goal, it is wedged and types `kill` too (`bot.wedgeTick`, reflex
+     `wedged_kill`);
+   - after 250 s without progress (no route step done, no shorter path to the current one, no kill of a
+     monster it fought) the bot types `kill` too (`bot.stallTick`, reflex `stalled_kill`), 50 s before the
+     campaign's watchdog would end the run.
+
+   Each such `kill` is decided from the bot's own position, its navigator and its belief, and goes out at most
+   every 6 s. It counts as a death and reloads `save0`, so it shows in every evaluation's death count.
 
 The game's level counters (`session.Truth`: kills and secrets) feed only `level_end` and `run.json`, for
 metrics. They never reach the bot. Without a collision map the perceiver fails closed: it sees nothing and
@@ -160,8 +176,8 @@ still hears.
     for it.
   - A run depends only on its configuration and seed with the scripted, replay, constant and random backends.
     The trace compares equal except for the `wall` stamps, and `q2bot replay -strict` checks this.
-  - A lockstep mock run is also exact, unless a loopback round trip exceeds the client's 800 ms fast-lane
-    attempt cap.
+  - A lockstep mock run is also exact: its jev client lifts the fast-lane cap (`jev.Config.UncapFast`, 30 s
+    attempts on both lanes), so only a loopback hang over 30 s could make it depart.
   - A full campaign takes about 30 s of wall time for 17 min of game time.
 - **Realtime** (`session.InProc`, used for the server's bots):
   - The bot connects to a `host.Instance` over an in-memory `loopback` connection, and `Step` is paced at
@@ -274,6 +290,6 @@ Rejected alternatives:
     not be deterministic.
 - **Other maps need new data.** The route tables are specific to the demo campaign, so another map needs new
   tables (a general planner is out of scope). The nav builder and the runtime are map-agnostic.
-- **Cost.** The order of magnitude is $0.53–0.83 per campaign at 212 ms simulated latency: 12.6–19.9 M input
-  tokens, by the fake server's token counts (see AGENT-EVAL.md). Live numbers come from `q2bot jev-probe` and the
-  `jev-live` job once a key exists.
+- **Cost.** Cost follows game time: about $0.7 per game hour at 212 ms simulated latency, or $0.23–0.82 per
+  mock campaign (5.6–19.6 M input tokens) in AGENT-EVAL.md's round-2 runs, by the fake server's token counts.
+  Live numbers come from `q2bot jev-probe` and the `jev-live` job once a key exists.

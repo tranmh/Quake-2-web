@@ -79,17 +79,25 @@ func TestModeTransitions(t *testing.T) {
 	bel := selfAt(start, 100)
 	bel.Tracks = []worldmodel.Track{monster("e1", Vec3{300, 0, 24})}
 
-	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireWhenAligned, Movement: decide.MoveStrafeLeft}
+	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireWhenAligned, Movement: decide.MoveStrafe}
 	m.at(100, bel)
 	if m.Mode() != ModeFight || m.Target() != "e1" {
 		t.Fatalf("fight: mode %s target %q", m.Mode(), m.Target())
 	}
-	// a fight on a target the bot does not know: the objective
+	// a fight on a target the bot does not know: the retarget reflex
+	// fights the monster in view that attacks it, with its fire policy
 	*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e9"}
 	m.at(200, bel)
-	if m.Mode() != ModeObjective {
-		t.Fatalf("fight on an unknown target: mode %s", m.Mode())
+	if m.Mode() != ModeFight || m.Target() != "e1" || m.targetBy != "retarget" || m.firePolicy != decide.FireWhenAligned || m.fireBy != "retarget" {
+		t.Fatalf("fight on an unknown target: mode %s target %q by %q fire %s by %q", m.Mode(), m.Target(), m.targetBy, m.firePolicy, m.fireBy)
 	}
+	// ... but not an idle one: the objective
+	bel.Tracks[0].Awareness = worldmodel.Idle
+	m.at(250, bel)
+	if m.Mode() != ModeObjective || m.Target() != "" {
+		t.Fatalf("fight on an unknown target, an idle monster in view: mode %s target %q", m.Mode(), m.Target())
+	}
+	bel.Tracks[0].Awareness = worldmodel.Attacking
 	// retreat from the threat
 	*m.intent = decide.Intent{Mode: decide.ModeRetreat, Target: "e1", FirePolicy: decide.FireWhenAligned}
 	m.at(300, bel)
