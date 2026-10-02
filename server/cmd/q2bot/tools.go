@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -53,7 +54,7 @@ func runReplay(e *env, args []string) error {
 	defer stop()
 	rep, err := runner.Replay(ctx, rc)
 	if err != nil {
-		return err
+		return configErr(err)
 	}
 	if *asJSON {
 		writeJSON(e.stdout, rep)
@@ -116,9 +117,15 @@ func printReplay(w io.Writer, r *runner.ReplayReport) {
 	}
 }
 
+// runSummarize recomputes run.json from the traces. Traces that do not
+// read whole (a truncated file, an event the collector rejects) give a
+// partial summary: it is printed and the exit status is 1, and it
+// replaces run.json only when there is none (a crashed run) or with
+// -force, so a good run.json is never overwritten by a partial one.
 func runSummarize(e *env, args []string) error {
 	fs := newFlags("summarize", e)
 	dry := fs.Bool("dry-run", false, "print the summary, do not rewrite run.json")
+	force := fs.Bool("force", false, "rewrite run.json even from traces that do not read whole")
 	asJSON := fs.Bool("json", false, "print run.json")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
@@ -128,15 +135,21 @@ func runSummarize(e *env, args []string) error {
 		return fmt.Errorf("%w: summarize takes one run directory", errUsage)
 	}
 	dir := pos[0]
-	s, err := runner.SummarizeDir(dir, runner.SummarizeOptions{})
-	if err != nil {
-		if s.Schema == "" {
-			return err
-		}
-		fmt.Fprintf(e.stderr, "q2bot summarize: %v\n", err)
+	path := filepath.Join(dir, runner.RunFile)
+	s, sumErr := runner.SummarizeDir(dir, runner.SummarizeOptions{})
+	if sumErr != nil && s.Schema == "" {
+		return sumErr
 	}
-	if !*dry {
-		if err := metrics.WriteJSON(filepath.Join(dir, runner.RunFile), s); err != nil {
+	write := !*dry
+	if sumErr != nil {
+		fmt.Fprintf(e.stderr, "q2bot summarize: the traces do not read whole: %v\n", sumErr)
+		if _, err := os.Stat(path); err == nil && !*force && write {
+			fmt.Fprintf(e.stderr, "q2bot summarize: %s left as it is (-force rewrites it from the partial traces)\n", path)
+			write = false
+		}
+	}
+	if write {
+		if err := metrics.WriteJSON(path, s); err != nil {
 			return err
 		}
 	}
@@ -144,6 +157,9 @@ func runSummarize(e *env, args []string) error {
 		writeJSON(e.stdout, s)
 	} else {
 		printSummary(e.stdout, &s, dir)
+	}
+	if sumErr != nil {
+		return errFailed
 	}
 	return nil
 }

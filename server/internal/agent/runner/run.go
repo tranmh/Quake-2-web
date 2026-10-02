@@ -189,7 +189,7 @@ func newRunner(cfg Config, h runnerHooks) (*Runner, error) {
 		}
 	}
 	if !ValidRunID(id) {
-		return nil, fmt.Errorf("%w: run id %q", errConfig, id)
+		return nil, fmt.Errorf("%w: run id %q", ErrConfig, id)
 	}
 	r.id = id
 	if !r.noFiles {
@@ -241,7 +241,7 @@ func (r *Runner) prepare() error {
 	if lib == nil {
 		lib = campaign.NewLibrary(campaign.LibraryConfig{ReadFile: cfg.FS.ReadFile, Skill: r.skill, NavDir: cfg.NavDir, Logf: r.logf})
 	} else if lib.Skill() != r.skill {
-		return fmt.Errorf("%w: the library resolves skill %d, the run plays skill %d", errConfig, lib.Skill(), r.skill)
+		return fmt.Errorf("%w: the library resolves skill %d, the run plays skill %d", ErrConfig, lib.Skill(), r.skill)
 	}
 	if r.skill != camp.Skill {
 		// the route tables were written for the campaign's skill: check
@@ -279,7 +279,7 @@ func accountDaily(a *budget.Account) (spent, limit float64) {
 // terminal).
 func selectVisits(camp *route.Campaign, maps []string) ([]string, int, error) {
 	if len(camp.Tables) == 0 {
-		return nil, 0, fmt.Errorf("%w: campaign %s has no route tables", errConfig, camp.Name)
+		return nil, 0, fmt.Errorf("%w: campaign %s has no route tables", ErrConfig, camp.Name)
 	}
 	all := make([]string, len(camp.Tables))
 	for i, t := range camp.Tables {
@@ -293,7 +293,7 @@ func selectVisits(camp *route.Campaign, maps []string) ([]string, int, error) {
 		set[strings.ToLower(strings.TrimSpace(m))] = true
 	}
 	if !set[strings.ToLower(all[0])] {
-		return nil, 0, fmt.Errorf("%w: the maps %v must include the campaign's start %s", errConfig, maps, all[0])
+		return nil, 0, fmt.Errorf("%w: the maps %v must include the campaign's start %s", ErrConfig, maps, all[0])
 	}
 	n := 0
 	for n < len(all) && set[strings.ToLower(all[n])] {
@@ -305,7 +305,7 @@ func selectVisits(camp *route.Campaign, maps []string) ([]string, int, error) {
 	}
 	for m := range set {
 		if !played[m] {
-			return nil, 0, fmt.Errorf("%w: map %s is not among the campaign's first visits %v", errConfig, m, all[:n])
+			return nil, 0, fmt.Errorf("%w: map %s is not among the campaign's first visits %v", ErrConfig, m, all[:n])
 		}
 	}
 	if n == len(all) {
@@ -612,10 +612,12 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 
 	r.logf("%s: %s, %s session, seed %d, maps %s", tag, cfg.Backend, cfg.Session, seed, strings.Join(r.visits, ","))
 	start := cfg.Now()
+	// the bot's tick reports (OnDecision) feed the episode's acted-on
+	// provenance; the campaign publishes the tick events themselves
 	res, runErr := campaign.Run(ectx, er.stp, campaign.Config{
 		Campaign:       r.camp,
 		Library:        r.lib,
-		Bot:            bot.Config{Policy: pol, Seed: int64(seed)},
+		Bot:            bot.Config{Policy: pol, Seed: int64(seed), OnDecision: pol.onTick},
 		Bus:            r.bus,
 		Episode:        ep,
 		Seed:           seed,

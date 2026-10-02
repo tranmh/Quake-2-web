@@ -217,7 +217,11 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 	switch m {
 	case control.MoveAdvance:
 		if tr.Visible && tr.Shootable && dist3(bel.Self.Eye, tr.Pos) < advanceStop(bel.Self.Weapon) {
-			m = control.MoveHold // close enough: no further
+			// close enough: no further, but not standing still either
+			m = control.MoveStrafeRight
+			if f.strafe.Current() < 0 {
+				m = control.MoveStrafeLeft
+			}
 			break
 		}
 		if !b.nav.CanReturn(bel.Self.Origin, tr.Pos) {
@@ -368,8 +372,8 @@ func (b *Bot) coverSpot(bel *worldmodel.Belief, from Vec3) (Vec3, bool) {
 }
 
 // retreatTick runs retreat mode: back off from the main threat to a
-// health item when one is known nearby, else to cover; fight back at
-// whatever is in view meanwhile.
+// health item when one is known nearby (or the one the policy would pick
+// up), else to cover; fight back at whatever is in view meanwhile.
 func (b *Bot) retreatTick(bel *worldmodel.Belief, th *worldmodel.Track) {
 	f := &b.fight
 	b.takeNav()
@@ -377,9 +381,19 @@ func (b *Bot) retreatTick(bel *worldmodel.Belief, th *worldmodel.Track) {
 		b.target = th.ID
 	}
 	if f.goal == goalHeal && !b.navDone() && b.now-f.goalAt < 3*retreatRepath {
-		return
+		if it := b.healItem(bel); it == nil || !b.giveUpItem(it, bel.Self.Origin) {
+			return
+		}
+		f.goal = goalNone
 	}
-	if it := b.nearestHealth(bel); it != nil {
+	it := b.nearestHealth(bel)
+	if it == nil {
+		// none near: the health the policy would pick up, wherever it is
+		if p := b.pickupItem(bel, b.intent.Pickup); p != nil && p.Kind == "health" {
+			it = p
+		}
+	}
+	if it != nil && !b.giveUpItem(it, bel.Self.Origin) {
 		goal := navrt.PointGoal(it.Pos, 16)
 		if it.Lump >= 0 {
 			goal = navrt.ItemGoal(int32(it.Lump))
@@ -394,6 +408,17 @@ func (b *Bot) retreatTick(bel *worldmodel.Belief, th *worldmodel.Track) {
 	if f.goal != goalRetreat || b.now-f.goalAt > retreatRepath || b.navDone() {
 		b.retreatGoal(bel, th.Pos)
 	}
+}
+
+// healItem is the item of the heal goal under way (nil when gone).
+func (b *Bot) healItem(bel *worldmodel.Belief) *worldmodel.Item {
+	for i := range bel.Items {
+		it := &bel.Items[i]
+		if it.Life == worldmodel.LifeAlive && dist3(it.Pos, b.fight.goalFor) < 1 {
+			return it
+		}
+	}
+	return nil
 }
 
 // nearestHealth is the nearest health item the bot knows of within

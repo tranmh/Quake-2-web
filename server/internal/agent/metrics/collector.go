@@ -33,10 +33,12 @@ type Collector struct {
 	firstGMs, lastGMs   int64
 	seen                bool
 
-	// ticks accumulates the provenance events by episode; gate, when set,
+	// ticks accumulates the provenance events by episode, tickEv the lane
+	// tick events (which win where an episode has any); gate, when set,
 	// is the provenance gate Summary evaluates.
-	ticks map[int]*tickAcc
-	gate  *GateConfig
+	ticks  map[int]*tickAcc
+	tickEv map[int]*tickAcc
+	gate   *GateConfig
 }
 
 type episodeAcc struct {
@@ -56,6 +58,7 @@ func NewCollector() *Collector {
 		fields:   map[string]*Provenance{},
 		byStatus: map[string]int{},
 		ticks:    map[int]*tickAcc{},
+		tickEv:   map[int]*tickAcc{},
 	}
 }
 
@@ -223,6 +226,18 @@ func (c *Collector) add(e trace.Event) error {
 		if err := e.DecodeBody(&b); err != nil {
 			return err
 		}
+		if b.Lane == trace.LaneTick {
+			// a decision tick of the bot, not a request: its Intent says
+			// what was acted on (the per-tick provenance)
+			c.s.Decisions.Ticks++
+			acc := c.tickEv[e.Ep]
+			if acc == nil {
+				acc = &tickAcc{}
+				c.tickEv[e.Ep] = acc
+			}
+			acc.addTick(b.Intent)
+			break
+		}
 		c.s.Decisions.Decisions++
 		for _, f := range b.Fields {
 			p := c.fields[f.Name]
@@ -378,7 +393,7 @@ func (c *Collector) Summary() RunSummary {
 			t.CombatMs += l.CombatMs
 		}
 		es.Totals = t
-		es.Ticks = c.ticks[n].stats()
+		es.Ticks = c.episodeTicks(n).stats()
 		s.Totals.add(t)
 		s.Episodes = append(s.Episodes, es)
 		s.EpisodeSeeds = append(s.EpisodeSeeds, es.Seed)
@@ -424,20 +439,22 @@ func (c *Collector) Summary() RunSummary {
 		a.CombatQPS = float64(a.CombatCalls) / (float64(s.Totals.CombatMs) / 1000)
 	}
 
-	if len(c.ticks) > 0 {
+	if len(c.ticks) > 0 || len(c.tickEv) > 0 {
 		var all tickAcc
-		eps := make([]int, 0, len(c.ticks))
+		set := map[int]bool{}
 		for n := range c.ticks {
+			set[n] = true
+		}
+		for n := range c.tickEv {
+			set[n] = true
+		}
+		eps := make([]int, 0, len(set))
+		for n := range set {
 			eps = append(eps, n)
 		}
 		sort.Ints(eps)
 		for _, n := range eps {
-			acc := c.ticks[n]
-			all.ticks += acc.ticks
-			for name, p := range acc.fields {
-				all.add(trace.Provenance{Fields: []trace.TickField{{Name: name, Default: p.Default, Model: p.Model,
-					Scripted: p.Scripted, Stale: p.Stale, Reflex: p.Reflex}}})
-			}
+			all.merge(c.episodeTicks(n))
 		}
 		s.Ticks = all.stats()
 	}
@@ -447,6 +464,16 @@ func (c *Collector) Summary() RunSummary {
 		s.ModelDriven = g.Passed
 	}
 	return s
+}
+
+// episodeTicks returns episode n's per-tick provenance: its lane tick
+// events when there are any (they cover the episode as far as it got),
+// else its provenance events (nil without either).
+func (c *Collector) episodeTicks(n int) *tickAcc {
+	if acc := c.tickEv[n]; acc != nil && acc.ticks > 0 {
+		return acc
+	}
+	return c.ticks[n]
 }
 
 // percentiles returns nearest-rank percentiles of v.

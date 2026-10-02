@@ -106,8 +106,8 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 		return usageErr(fmt.Errorf("unknown session %q", cfg.Session))
 	case cfg.Episodes < 1:
 		return usageErr(fmt.Errorf("-episodes %d", cfg.Episodes))
-	case *skill > 3:
-		return usageErr(fmt.Errorf("-skill %d not in 0..3", *skill))
+	case *skill < -1 || *skill > 3:
+		return usageErr(fmt.Errorf("-skill %d not in 0..3 (or -1: the campaign's)", *skill))
 	case *minShare < 0 || *minShare > 1 || *maxStale < 0 || *maxStale > 1:
 		return usageErr(errors.New("-min-model-share and -max-stale-rate are shares in 0..1"))
 	case *budgetUSD < 0 || *budgetQ < 0 || *maxQPS < 0 || *accountQPS < 0:
@@ -163,7 +163,7 @@ func runRun(e *env, args []string) error {
 	}
 	r, err := runner.New(cfg)
 	if err != nil {
-		return err
+		return configErr(err)
 	}
 	s, runErr := r.Run(ctx)
 	if o.json {
@@ -184,6 +184,15 @@ func runRun(e *env, args []string) error {
 		return errFailed
 	}
 	return nil
+}
+
+// configErr makes a configuration the runner rejected (runner.ErrConfig:
+// maps that are not the campaign's first visits, say) a usage error.
+func configErr(err error) error {
+	if errors.Is(err, runner.ErrConfig) {
+		return fmt.Errorf("%w: %v", errUsage, err)
+	}
+	return err
 }
 
 func writeJSON(w io.Writer, v any) {
@@ -242,14 +251,19 @@ func printSummary(w io.Writer, s *metrics.RunSummary, dir string) {
 			100*s.Decisions.DisagreementRate)
 	}
 	if b := s.Budget; b != nil {
-		fmt.Fprintf(w, "  budget      $%.6f of $%.2f, fast lane %g Hz, scripted only %v %s\n", b.SpentUSD, b.LimitUSD, b.RateHz, b.ScriptedOnly, b.Reason)
+		limit := "no USD cap"
+		if b.LimitUSD > 0 {
+			limit = fmt.Sprintf("of $%.6f", b.LimitUSD)
+		}
+		fmt.Fprintf(w, "  budget      $%.6f %s, fast lane %g Hz, scripted only %v %s\n", b.SpentUSD, limit, b.RateHz, b.ScriptedOnly, b.Reason)
 	}
 	if g := s.Gate; g != nil {
 		verdict := "model-driven"
 		if !g.Passed {
 			verdict = "not model-driven: " + strings.Join(g.Reasons, "; ")
 		}
-		fmt.Fprintf(w, "  gate        %s (min share %.2f, max stale %.2f, basis %s)\n", verdict, g.MinModelShare, g.MaxStaleRate, g.Basis)
+		fmt.Fprintf(w, "  gate        %s (min share %.2f, max stale %.2f, basis %s; api stale %.1f%%, ticks on stale answers %.1f%%)\n",
+			verdict, g.MinModelShare, g.MaxStaleRate, g.Basis, 100*g.StaleRate, 100*g.TickStaleShare)
 	}
 	if s.Errors > 0 {
 		fmt.Fprintf(w, "  errors      %d, last: %s\n", s.Errors, s.LastError)

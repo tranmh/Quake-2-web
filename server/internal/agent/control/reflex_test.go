@@ -66,6 +66,17 @@ func TestFireGateSplash(t *testing.T) {
 		if v := FireGate(in); v.Fire || v.Reason != NoFireSplashClose || !v.Vetoed() {
 			t.Errorf("%s at %d: %+v", name, SplashSafe-10, v)
 		}
+		// a crossing target 140 units away, the aim point led past
+		// SplashSafe: the target's own distance holds the trigger
+		in = aimed(t, name, FireAligned)
+		in.Aim, in.TargetDist = Vec3{140, 70, 0}, 140
+		if v := FireGate(in); v.Fire || v.Reason != NoFireSplashClose {
+			t.Errorf("%s led to %.0f at a target at 140: %+v", name, dist3(in.Eye, in.Aim), v)
+		}
+		in.Aim, in.TargetDist = Vec3{400, 0, 0}, 400
+		if v := FireGate(in); !v.Fire {
+			t.Errorf("%s with the target distance at 400: %+v", name, v)
+		}
 		in = aimed(t, name, FireSuppress)
 		in.WallClose = true
 		if v := FireGate(in); v.Fire || v.Reason != NoFireSplashWall {

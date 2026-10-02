@@ -79,7 +79,10 @@ type policy struct {
 	// policy (it ends the episode).
 	stop func(budget.State)
 
-	decisions  int
+	decisions int
+	// acted counts the bot's decision ticks by the source of every
+	// field's acted-on value (onTick)
+	acted      tickCounts
 	budgetSeen bool
 	lastHz     float64
 	lastOnly   bool
@@ -184,27 +187,81 @@ func (p *policy) onRecord(r *decide.Record) {
 	}
 }
 
-// provenance returns the per-tick provenance of the episode so far.
+// onTick is the bot's OnDecision hook: it counts the provenance of every
+// field of a lane tick event (what the bot acted on, its overrides marked
+// reflex). The campaign publishes the events themselves.
+func (p *policy) onTick(d *trace.Decision) {
+	if d == nil || d.Lane != trace.LaneTick || d.Intent == nil {
+		return
+	}
+	p.acted.add(d.Intent.Fields)
+}
+
+// provenance returns the per-tick provenance of the episode so far: the
+// acted-on counts of the bot's tick reports, and the arbiter's.
 func (p *policy) provenance() trace.Provenance {
 	st := p.Pipeline.Stats()
-	out := trace.Provenance{Ticks: st.Ticks}
+	out := trace.Provenance{ArbiterTicks: st.Ticks}
 	for f := decide.Field(0); f < decide.NumFields; f++ {
 		tf := trace.TickField{Name: f.ID()}
 		for src, n := range st.Arbiter.Fields[f].Ticks {
-			switch decide.Source(src).String() {
-			case trace.SourceDefault:
-				tf.Default += n
-			case trace.SourceModel:
-				tf.Model += n
-			case trace.SourceScripted:
-				tf.Scripted += n
-			case trace.SourceStale:
-				tf.Stale += n
-			case trace.SourceReflex:
-				tf.Reflex += n
-			}
+			tf.Count(decide.Source(src).String(), n)
 		}
-		out.Fields = append(out.Fields, tf)
+		out.Arbiter = append(out.Arbiter, tf)
+	}
+	if p.acted.ticks == 0 {
+		// a bot that reports no ticks: the arbiter's view is all there is
+		out.Ticks, out.Fields = out.ArbiterTicks, append([]trace.TickField(nil), out.Arbiter...)
+		return out
+	}
+	out.Ticks = p.acted.ticks
+	for f := decide.Field(0); f < decide.NumFields; f++ {
+		out.Fields = append(out.Fields, p.acted.field(f.ID()))
 	}
 	return out
+}
+
+// tickCounts counts tick reports' fields by source.
+type tickCounts struct {
+	ticks  int
+	fields map[string]*trace.TickField
+}
+
+// add counts one tick's fields; a decision field the tick does not
+// report counts as default (every field counts every tick).
+func (c *tickCounts) add(fields []trace.Field) {
+	if c.fields == nil {
+		c.fields = map[string]*trace.TickField{}
+	}
+	c.ticks++
+	seen := map[string]bool{}
+	for _, f := range fields {
+		if _, ok := decide.FieldOf(f.Name); !ok || seen[f.Name] {
+			continue
+		}
+		seen[f.Name] = true
+		c.get(f.Name).Count(f.Source, 1)
+	}
+	for f := decide.Field(0); f < decide.NumFields; f++ {
+		if !seen[f.ID()] {
+			c.get(f.ID()).Default++
+		}
+	}
+}
+
+func (c *tickCounts) get(name string) *trace.TickField {
+	tf := c.fields[name]
+	if tf == nil {
+		tf = &trace.TickField{Name: name}
+		c.fields[name] = tf
+	}
+	return tf
+}
+
+// field returns field name's counts.
+func (c *tickCounts) field(name string) trace.TickField {
+	if tf := c.fields[name]; tf != nil {
+		return *tf
+	}
+	return trace.TickField{Name: name}
 }

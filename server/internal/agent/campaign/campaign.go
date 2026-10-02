@@ -25,8 +25,9 @@
 // Watchdogs bound a level (LevelTimeout) and the episode (EpisodeTimeout)
 // in game time, the deaths on one level (MaxDeaths), the time without a
 // frame on the entered level (FrameTimeout), and progress: after
-// ExploreAfter without route progress the bot explores for a while, after
-// FailAfter the level fails as stalled.
+// ExploreAfter without progress (a route step done, or a monster the bot
+// fought killed) the bot explores for a while, after FailAfter the level
+// fails as stalled.
 //
 // Every step is traced on an agent/trace Bus (episode_start, level_start,
 // damage, kill, death, reload, stuck, level_end, error, episode_end, and
@@ -860,6 +861,9 @@ func (r *runner) traceFight(lv *levelState, bel *worldmodel.Belief, now int64) {
 		if t := bel.Track(f.id); t != nil && t.Life != worldmodel.LifeAlive && t.Life != worldmodel.LifeDying {
 			f.dead = true
 			r.publish(trace.TypeKill, trace.Kill{Target: f.id, Class: t.Class, Weapon: bel.Self.Weapon})
+			// a kill is progress too: a bot fighting its way through a
+			// level is not stalled (the level's monsters are finite)
+			lv.progressAt = max(lv.progressAt, now)
 		}
 	}
 }

@@ -237,3 +237,64 @@ func (n *Navigator) ReachSize(p Vec3) (reach, total int) {
 	n.regions.size[ra] = k
 	return k, total
 }
+
+// inferPassage concludes from where the bot stands that a removable
+// blocker is gone: when the nodes it can reach from start in the believed
+// state are a pocket (at most a quarter of the graph, no spawn point in
+// it) that the rest of the graph enters only through edges needing one
+// and the same removable blocker gone, the bot came in that way, so the
+// blocker is gone (an explosive wall destroyed out of view, whose absence
+// the belief cannot tell from it being out of sight). It assumes so
+// (MapState.Assume) and reports whether the belief changed. Its own
+// position and the static map are all it uses.
+func (n *Navigator) inferPassage(start nav.NodeID) bool {
+	g := n.g
+	holds := func(e *nav.Edge) bool {
+		ok, _ := n.ms.Holds(e, n.now)
+		return ok
+	}
+	in := g.Reachable([]nav.NodeID{start}, holds)
+	size := 0
+	for _, ok := range in {
+		if ok {
+			size++
+		}
+	}
+	if size == 0 || size > len(g.Nodes)/4 {
+		return false
+	}
+	if n.md != nil {
+		for i := range n.md.Spawns {
+			if id := g.Localize(n.md.Spawns[i].Origin, 64); id != nav.NoNode && in[id] {
+				return false // the bot may have started in here
+			}
+		}
+	}
+	gone := int32(-1)
+	for i := range g.Edges {
+		e := &g.Edges[i]
+		if !in[e.To] || in[e.From] {
+			continue
+		}
+		var fail []nav.Req
+		for _, r := range e.Reqs {
+			if ok, _ := n.ms.Satisfied(r, n.now); !ok {
+				fail = append(fail, r)
+			}
+		}
+		switch {
+		case len(fail) == 0:
+			return false // an open way in (a drop): the bot may have come that way
+		case len(fail) > 1 || fail[0].States&^nav.StateGone != 0 || fail[0].Blocker < 0 || !g.Blockers[fail[0].Blocker].Gone:
+			return false
+		case gone >= 0 && gone != fail[0].Blocker:
+			return false
+		}
+		gone = fail[0].Blocker
+	}
+	if gone < 0 || !n.ms.Assume(gone, -1, n.now) {
+		return false
+	}
+	n.bl.Refresh(n.ms)
+	return true
+}

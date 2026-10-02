@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"quake2web/server/internal/agent/backend/ablate"
@@ -75,6 +76,9 @@ func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
 			Faults: faults,
 		})
 		jc.BaseURL, jc.APIKey, jc.AllowCustomBase = b.mock.URL(), trace.NewSecret(mockKey), true
+		if cfg.Session == SessionLockstep {
+			mockLockstep(&jc)
+		}
 		c, err := jev.New(jc)
 		if err != nil {
 			b.mock.Close()
@@ -104,6 +108,24 @@ func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
 	}
 	return b, nil
 }
+
+// mockLockstep keeps the jev client's wall-clock state out of a lockstep
+// mock run, whose answers must depend on the run's seed alone: lockstep
+// compresses the wall clock, so a circuit breaker, a 429/529 cooldown or
+// a locally refused question set (all timed on the wall clock) would
+// decide answers by how fast the machine plays. The breaker never opens,
+// cooldowns and refused sets last a nanosecond, and the attempts get the
+// longest timeouts the client allows (the fast lane's is capped at
+// jev.MaxFastTimeout: a loopback round trip slower than that, on a
+// machine loaded that heavily, is the one wall-clock effect left).
+func mockLockstep(jc *jev.Config) {
+	jc.BreakerFailures = math.MaxInt32
+	jc.DefaultCooldown, jc.MaxCooldown, jc.BadSetTTL = time.Nanosecond, time.Nanosecond, time.Nanosecond
+	jc.FastTimeout, jc.SlowTimeout = jev.MaxFastTimeout, mockSlowTimeout
+}
+
+// mockSlowTimeout is a lockstep mock run's slow-lane attempt timeout.
+const mockSlowTimeout = 30 * time.Second
 
 // replayLatency is a replay's latency model: the recorded latency of a
 // recorded request, the run's simulated latency for the others (requests

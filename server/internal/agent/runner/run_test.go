@@ -379,8 +379,15 @@ func TestRunMock(t *testing.T) {
 	if m := s.Ticks.Fields["mode"]; m.Model == 0 || m.ModelShare < 0.5 {
 		t.Fatalf("mode provenance %+v", m)
 	}
-	if len(g.ModelShares) == 0 {
+	if len(g.ModelShares) == 0 || g.StaleShares == nil {
 		t.Fatalf("gate shares %+v", g)
+	}
+	// the provenance event: what the bot acted on, beside the arbiter's
+	// counts of the same ticks (Validate cross-checks them)
+	evs, _ := RunEvents(r.Dir())
+	if pv := bodies[trace.Provenance](t, evs, trace.TypeProvenance); len(pv) != 1 || pv[0].Ticks == 0 || pv[0].ArbiterTicks != pv[0].Ticks ||
+		len(pv[0].Arbiter) != int(decide.NumFields) {
+		t.Fatalf("provenance events %+v", pv)
 	}
 	// the gate with a threshold the run cannot miss, and one it cannot meet
 	if pass, _ := SummarizeDir(r.Dir(), SummarizeOptions{MinModelShare: 0.01, MaxStaleRate: 1}); !pass.ModelDriven {

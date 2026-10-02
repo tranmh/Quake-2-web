@@ -190,6 +190,14 @@ type Executor struct {
 	// the current step.
 	progressAt int64
 	bestRemain float32
+	// yielding: the bot holds the navigator for something else since
+	// yieldAt (Yield; the attempt's clock stands meanwhile); yielded is
+	// the time (ms) the current attempt stood that way, yieldTotal the
+	// route's and progressYield yieldTotal at the last progress (the stall
+	// clock of Objective counts the time the bot pursued the objective)
+	yielding                           bool
+	yieldAt                            int64
+	yielded, yieldTotal, progressYield int64
 	// kill state: the firing goal's anchor point and when it was set.
 	killAnchor Vec3
 	killGoalAt int64
@@ -333,8 +341,52 @@ func (x *Executor) Stalled() bool { return !x.Done() && x.steps[x.cur].Status ==
 func (x *Executor) LastProgress() int64 { return x.progressAt }
 
 // Yield tells the executor that the bot used the navigator for something
-// else: the next Update sets the current step's goal again.
-func (x *Executor) Yield() { x.issued = false }
+// else (a fight the decision layer chose, a pickup, a retreat, exploring):
+// the next Update sets the current step's goal again. The current
+// attempt's clock stands from the last Update to the next one: its
+// deadline and the stall clock of Objective move on by the time yielded,
+// so a step does not time out while the bot is busy elsewhere. Yield may
+// be called any number of times in between.
+func (x *Executor) Yield() {
+	x.issued = false
+	if !x.yielding {
+		x.yielding, x.yieldAt = true, x.now
+	}
+}
+
+// Engage is Yield for a frame at now (ms) in which the bot does the
+// current step's work itself: it fights the kill step's monster the
+// Directive named. The next Update sets the step's goal again, but the
+// attempt's clock runs on (a pause Yield began ends at now).
+func (x *Executor) Engage(now int64) {
+	x.issued = false
+	x.resume(now)
+}
+
+// resume ends a pause Yield began, at now: the current attempt's deadline
+// moves on by the time yielded.
+func (x *Executor) resume(now int64) {
+	if !x.yielding {
+		return
+	}
+	x.yielding = false
+	paused := now - x.yieldAt
+	if paused <= 0 || x.Done() {
+		return
+	}
+	x.deadline += paused
+	x.yielded += paused
+	x.yieldTotal += paused
+}
+
+// Yielded returns how long (ms) the current attempt stood while the bot
+// used the navigator for something else (Yield), up to the last Update.
+func (x *Executor) Yielded() int64 { return x.yielded }
+
+// noteProgress records progress at the current clock.
+func (x *Executor) noteProgress() {
+	x.progressAt, x.progressYield = x.now, x.yieldTotal
+}
 
 // Retry starts the current step over with fresh attempts (after the
 // campaign's watchdog let the bot explore, say).
@@ -352,7 +404,9 @@ func (x *Executor) Retry() {
 // Start begins the route at now (ms): call it once the level's first
 // belief arrived.
 func (x *Executor) Start(now int64) {
-	x.now, x.progressAt, x.causeAt = now, now, now
+	x.now, x.causeAt = now, now
+	x.yielding, x.yieldTotal = false, 0
+	x.noteProgress()
 	x.cur = 0
 	x.claims = x.claims[:0]
 	for i := range x.steps {
@@ -385,6 +439,7 @@ func (x *Executor) begin() {
 	x.killGoalAt, x.killSeen, x.lookGoalAt = 0, 0, 0
 	x.facedAt, x.exitAt = 0, 0
 	x.nopathAt, x.assumed = 0, false
+	x.yielded = 0
 	x.deadline = x.now + x.timeout(&x.plans[x.cur])
 	x.logf("step %d %s: attempt %d", x.cur, st.Desc, st.Attempts)
 }
@@ -418,7 +473,7 @@ func (x *Executor) complete(why string) {
 			x.claims = append(x.claims, claim{f: &p.effects[k], at: x.now})
 		}
 	}
-	x.progressAt = x.now
+	x.noteProgress()
 	x.nav.ClearGoal()
 	x.cur++
 	x.begin()
@@ -478,6 +533,7 @@ func (x *Executor) back(why string) {
 // belief's clock, ms) and returns the directive for the bot. It sets the
 // navigator's goal for the current step unless the bot holds it (Yield).
 func (x *Executor) Update(now int64, b *worldmodel.Belief) Directive {
+	x.resume(now)
 	x.now, x.belief = now, b
 	for guard := 0; guard < len(x.plans)+1; guard++ {
 		if x.Done() {
@@ -544,11 +600,11 @@ func (x *Executor) navCheck() bool {
 	st := x.nav.Status()
 	if !x.extended && st.Follow == navrt.Following && st.Remaining > 0 {
 		x.extended = true
-		x.deadline = max(x.deadline, x.steps[x.cur].Started+int64(st.Remaining*2500)+20000)
+		x.deadline = max(x.deadline, x.steps[x.cur].Started+x.yielded+int64(st.Remaining*2500)+20000)
 	}
 	if r := x.remaining(); r >= 0 && r < x.bestRemain-progressMin {
 		if x.bestRemain != math.MaxFloat32 {
-			x.progressAt = x.now
+			x.noteProgress()
 		}
 		x.bestRemain = r
 	}
@@ -568,7 +624,8 @@ func (x *Executor) navCheck() bool {
 		x.fail(fmt.Sprintf("navigation failed: %s %s", st.Cause, st.Reason))
 		return false
 	case x.now > x.deadline:
-		x.fail(fmt.Sprintf("timed out after %.0fs (%s %s %s)", float64(x.now-x.steps[x.cur].Started)/1000, st.Follow, st.Cause, st.Reason))
+		x.fail(fmt.Sprintf("timed out after %.0fs (%.0fs yielded; %s %s %s)", float64(x.now-x.steps[x.cur].Started)/1000, float64(x.yielded)/1000,
+			st.Follow, st.Cause, st.Reason))
 		return false
 	}
 	return true
@@ -1011,7 +1068,7 @@ func (x *Executor) Objective() *decide.ObjectiveView {
 	} else {
 		ov.NextWaypointBearing = ov.Bearing
 	}
-	ov.Stalled = st.Status == StepStalled || st.Attempts > 1 || x.now-x.progressAt > StalledAfter
+	ov.Stalled = st.Status == StepStalled || st.Attempts > 1 || x.now-x.progressAt-(x.yieldTotal-x.progressYield) > StalledAfter
 	ov.Exit = x.exitAhead()
 	return ov
 }

@@ -31,7 +31,7 @@ const (
 // Confidence the answer's, and Fallback why the model's answer was not
 // used (no_answer, not_asked, missing, invalid, unknown_option,
 // low_confidence, ttl, error, timeout, gone, held) or, for a reflex, which
-// one (route_kill, no_target, ...).
+// one (route_kill: the route's kill step; dry, splash: the weapon reflexes).
 type Intent struct {
 	Mode       string  `json:"mode"`
 	Target     string  `json:"target,omitempty"`
@@ -64,8 +64,12 @@ type Tick struct {
 	Switch string `json:"switch,omitempty"`
 	// Health is the bot's health this tick.
 	Health int `json:"health"`
-	// Reflexes are the reflexes that acted in Cmds, each once, in the
-	// order they first acted: dodge, grenade, hold_fire:<reason>.
+	// Reflexes are the reflexes and watchdogs that acted this tick or in
+	// Cmds, each once, in the order they first acted: dodge, grenade,
+	// hold_fire:<reason> (the fire gate held the trigger: hold, neutral,
+	// barrel, splash_close, splash_wall, not_visible, no_line, aim),
+	// reposition (backed off after standing still in a fight), disengage
+	// (the fight budget ran out), trapped_kill (typed "kill" in a pit).
 	Reflexes []string `json:"reflexes,omitempty"`
 	// Requests are the requests built this tick, by Req (submitted or
 	// dropped at the in-flight cap).

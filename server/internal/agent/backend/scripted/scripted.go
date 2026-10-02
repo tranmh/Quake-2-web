@@ -73,6 +73,7 @@ const (
 	firstStrike  = 600  // units: a visible idle enemy with a line of fire this close is shot first
 	recallRange  = 700  // units: an attacker out of view this close keeps the fight on
 	meleeKeepOff = 250  // units: stay this far from melee-only monsters
+	drainKeepOff = 320  // units: and this far from a drain (it reaches 256)
 	retreatHP    = 30   // health under which the bot backs off from a fight
 	backOffHP    = 40   // health under which it backs away from an attacker while fighting
 	strafeWindow = 1800 // ms: one left and one right segment
@@ -82,20 +83,22 @@ const (
 // Pickup thresholds: the health under which a health item is worth a
 // detour of how many path units.
 const (
-	healthLow      = 40
-	healthLowNear  = 1000
-	healthHurt     = 75
-	healthHurtNear = 450
-	exitHealthNear = 1500 // before leaving a level: what the next one starts with
-	weaponNear     = 1500
-	firstWeapon    = 5000 // with nothing but the blaster: a gun is worth a long way
-	betterWeapon   = 3000 // a gun better than any owned one is worth a detour this long
-	armorNear      = 450
-	exitArmorNear  = 1000
-	ammoNear       = 800
-	ammoTopUpNear  = 300
-	powerupNear    = 700
-	urgentNear     = 400 // a weapon, ammo for an empty one, or health when low: taken even in a fight
+	healthCritical     = 25
+	healthCriticalNear = 3000 // nearly dead: health is worth a long way
+	healthLow          = 40
+	healthLowNear      = 1000
+	healthHurt         = 75
+	healthHurtNear     = 450
+	exitHealthNear     = 1500 // before leaving a level: what the next one starts with
+	weaponNear         = 1500
+	firstWeapon        = 5000 // with nothing but the blaster: a gun is worth a long way
+	betterWeapon       = 3000 // a gun better than any owned one is worth a detour this long
+	armorNear          = 450
+	exitArmorNear      = 1000
+	ammoNear           = 800
+	ammoTopUpNear      = 300
+	powerupNear        = 700
+	urgentNear         = 400 // a weapon, ammo for an empty one, or health when low: taken even in a fight
 )
 
 // Decide applies the rules to st at now (the snapshot time, ms).
@@ -224,11 +227,20 @@ func preferredRange(w string) (lo, hi, backoff int) {
 	return 0, 600, 0 // blaster
 }
 
-// meleeOnly reports a monster that only fights in melee (or with a
-// drain) by its class prior.
-func (p *Policy) meleeOnly(class string) bool {
+// keepOff is how far to stay from a monster that only fights in melee
+// or with a drain (by its class prior), 0 for the others. A drain reaches
+// 256 units (C: game/m_parasite.c parasite_drain_attack_ok).
+func (p *Policy) keepOff(class string) int {
 	c := p.classes.ByName(class)
-	return c != nil && (c.Weapon == perception.WeaponMelee || c.Weapon == perception.WeaponDrain)
+	switch {
+	case c == nil:
+		return 0
+	case c.Weapon == perception.WeaponDrain:
+		return drainKeepOff
+	case c.Weapon == perception.WeaponMelee:
+		return meleeKeepOff
+	}
+	return 0
 }
 
 // StrafeLeft is the strafe rhythm: alternating left and right segments of
@@ -310,7 +322,7 @@ func (p *Policy) movement(st *decide.State, t *decide.Enemy, now int64) decide.M
 	var want decide.Movement
 	_, hi, backoff := preferredRange(st.Me.Weapon)
 	switch {
-	case p.meleeOnly(t.Class) && t.Units < meleeKeepOff:
+	case t.Units < p.keepOff(t.Class):
 		want = decide.MoveRetreat
 	case t.Units < backoff:
 		want = decide.MoveRetreat
@@ -444,7 +456,8 @@ func (p *Policy) wanted(st *decide.State, it *decide.ItemView) bool {
 	exit := st.Objective != nil && st.Objective.Exit
 	switch {
 	case strings.HasPrefix(it.Gives, "health+"):
-		return me.Health < healthLow && it.Path <= healthLowNear || me.Health < healthHurt && it.Path <= healthHurtNear ||
+		return me.Health < healthCritical && it.Path <= healthCriticalNear || me.Health < healthLow && it.Path <= healthLowNear ||
+			me.Health < healthHurt && it.Path <= healthHurtNear ||
 			exit && me.Health < healthHurt && it.Path <= exitHealthNear
 	case strings.HasPrefix(it.Gives, "weapon:"):
 		w := strings.TrimPrefix(it.Gives, "weapon:")

@@ -143,3 +143,93 @@ func TestGate(t *testing.T) {
 		t.Fatalf("empty run: %+v", g)
 	}
 }
+
+// tickEvent is a lane tick event of episode ep whose Intent reports the
+// gate fields' sources.
+func tickEvent(ep int, gms int64, target, fire, mode string) trace.Event {
+	return trace.Event{Type: trace.TypeDecision, Ep: ep, GMs: gms, Body: trace.Decision{Lane: trace.LaneTick, Intent: &trace.Intent{
+		Fields: []trace.Field{{Name: "mode", Source: mode}, {Name: "target", Source: target}, {Name: "fire_policy", Source: fire},
+			{Name: "movement", Source: trace.SourceDefault}}}}}
+}
+
+// TestTickEventProvenance: the bot's lane tick events are what was acted
+// on: where an episode has them they replace its provenance event's
+// counts (a reflex override lowers the model share), they are not
+// counted as request decisions, and an episode without them keeps its
+// provenance event.
+func TestTickEventProvenance(t *testing.T) {
+	var ticks []trace.Event
+	for i := 0; i < 40; i++ {
+		fire := trace.SourceModel
+		if i%4 == 0 {
+			fire = trace.SourceReflex // the route's kill overrode fire_policy
+		}
+		target := trace.SourceModel
+		if i < 4 {
+			target = trace.SourceReflex
+		}
+		ticks = append(ticks, tickEvent(0, int64(100*i), target, fire, trace.SourceModel))
+	}
+	base := summarize(t, gateTrace("jev", true), &GateConfig{})
+	s := summarize(t, gateTrace("jev", true, ticks...), &GateConfig{})
+
+	if s.Decisions.Decisions != base.Decisions.Decisions || s.Decisions.Ticks != 40 || base.Decisions.Ticks != 0 {
+		t.Fatalf("decisions %d (want %d), ticks %d", s.Decisions.Decisions, base.Decisions.Decisions, s.Decisions.Ticks)
+	}
+	ep0 := s.Episodes[0].Ticks
+	if ep0 == nil || ep0.Ticks != 40 || ep0.TickEvents != 40 {
+		t.Fatalf("episode 0 ticks %+v", ep0)
+	}
+	fp := ep0.Fields["fire_policy"]
+	if fp.Reflex != 10 || fp.Model != 30 || !near(fp.ModelShare, 0.75) {
+		t.Fatalf("episode 0 fire_policy %+v", fp)
+	}
+	// episode 1 has no tick events: its provenance event stands
+	if ep1 := s.Episodes[1].Ticks; ep1 == nil || ep1.Ticks != 30 || ep1.TickEvents != 0 || ep1.Fields["fire_policy"].Model != 28 {
+		t.Fatalf("episode 1 ticks %+v", ep1)
+	}
+	// the run: fire_policy 30+28 model of 40+30 decided
+	run := s.Ticks
+	if run.Ticks != 70 || run.TickEvents != 40 || !near(run.Fields["fire_policy"].ModelShare, 58.0/70) || run.Fields["target"].Reflex != 4 {
+		t.Fatalf("run ticks %+v", run)
+	}
+	if !near(s.Gate.ModelShares["fire_policy"], 58.0/70) || s.Gate.ModelShares["fire_policy"] >= base.Gate.ModelShares["fire_policy"]-0.02 {
+		t.Fatalf("reflex must lower the gate share: %v (provenance events alone: %v)", s.Gate.ModelShares, base.Gate.ModelShares)
+	}
+	s = summarize(t, gateTrace("jev", true, ticks...), &GateConfig{MinModelShare: 0.85})
+	if s.Gate.Passed || !strings.Contains(strings.Join(s.Gate.Reasons, ";"), "fire_policy: model share 0.829 < 0.850") {
+		t.Fatalf("gate %+v", s.Gate)
+	}
+}
+
+// TestGateTickStale: answers that all arrived in time (API stale rate 0)
+// can still be acted on past their TTL; the gate holds the gate fields'
+// stale share of ticks to MaxStaleRate too.
+func TestGateTickStale(t *testing.T) {
+	evs := []trace.Event{
+		{Type: trace.TypeRunStart, Body: trace.RunStart{Schema: trace.Schema, Backend: "mock", ModelBackend: true}},
+		{Type: trace.TypeEpisodeStart, Body: trace.EpisodeStart{Seed: 1}},
+		{Type: trace.TypeAPICall, Body: trace.APICall{Backend: "mock", Lane: "fast", Status: 200, LatencyMs: 212}},
+	}
+	for i := 0; i < 50; i++ {
+		fire := trace.SourceModel
+		if i%5 == 0 {
+			fire = trace.SourceStale // 20 %
+		}
+		evs = append(evs, tickEvent(0, int64(100*i), trace.SourceModel, fire, trace.SourceModel))
+	}
+	evs = append(evs, trace.Event{Type: trace.TypeEpisodeEnd, GMs: 5000, Body: trace.EpisodeEnd{Outcome: "completed"}},
+		trace.Event{Type: trace.TypeRunEnd, Body: trace.RunEnd{Outcome: "completed"}})
+
+	s := summarize(t, evs, &GateConfig{MinModelShare: 0.7})
+	g := s.Gate
+	if g.StaleRate != 0 || !near(g.StaleShares["fire_policy"], 0.2) || !near(g.TickStaleShare, 0.2) || g.Passed {
+		t.Fatalf("gate %+v", g)
+	}
+	if !strings.Contains(strings.Join(g.Reasons, ";"), "fire_policy: stale share of ticks 0.200 > 0.150") {
+		t.Fatalf("reasons %q", g.Reasons)
+	}
+	if s = summarize(t, evs, &GateConfig{MinModelShare: 0.7, MaxStaleRate: 0.25}); !s.Gate.Passed {
+		t.Fatalf("at 25 %%: %+v", s.Gate)
+	}
+}

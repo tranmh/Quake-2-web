@@ -52,7 +52,7 @@ type RunSummary struct {
 
 	Totals    Totals           `json:"totals"`
 	Decisions DecisionStats    `json:"decisions"`
-	Ticks     *TickStats       `json:"ticks,omitempty"` // per-tick provenance (provenance events; nil without them)
+	Ticks     *TickStats       `json:"ticks,omitempty"` // per-tick provenance (tick or provenance events; nil without them)
 	API       APIStats         `json:"api"`
 	Budget    *BudgetState     `json:"budget,omitempty"`
 	Errors    int              `json:"errors"`
@@ -70,8 +70,8 @@ type EpisodeSummary struct {
 	Totals  Totals         `json:"totals"`
 	Levels  []LevelSummary `json:"levels"`
 
-	// Ticks is the episode's per-tick provenance (nil without provenance
-	// events).
+	// Ticks is the episode's per-tick provenance (nil without lane tick
+	// or provenance events).
 	Ticks *TickStats `json:"ticks,omitempty"`
 }
 
@@ -156,7 +156,12 @@ func (p *Provenance) finish() {
 
 // DecisionStats summarizes the decision events.
 type DecisionStats struct {
+	// Decisions counts the request decision events (lanes fast and slow:
+	// one answered or failed request each); Ticks the bot's lane tick
+	// events, which are not requests (their provenance is in
+	// RunSummary.Ticks).
 	Decisions int                   `json:"decisions"`
+	Ticks     int                   `json:"ticks,omitempty"`
 	Fields    map[string]Provenance `json:"fields"`
 	All       Provenance            `json:"all"`
 	// GateModelShare is the model share over the gate fields target,

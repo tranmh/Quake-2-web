@@ -58,6 +58,8 @@ type episodeSpec struct {
 	// gamemap to reach a revisit, say)
 	prepare func(t testing.TB, l *session.Lockstep)
 	config  func(c *Config)
+	// client adjusts the client's options (a recorder's hook, say)
+	client func(o *fakeclient.Options)
 }
 
 // runEpisode plays spec and returns the result and the trace events; it
@@ -73,8 +75,12 @@ func runEpisode(t testing.TB, spec episodeSpec) (EpisodeResult, []trace.Event) {
 	if seed == 0 {
 		seed = 1
 	}
+	copt := fakeclient.Options{MaxHistory: 256}
+	if spec.client != nil {
+		spec.client(&copt)
+	}
 	l := session.NewLockstep(session.LockstepConfig{FS: fs, Spec: session.Spec{Map: "demo1", Skill: 1}, Seed: seed,
-		StartCommand: spec.start, Client: fakeclient.Options{MaxHistory: 256}})
+		StartCommand: spec.start, Client: copt})
 	ctx := context.Background()
 	if err := l.Start(ctx); err != nil {
 		t.Fatal(err)

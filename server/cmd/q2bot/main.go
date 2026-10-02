@@ -5,7 +5,7 @@
 //	          [-trace full|digest|every:N] [-record] [-budget-usd x] [-budget-queries n] [-max-qps x] [-on-exhausted fallback|stop]
 //	          [-require-complete] [-min-model-share 0.7] [-json] [-pak pak0.pak] [-nav-dir assets/nav]
 //	q2bot replay -trace runs/<id>/ep-000/trace.jsonl.gz [-mode actions|responses] [-strict] [-out dir] [-json]
-//	q2bot summarize runs/<id> [-dry-run] [-json]
+//	q2bot summarize runs/<id> [-dry-run] [-force] [-json]
 //	q2bot validate runs/<id> [-min-model-share 0.7] [-json]
 //	q2bot jev-probe [-lane fast|slow] [-n 1] [-out live-probe.json]
 //
@@ -22,8 +22,10 @@
 // it.
 //
 // Exit status: 0 ok; 1 the run failed, did not complete (-require-complete),
-// missed the provenance gate (-min-model-share), diverged (replay) or is
-// invalid (validate); 2 a usage error (or jev-probe without a key).
+// missed the provenance gate (-min-model-share), diverged (replay), is
+// invalid (validate) or its traces do not read whole (summarize, which
+// then keeps an existing run.json unless -force); 2 a usage error (a
+// configuration the runner rejects included, or jev-probe without a key).
 package main
 
 import (
@@ -54,7 +56,7 @@ func commands() []command {
 			"[-trace m] [-record] [-budget-usd x] [-budget-queries n] [-max-qps x] [-on-exhausted p] [-require-complete] " +
 			"[-min-model-share x] [-json] [-pak file] [-nav-dir dir] (-h for all)", runRun},
 		{"replay", "replay -trace runs/<id>/ep-NNN/trace.jsonl.gz [-mode actions|responses] [-strict] [-out dir] [-json] [-pak file]", runReplay},
-		{"summarize", "summarize runs/<id> [-dry-run] [-json]", runSummarize},
+		{"summarize", "summarize runs/<id> [-dry-run] [-force] [-json]", runSummarize},
 		{"validate", "validate runs/<id> [-min-model-share x] [-max-stale-rate x] [-json]", runValidate},
 		{"jev-probe", "jev-probe [-lane fast|slow] [-n 1] [-out file] [-state lane-state.json] (needs TYPESAFE_API_KEY)", runProbe},
 	}

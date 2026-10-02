@@ -218,6 +218,10 @@ type episodeValidator struct {
 	levels  int
 	lastLvl int
 	runEnd  bool
+	// acted counts the lane tick events' fields; prov is the episode's
+	// provenance event (cross-checked against them in finish)
+	acted tickCounts
+	prov  *trace.Provenance
 }
 
 func (v *episodeValidator) errorf(e *trace.Event, format string, args ...any) {
@@ -312,7 +316,17 @@ func (v *episodeValidator) check(e *trace.Event) {
 					v.errorf(e, "field %q source %q", f.Name, f.Source)
 				}
 			}
-		case b.Lane == "tick":
+		case b.Lane == trace.LaneTick:
+			if b.Intent == nil {
+				v.errorf(e, "a tick without its Intent")
+				break
+			}
+			for _, f := range b.Intent.Fields {
+				if _, ok := decide.FieldOf(f.Name); !ok || !knownSource(f.Source) {
+					v.errorf(e, "tick field %q source %q", f.Name, f.Source)
+				}
+			}
+			v.acted.add(b.Intent.Fields)
 		default:
 			v.errorf(e, "lane %q", b.Lane)
 		}
@@ -396,13 +410,65 @@ func (v *episodeValidator) check(e *trace.Event) {
 		if bad(e.DecodeBody(&b)) {
 			return
 		}
+		if v.prov != nil {
+			v.errorf(e, "a second provenance event")
+		}
+		v.prov = &b
 		for _, f := range b.Fields {
 			if _, ok := decide.FieldOf(f.Name); !ok {
 				v.errorf(e, "field %q", f.Name)
 			}
-			if n := f.Default + f.Model + f.Scripted + f.Stale + f.Reflex; n != b.Ticks {
+			if n := f.Total(); n != b.Ticks {
 				v.errorf(e, "field %s counts %d ticks of %d", f.Name, n, b.Ticks)
 			}
+		}
+		for _, f := range b.Arbiter {
+			if _, ok := decide.FieldOf(f.Name); !ok || f.Reflex != 0 {
+				v.errorf(e, "arbiter field %q (reflex %d)", f.Name, f.Reflex)
+			}
+			if n := f.Total(); n != b.ArbiterTicks {
+				v.errorf(e, "arbiter field %s counts %d ticks of %d", f.Name, n, b.ArbiterTicks)
+			}
+		}
+	}
+}
+
+// checkProvenance cross-checks the episode's provenance event: its
+// acted-on counts are the lane tick events' (when the trace has them),
+// and the arbiter decided at least as often from every source as the bot
+// acted on it (the bot's overrides only turn values into reflex).
+func (v *episodeValidator) checkProvenance() {
+	p := v.prov
+	if p == nil {
+		return
+	}
+	if v.acted.ticks > 0 {
+		if p.Ticks != v.acted.ticks {
+			v.rep.errorf("%s: the provenance event counts %d ticks, the trace has %d tick events", v.file, p.Ticks, v.acted.ticks)
+		}
+		for _, f := range p.Fields {
+			if got := v.acted.field(f.Name); got != f {
+				v.rep.errorf("%s: provenance of %s %+v, the tick events count %+v", v.file, f.Name, f, got)
+			}
+		}
+	}
+	if len(p.Arbiter) == 0 {
+		return
+	}
+	if p.ArbiterTicks != p.Ticks {
+		v.rep.errorf("%s: the arbiter made %d intents for %d ticks acted on", v.file, p.ArbiterTicks, p.Ticks)
+	}
+	arb := map[string]trace.TickField{}
+	for _, f := range p.Arbiter {
+		arb[f.Name] = f
+	}
+	for _, f := range p.Fields {
+		a, ok := arb[f.Name]
+		if !ok {
+			continue
+		}
+		if f.Default > a.Default || f.Model > a.Model || f.Scripted > a.Scripted || f.Stale > a.Stale {
+			v.rep.errorf("%s: %s acted on %+v, more than the arbiter decided %+v", v.file, f.Name, f, a)
 		}
 	}
 }
@@ -410,6 +476,7 @@ func (v *episodeValidator) check(e *trace.Event) {
 // finish checks the episode's end (last: the run's last trace, which must
 // hold run_end).
 func (v *episodeValidator) finish(last bool) {
+	v.checkProvenance()
 	switch {
 	case !v.started:
 		v.rep.errorf("%s: no episode_start", v.file)

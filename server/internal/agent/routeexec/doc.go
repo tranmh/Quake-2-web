@@ -21,7 +21,10 @@
 // it gave up on as stalled (the campaign's no-progress watchdog decides
 // what follows). When the bot uses the navigator for something else
 // (exploring, a fight the decision layer chose) it calls Yield; the next
-// Update sets the step's goal again.
+// Update sets the step's goal again, and the attempt's clock stands
+// meanwhile (a step does not time out while the bot is busy elsewhere).
+// For a fight with a kill step's own monster it calls Engage instead: the
+// step is being done, its clock runs on.
 //
 // A kill step needs a weapon: the Directive names the monster (its track
 // once seen, its spawn origin until then) and the executor moves the bot to

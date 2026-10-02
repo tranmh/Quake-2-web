@@ -20,13 +20,18 @@
 // budget applies, the budget gate (package agent/budget) planned before
 // every tick. Every collected request is published as a decision event
 // (and an api_call event, unless the budget refused it); every session
-// step's usercmds as a cmds event; the episode's per-tick provenance as a
+// step's usercmds as a cmds event; the episode's per-tick provenance (the
+// bot's tick reports, with the arbiter's counts beside them) as a
 // provenance event. The campaign (package agent/campaign) publishes the
-// rest. A metrics.Collector on the bus makes run.json, with the
+// rest, including the bot's lane tick events (what it acted on each
+// decision tick) when it carries them. A metrics.Collector on the bus makes run.json, with the
 // provenance gate (Config.MinModelShare, MaxStaleRate): the run is
 // ModelDriven only when a model backend answered for the whole run, at
 // least MinModelShare of the decided ticks of target, fire_policy and mode
-// came from the model, and at most MaxStaleRate of the answers were stale.
+// acted on the model's answer (a reflex or route override is not the
+// model's), at most MaxStaleRate of the answers were stale, and none of
+// those fields acted on a stale answer on more than MaxStaleRate of its
+// decided ticks.
 //
 // Replay re-runs a recorded lockstep episode, feeding the recorded
 // usercmds (actions mode) or letting the bot play on the recorded
@@ -34,11 +39,17 @@
 // event; Summarize recomputes run.json from the traces; Validate checks a
 // run directory (trace schema, demos, run.json, the gate).
 //
-// Determinism: a lockstep run with the scripted, replay, constant, random
-// or mock backend depends only on its configuration and seed (the trace
-// compares equal but for the wall clock); a real Jev client is not
-// bit-deterministic (wall-clock timeouts, breaker, cooldown), nor is a run
-// sharing a wall-clock budget.Account limiter.
+// Determinism: a lockstep run with the scripted, replay, constant or
+// random backend depends only on its configuration and seed (the trace
+// compares equal but for the wall clock). So does a lockstep mock run,
+// whose jev client is set to keep its wall-clock state (breaker,
+// cooldowns, refused question sets) out of the answers, with one
+// exception: a loopback attempt slower than the client's fast-lane
+// attempt timeout (jev.MaxFastTimeout, 800 ms; only on a machine loaded
+// far beyond a test run) times out, and the run departs from the seed's.
+// A real Jev client is not bit-deterministic (network, wall-clock
+// timeouts, breaker, cooldown), nor is a run sharing a wall-clock
+// budget.Account limiter.
 //
 // Fairness: the runner drives sessions, so it links the server; the bot it
 // builds sees only the belief and static map knowledge (TestImports keeps

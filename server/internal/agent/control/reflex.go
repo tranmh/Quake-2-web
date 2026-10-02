@@ -95,6 +95,11 @@ type FireInput struct {
 	// (units) for the aim tolerance.
 	Aim    Vec3
 	Radius float32
+	// TargetDist is the distance (units) from the eye to the target itself
+	// (its box centre; 0: unknown, the distance to Aim stands in). A led or
+	// feet aim point can lie farther than the target: the splash gate
+	// judges the nearer of the two.
+	TargetDist float32
 	// Visible: the target is in view now (else Aim is where it was last
 	// known). Shootable: a shot from the eye reaches Aim (MASK_SHOT).
 	Visible, Shootable bool
@@ -163,7 +168,7 @@ func FireGate(in FireInput) FireVerdict {
 		v.Reason = NoFireNeutral
 	case in.Barrel:
 		v.Reason = NoFireBarrel
-	case in.Weapon.HasSplash() && d < SplashSafe:
+	case in.Weapon.HasSplash() && splashDist(d, in.TargetDist) < SplashSafe:
 		v.Reason = NoFireSplashClose
 	case in.Weapon.HasSplash() && in.WallClose:
 		v.Reason = NoFireSplashWall
@@ -184,6 +189,15 @@ func FireGate(in FireInput) FireVerdict {
 	}
 	v.Fire = true
 	return v
+}
+
+// splashDist is the distance the splash gate judges: the nearer of the aim
+// point's (d) and the target's (target; 0: unknown).
+func splashDist(d, target float32) float32 {
+	if target > 0 {
+		return min(d, target)
+	}
+	return d
 }
 
 // Body is a target's box as the bot believes it.

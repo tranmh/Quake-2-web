@@ -139,7 +139,7 @@ func TestConfigCheck(t *testing.T) {
 	for _, tc := range bad {
 		c := tc.cfg
 		err := c.check()
-		if err == nil || !errors.Is(err, errConfig) || !strings.Contains(err.Error(), tc.want) {
+		if err == nil || !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%+v: %v, want %q", tc.cfg, err, tc.want)
 		}
 	}
@@ -170,10 +170,10 @@ func TestConfigCheck(t *testing.T) {
 		t.Errorf("a configured latency: %+v", l)
 	}
 	// New refuses a bad config before touching the disk
-	if _, err := New(Config{FS: nopFS{}, Backend: "x", OutDir: t.TempDir()}); !errors.Is(err, errConfig) {
+	if _, err := New(Config{FS: nopFS{}, Backend: "x", OutDir: t.TempDir()}); !errors.Is(err, ErrConfig) {
 		t.Errorf("New: %v", err)
 	}
-	if _, err := New(Config{FS: nopFS{}, RunID: "../escape", OutDir: t.TempDir(), Campaign: campaignOf("demo1")}); !errors.Is(err, errConfig) {
+	if _, err := New(Config{FS: nopFS{}, RunID: "../escape", OutDir: t.TempDir(), Campaign: campaignOf("demo1")}); !errors.Is(err, ErrConfig) {
 		t.Errorf("run id: %v", err)
 	}
 }

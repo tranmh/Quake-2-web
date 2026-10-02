@@ -41,6 +41,7 @@ func TestUsage(t *testing.T) {
 		{[]string{"run", "-on-exhausted", "maybe"}, "exhaustion policy"},
 		{[]string{"run", "-episodes", "0"}, "-episodes 0"},
 		{[]string{"run", "-skill", "4"}, "-skill 4"},
+		{[]string{"run", "-skill", "-5"}, "-skill -5"},
 		{[]string{"run", "-min-model-share", "2"}, "shares in 0..1"},
 		{[]string{"run", "-backend", "replay"}, "needs -replay-trace"},
 		{[]string{"run", "-backend", "jev"}, "needs TYPESAFE_API_KEY"},
@@ -229,6 +230,7 @@ func TestGate(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("summarize changed run.json")
 	}
+	summarizeTruncated(t, dir, before)
 	// a run that does not complete fails -require-complete
 	out2 := t.TempDir()
 	code, _, errOut = q2bot(nil, "run", "-maps", "demo1", "-out", out2, "-pak", pak, "-record=false", "-episode-timeout", "3s", "-require-complete")
@@ -273,5 +275,67 @@ func TestMockGate(t *testing.T) {
 	}
 	if code, stdout, _ = q2bot(nil, "validate", dir, "-min-model-share", "0.99"); code != 1 || !strings.Contains(stdout, "NOT met") {
 		t.Fatalf("validate at 99%%: exit %d\n%s", code, stdout)
+	}
+}
+
+// summarizeTruncated copies run dir with its trace cut short: summarize
+// exits 1 and keeps the good run.json, -force rewrites it, and a run
+// without run.json (a crash) gets the partial one.
+func summarizeTruncated(t *testing.T, dir string, good []byte) {
+	t.Helper()
+	cp := filepath.Join(t.TempDir(), filepath.Base(dir))
+	if err := os.MkdirAll(filepath.Join(cp, "ep-000"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tr, err := os.ReadFile(filepath.Join(dir, "ep-000", runner.TraceFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runJSON := filepath.Join(cp, runner.RunFile)
+	if err := os.WriteFile(filepath.Join(cp, "ep-000", runner.TraceFile), tr[:len(tr)/2], 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runJSON, good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut := q2bot(nil, "summarize", cp)
+	if got, _ := os.ReadFile(runJSON); code != 1 || !bytes.Equal(got, good) || !strings.Contains(errOut, "left as it is") {
+		t.Fatalf("summarize a truncated trace: exit %d, run.json kept %v\n%s", code, bytes.Equal(got, good), errOut)
+	}
+	if code, _, errOut = q2bot(nil, "summarize", "-force", cp); code != 1 {
+		t.Fatalf("summarize -force: exit %d\n%s", code, errOut)
+	}
+	var s metrics.RunSummary
+	if got, _ := os.ReadFile(runJSON); bytes.Equal(got, good) || json.Unmarshal(got, &s) != nil || s.Outcome != metrics.OutcomeIncomplete {
+		t.Fatalf("summarize -force kept run.json, or wrote %+v", s)
+	}
+	if err := os.Remove(runJSON); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut = q2bot(nil, "summarize", cp); code != 1 {
+		t.Fatalf("summarize without run.json: exit %d\n%s", code, errOut)
+	}
+	if _, err := os.Stat(runJSON); err != nil {
+		t.Fatalf("a crashed run gets no run.json: %v", err)
+	}
+}
+
+// TestRunConfigRejected: maps the campaign does not start with, or does
+// not visit in that order, are usage errors (exit 2) and make no run
+// directory.
+func TestRunConfigRejected(t *testing.T) {
+	pak := testutil.DemoPak(t)
+	for _, tc := range []struct{ maps, want string }{
+		{"demo2", "must include the campaign's start"},
+		{"demo1,demo3", "not among the campaign's first visits"},
+	} {
+		out := t.TempDir()
+		code, _, errOut := q2bot(nil, "run", "-maps", tc.maps, "-out", out, "-pak", pak)
+		if code != 2 || !strings.Contains(errOut, tc.want) || !strings.Contains(errOut, "usage: q2bot run") {
+			t.Errorf("-maps %s: exit %d\n%s", tc.maps, code, errOut)
+		}
+		if ents, _ := os.ReadDir(out); len(ents) != 0 {
+			t.Errorf("-maps %s made %v", tc.maps, ents)
+		}
 	}
 }

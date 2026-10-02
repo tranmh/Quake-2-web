@@ -145,7 +145,7 @@ func Replay(ctx context.Context, rc ReplayConfig) (*ReplayReport, error) {
 		rc.Mode = ReplayActions
 	case ReplayActions, ReplayResponses:
 	default:
-		return nil, fmt.Errorf("%w: replay mode %q (actions|responses)", errConfig, rc.Mode)
+		return nil, fmt.Errorf("%w: replay mode %q (actions|responses)", ErrConfig, rc.Mode)
 	}
 	events, err := trace.ReadFile(rc.Trace)
 	if err != nil {

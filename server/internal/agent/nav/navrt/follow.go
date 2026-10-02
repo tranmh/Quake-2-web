@@ -338,6 +338,9 @@ func (n *Navigator) plan(keepSpecial bool) {
 		n.node, n.status.Node = start, start
 	}
 	p, ok := n.pl.Find(start, n.target, n.cost)
+	if !ok && keep < 0 && n.inferPassage(start) {
+		p, ok = n.pl.Find(start, n.target, n.cost)
+	}
 	if !ok {
 		if keep >= 0 {
 			return // finish the edge, then plan again

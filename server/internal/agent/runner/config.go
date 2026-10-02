@@ -274,12 +274,14 @@ func DefaultMockFaults() jevtest.Faults {
 	return jevtest.Faults{Seed: 5, Server: 0.02, Missing: 0.02}
 }
 
-// errConfig marks a configuration error.
-var errConfig = errors.New("runner: bad config")
+// ErrConfig is wrapped by the errors of New, Run and Replay that reject
+// the configuration (the caller's mistake, such as maps that are not the
+// campaign's first visits), as opposed to a failure to play.
+var ErrConfig = errors.New("runner: bad config")
 
 func (c *Config) check() error {
 	if c.FS == nil {
-		return fmt.Errorf("%w: no game data (FS)", errConfig)
+		return fmt.Errorf("%w: no game data (FS)", ErrConfig)
 	}
 	if c.Backend == "" {
 		c.Backend = BackendScripted
@@ -289,37 +291,37 @@ func (c *Config) check() error {
 		known = known || b == c.Backend
 	}
 	if !known {
-		return fmt.Errorf("%w: unknown backend %q (%s)", errConfig, c.Backend, strings.Join(Backends(), "|"))
+		return fmt.Errorf("%w: unknown backend %q (%s)", ErrConfig, c.Backend, strings.Join(Backends(), "|"))
 	}
 	switch c.Session {
 	case "":
 		c.Session = SessionLockstep
 	case SessionLockstep, SessionInProc:
 	default:
-		return fmt.Errorf("%w: unknown session %q (lockstep|inproc)", errConfig, c.Session)
+		return fmt.Errorf("%w: unknown session %q (lockstep|inproc)", ErrConfig, c.Session)
 	}
 	if c.Backend == BackendReplay {
 		if c.ReplayTrace == "" {
-			return fmt.Errorf("%w: backend replay needs a recorded trace", errConfig)
+			return fmt.Errorf("%w: backend replay needs a recorded trace", ErrConfig)
 		}
 		if c.Session != SessionLockstep {
-			return fmt.Errorf("%w: backend replay needs a lockstep session", errConfig)
+			return fmt.Errorf("%w: backend replay needs a lockstep session", ErrConfig)
 		}
 	}
 	if c.Episodes < 0 {
-		return fmt.Errorf("%w: %d episodes", errConfig, c.Episodes)
+		return fmt.Errorf("%w: %d episodes", ErrConfig, c.Episodes)
 	}
 	if c.Episodes == 0 {
 		c.Episodes = 1
 	}
 	if c.Skill != nil && (*c.Skill < 0 || *c.Skill > 3) {
-		return fmt.Errorf("%w: skill %d not in 0..3", errConfig, *c.Skill)
+		return fmt.Errorf("%w: skill %d not in 0..3", ErrConfig, *c.Skill)
 	}
 	if c.MinModelShare < 0 || c.MinModelShare > 1 || c.MaxStaleRate < 0 || c.MaxStaleRate > 1 {
-		return fmt.Errorf("%w: gate thresholds %v, %v not in 0..1", errConfig, c.MinModelShare, c.MaxStaleRate)
+		return fmt.Errorf("%w: gate thresholds %v, %v not in 0..1", ErrConfig, c.MinModelShare, c.MaxStaleRate)
 	}
 	if c.Budget.USD < 0 || c.Budget.Queries < 0 || c.Budget.MaxQPS < 0 {
-		return fmt.Errorf("%w: negative budget", errConfig)
+		return fmt.Errorf("%w: negative budget", ErrConfig)
 	}
 	if c.OutDir == "" {
 		c.OutDir = "runs"
