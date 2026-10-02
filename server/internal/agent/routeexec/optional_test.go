@@ -11,9 +11,10 @@ import (
 
 // TestOptionalSteps: an optional step gets one attempt; when it fails it
 // is skipped together with the optional steps right after it in the same
-// detour, and the route goes on (with the next detour, if one follows); an optional pickup of a weapon the bot
-// already holds is skipped at once, alone (the ammo next to it is still
-// picked up); a required step still retries.
+// detour, and the route goes on (with the next detour, if one follows);
+// an optional pickup of a weapon the bot already holds is skipped at
+// once, alone (the ammo next to it is still picked up); a required step
+// still retries.
 func TestOptionalSteps(t *testing.T) {
 	lv := demo(t, "demo1")
 	shotgun := lv.md.Entity(373).Origin

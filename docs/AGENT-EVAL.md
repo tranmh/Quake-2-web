@@ -21,16 +21,26 @@ from the same start until it gets through. The useful number is **demo3 survival
 attempts, where attempts = deaths + 1 per visit. Same protocol for every row (lockstep, skill 1,
 `-max-deaths 25 -level-timeout 60m`); *before* is the wave-7 build, *after* this tree:
 
-| Policy | Before: seeds, runs won, demo3 survival | After: seeds, runs won, demo3 survival | p |
-|---|---|---|---|
-| scripted, 0 ms | 1–9, 9/9, 9/43 (21 %) | 1–9, 9/9, 9/27 (33 %) | 0.27 |
-| scripted, 212 ms | 1–9, 9/9, 9/89 (10 %) | 1–30, 30/30, 30/94 (32 %) | 0.0005 |
-| clean mock, 212 ms | 1–9, 7/9, 7/109 (6.4 %) | 1–50, 50/50, 50/127 (39 %) | < 10⁻⁹ |
-| noisy mock, 212 ms | 1–11, 7/11, 7/187 (3.7 %) | 1–20, 20/20, 20/52 (38 %) | < 10⁻⁹ |
+| Policy | Before: seeds, runs won, demo3 survival (run-level 95 %) | After: seeds, runs won, demo3 survival (run-level 95 %) | p, attempts | p, runs |
+|---|---|---|---|---|
+| scripted, 0 ms | 1–9, 9/9, 9/43 = 21 % (15–36 %) | 1–18, 18/18, 18/50 = 36 % (26–53 %) | 0.17 | 0.10 |
+| scripted, 212 ms | 1–9, 9/9, 9/89 = 10 % (7–15 %) | 1–50, 50/50, 50/160 = 31 % (26–39 %) | 0.0002 | 0.0003 |
+| clean mock, 212 ms | 1–9, 7/9, 7/109 = 6.4 % (3–13 %) | 1–80, 80/80, 80/199 = 40 % (34–47 %) | < 10⁻¹⁰ | < 10⁻⁴ |
+| noisy mock, 212 ms | 1–11, 7/11, 7/187 = 3.7 % (2–8 %) | 1–50, 50/50, 50/171 = 29 % (24–37 %) | < 10⁻¹⁰ | < 10⁻⁴ |
 
-95 % (Wilson) intervals of the after rows: 19–52 %, 23–42 %, 31–48 % and 27–52 %. Every model run after is
-model-driven: target, fire_policy and mode from the model on ≥ 0.81 of decided ticks, ≤ 4.6 % of ticks on
-stale answers.
+- **How to read the columns.** The attempts of one run are not independent: every one reloads the same
+  arrival save, and runs differ (1 to 27 attempts). So the intervals are a bootstrap over runs. *p, attempts*
+  is the two-sided Fisher exact test on the attempt counts, which treats attempts as independent and so
+  overstates certainty. *p, runs* is a rank-sum test over runs (attempts per exit; a run that never got
+  through ranks last), by permutation. Permuting runs with the ratio itself as the statistic gives 0.15,
+  0.03, 0.02 and 0.01. That test is weaker here, because a few long wave-7 runs (13–27 attempts each)
+  carry most of the attempts. The method and commands are in [Reproduce (wave 8)](#reproduce-wave-8).
+- **Model runs are model-driven.** Every model run after is: target, fire_policy and mode from the model on
+  ≥ 0.81 of decided ticks, ≤ 4.6 % of ticks on stale answers.
+- **The after rows are one build.** It is this tree, including the last change: detours are skipped one at a
+  time (item 5 of [What changed](#what-changed)). The seeds measured on earlier builds of the wave were
+  re-run on it. 186 of the 188 runs with an earlier counterpart came out identical (`run.json` and trace).
+  The other two are the two quad timeouts that change is about.
 
 [Wave 8](#wave-8-combat-under-latency) says what changed and how each part was measured;
 [Wave 7](#wave-7-what-decided-a-run) has the rounds before it.
@@ -50,17 +60,27 @@ fast-lane state was tried and dropped: it made no difference.
 
 ### Results
 
-The table is in [Read this first](#read-this-first-what-decides-a-run); p is the two-sided Fisher exact test
-on the attempt counts, against the wave-7 build.
+The table is in [Read this first](#read-this-first-what-decides-a-run). Each comparison gives the Fisher p on
+the attempts, then the two run-level p (ratio permutation, rank-sum).
 
-- **The 212 ms policies gain the most.** The clean mock goes from 6.4 % to 39 %, the noisy one from 3.7 % to
-  38 %, the scripted policy at 212 ms from 10 % to 32 %. The scripted policy at 0 ms goes from 21 % to 33 %,
-  which on 9 seeds is not significant (p = 0.27).
-- **The latency gap is closed within noise.** The scripted policy survives 33 % at 0 ms and 32 % at 212 ms
-  (p = 1). Before, it was 21 % against 10 %. The clean mock (the same rules over the wire, with the local
-  fallback for missing answers) is level with the scripted backend at the same latency (39 % against 32 %,
-  p = 0.26).
-- **Victories are no longer a lottery.** All 70 model runs above and all 39 scripted ones win.
+- **The 212 ms policies gain the most.** Against the wave-7 build:
+  - the clean mock goes from 6.4 % to 40 %;
+  - the noisy mock from 3.7 % to 29 %;
+  - the scripted policy at 212 ms from 10 % to 31 %.
+
+  The scripted policy at 0 ms goes from 21 % to 36 %, which is not significant (p = 0.17; 0.15 and 0.10).
+- **The latency gap is closed within noise.** The scripted policy survives 36 % at 0 ms and 31 % at 212 ms
+  (p = 0.60; 0.53 and 0.46). Before, it was 21 % against 10 %. The clean mock is the same rules over the
+  wire, with the local fallback for missing answers. It does better than the scripted backend at the same
+  latency, but not significantly (40 % against 31 %, p = 0.10; 0.08 and 0.08).
+- **The noisy mock does worse than the clean one.** 29 % against 40 % (p = 0.03; 0.03 and 0.05): probably
+  lower, at the edge of what 130 runs can show.
+  - Its seeds vary more than the attempt counts suggest: seeds 1–20 give 20/52 (38 %), 21–35 15/70 (21 %)
+    and 36–50 15/49 (31 %).
+  - The first two blocks differ at p = 0.05 (0.05 and 0.02). That is block-to-block variation, not a change
+    of build, since all three ran on the same one.
+  - An earlier version of this page gave 38 % from seeds 1–20 alone. 29 % over 50 seeds is the rate.
+- **Victories are no longer a lottery.** All 130 model runs above and all 68 scripted ones win.
   A demo3 visit takes 2 attempts at the median (the most: 13); before, a failing run spent all 26.
 - **Not all of it is latency handling.** The largest single steps were the demo3 detours (equipment on every
   attempt; see the [development sequence](#development-sequence)). The standing-rule changes alone moved
@@ -70,12 +90,12 @@ on the attempt counts, against the wave-7 build.
 
 | Gate | Requirement | Result | Verdict |
 |---|---|---|---|
-| (i) | clean mock, 212 ms: demo3 survival ≥ 15 % on ≥ 80 attempts | 50/127 (39.4 %; 95 % interval 31–48 %) over seeds 1–50; p < 10⁻⁹ against 7/109 (6.4 %) | **met** |
-| (ii) | scripted, 212 ms: ≥ 15 % | 30/94 (31.9 %; 23–42 %) over seeds 1–30; p = 0.0005 against 9/89 | **met** |
-| (iii) | scripted, 0 ms: no regression | seeds 1–9 all win, 9/27 (33 %) against 9/43 before. `TestCampaignScripted` passes: victory in 736 s of game time with 1 death (on demo3). | **met** |
-| (iv) | campaign wins, model-driven | clean seeds 1–5: 5/5, target/fire_policy/mode ≥ 0.85/0.88/0.91, stale ≤ 1.1 %. Noisy seeds 1–5: 5/5, ≥ 0.86/0.85/0.89, stale ≤ 4.6 %. All 50 clean and 20 noisy runs win and pass the provenance gate (lowest share 0.81). | **met** |
-| (v) | ablations fail or are worse | constant fails on demo1 (the 60 min level watchdog after 10 deaths); random fails on demo3 (26 deaths there), while every policy above wins every seed | **met** |
-| (vi) | fairness, determinism, tests | Two noisy seed-1 runs: `run.json` equal, traces equal (19,806 events). `q2bot replay -strict` of noisy seed 4: no divergence (56,353 events, 63,368 usercmds, 12,149 responses matched, 1 in flight at the end). `go test -count=1 ./...` passes (63 packages, the fairness differential included); `go test -race` over `./internal/agent/... ./cmd/q2bot/...` passes (25 packages); `gofmt`, `go vet` clean; no ported package changed. | **met** |
+| (i) | clean mock, 212 ms: demo3 survival ≥ 15 % on ≥ 80 attempts | 80/199 (40.2 %; run-level 95 % interval 34–47 %) over seeds 1–80; p = 2·10⁻¹¹ against 7/109 (6.4 %), run-level rank-sum p < 10⁻⁴ | **met** |
+| (ii) | scripted, 212 ms: ≥ 15 % | 50/160 (31.2 %; 26–39 %) over seeds 1–50; p = 0.0002 against 9/89 (run-level 0.0003) | **met** |
+| (iii) | scripted, 0 ms: no regression | seeds 1–9 all win (9/27), seeds 1–18 all win, 18/50 (36 %) against 9/43 before. `TestCampaignScripted` passes: victory in 736 s of game time with 1 death (on demo3). | **met** |
+| (iv) | campaign wins, model-driven | clean seeds 1–5: 5/5, target/fire_policy/mode ≥ 0.85/0.88/0.91, stale ≤ 1.1 %. Noisy seeds 1–5: 5/5, ≥ 0.86/0.85/0.89, stale ≤ 4.6 %. All 80 clean and 50 noisy runs win and pass the provenance gate (lowest share 0.81). | **met** |
+| (v) | ablations fail or are worse | constant fails on demo1 on seeds 1 and 2 (the 60 min level watchdog, after 10 and 11 deaths). Random fails on demo3 on seed 1 and on demo2 on seed 2 (26 deaths there). Every policy above wins every seed. | **met** |
+| (vi) | fairness, determinism, tests | Two noisy seed-1 runs: `run.json` equal, traces equal (19,806 events). `q2bot replay -strict` of noisy seed 4: no divergence (56,353 events, 63,368 usercmds, 12,149 responses matched, 1 in flight at the end); `q2bot validate`: valid. `go test -count=1 ./...` passes (63 packages, the fairness differential included). `go test -race` over `./internal/agent/... ./cmd/q2bot/... ./cmd/q2nav/...` passes (26 packages). `gofmt` and `go vet` are clean, and no ported package changed. | **met** |
 
 ### What changed
 
@@ -136,9 +156,9 @@ on the attempt counts, against the wave-7 build.
     The table must validate with its optional steps removed as well, so no required step relies on one, and,
     with several detours, with any one of them removed, so no detour relies on another. `q2nav plan` passes
     and marks the optional steps with their detour.
-  - *Fixer change.* In the implementer's build adjacent optional steps were always one detour, so a quad that
-    timed out also skipped the chaingun detour for that attempt. That happened in 2 of the final runs
-    (scripted 0 ms seed 9 and the random ablation). demo3 now names them `quad` and `chaingun`.
+  - *Late change.* Until the last build, adjacent optional steps were always one detour. A quad that timed
+    out then also skipped the chaingun detour for that attempt. That happened in 2 runs of the *final* build:
+    scripted 0 ms seed 9 and the random ablation. demo3 now names the two detours `quad` and `chaingun`.
 - The demo tables use it:
 
   | Table | Detour | What | Cost |
@@ -197,9 +217,13 @@ above it. The dev builds W8-4 and W8-5 also carried the predicted state (dropped
 | W8-5 | quad and chaingun detours, quad reflex; an owned weapon's skip no longer skips its ammo | 9/28 (32.1 %) | 0.013 (0.17 vs W8-4r) | | |
 | W8-5 − prediction | (seeds 1–30) | 30/93 (32.3 %) | 0.0003 | 30/90 (33.3 %) | 10⁻⁶ |
 | final | the route's kill monster listed (seeds 1–30, 1–50) | 30/94 (31.9 %) | 0.0005 | 50/127 (39.4 %) | < 10⁻⁹ |
+| after | detours skipped one at a time (seeds 1–50, 1–80) | 50/160 (31.2 %) | 0.0002 | 80/199 (40.2 %) | 2·10⁻¹¹ |
+
+The p are Fisher p on the attempts, which overstate certainty (see [Caveats](#caveats-wave-8)). The *after*
+build plays every seed that *final* played exactly as *final* did, so only the extra seeds change these rows.
 
 - No single step before the demo3 detours is significant on its own: each moves survival by 1–4 points on
-  9 seeds.
+  9 seeds. At run level they are weaker still.
 - The standing-rule changes (W8-1 to W8-3) lift the clean mock from 6.4 % to 8.8–13.4 % and the scripted
   policy from 10 % to 11.5–13.8 %. Pooled over the three builds that is 27/242 (11.2 %) against 7/109 for the
   clean mock (p = 0.24) and 27/213 against 9/89 for the scripted policy (p = 0.70).
@@ -210,7 +234,8 @@ above it. The dev builds W8-4 and W8-5 also carried the predicted state (dropped
 
 ### What kills now
 
-The 173 demo3 deaths of the final runs (clean seeds 1–50, scripted 212 ms seeds 1–30, noisy seeds 1–20):
+The 173 demo3 deaths of the *final* build's runs (clean seeds 1–50, scripted 212 ms seeds 1–30, noisy
+seeds 1–20; the *after* build plays these runs identically):
 
 - **Where.** 116 in the ambush gunner's area at the far end of the route, after a median of 20 kills (the
   attempt got through most of the level and died at its hardest fight). 29 near the plat up to the exit, next
@@ -227,7 +252,7 @@ The 173 demo3 deaths of the final runs (clean seeds 1–50, scripted 212 ms seed
 ### Caveats (wave 8)
 
 - **Attempts are clustered by run.** Every demo3 attempt of a run reloads the same arrival save: the same
-  inventory and health. Runs differ a lot (from 1 to 13 attempts), so the attempts of one run are not
+  inventory and health. Runs differ a lot (from 1 to 27 attempts), so the attempts of one run are not
   independent draws. The Fisher p on the attempt counts overstates certainty. The intervals given here are
   therefore a bootstrap over runs, and the comparisons also give two run-level tests (see
   [Reproduce (wave 8)](#reproduce-wave-8)). The large effects (before against after) hold at run level; the
@@ -239,6 +264,8 @@ The 173 demo3 deaths of the final runs (clean seeds 1–50, scripted 212 ms seed
   fairness rules allow as hints. They help every policy equally, including the ablations; both still fail.
 - **Small development samples.** The development steps were measured on 9 seeds each. Only the final rows have
   the samples the gates ask for. The prediction was measured on the clean mock only.
+- **Seed blocks vary.** The noisy mock gave 38 %, 21 % and 31 % on three blocks of seeds of the same build.
+  A rate from 20 seeds can be off by 10 points, so nightly thresholds should come from the pooled 50-seed rates.
 - **One quad per attempt.** The bot uses the quad in the first fight after it picks it up. A better moment (the
   gunner's room) would need the route to say where the hard fight is.
 
@@ -257,8 +284,24 @@ done
 # demo3 survival over the runs in /tmp/agent-eval
 jq -s '[.[].episodes[0].levels[] | select(.map=="demo3")]
        | {exits: map(select(.outcome=="exit")) | length, attempts: (map(.deaths+1) | add)}' /tmp/agent-eval/*/run.json
+# run-level 95 % interval: bootstrap over runs of sum(exits) / sum(attempts)
+jq -c '[.episodes[0].levels[] | select(.map=="demo3")]
+       | [(map(select(.outcome=="exit")) | length), (map(.deaths+1) | add)]' /tmp/agent-eval/*/run.json |
+python3 -c '
+import json, sys, random
+runs = [json.loads(l) for l in sys.stdin]; rng = random.Random(8)
+ratio = lambda s: sum(e for e, a in s) / sum(a for e, a in s)
+v = sorted(ratio([rng.choice(runs) for _ in runs]) for _ in range(20000))
+print(f"{ratio(runs):.3f} run-level 95%: {v[500]:.3f}-{v[19499]:.3f}")'
 ```
 
+- The run-level tests compare two such sets of runs, with 20,000 permutations of the run labels each:
+  - *ratio*: the statistic is the difference of the two sum(exits) / sum(attempts);
+  - *rank-sum*: Mann–Whitney on attempts per exit, with a run that never got through ranked last.
+
+  A p printed as < 10⁻⁴ is the floor of 20,000 permutations.
+- The wave-7 rows are the round-2 runs of [Wave 7](#wave-7-what-decided-a-run). The after rows used one
+  build, the same commands, and seeds 1–80 (clean), 1–50 (noisy, scripted 212 ms) and 1–18 (scripted 0 ms).
 - Use a fresh `-out` directory per row; build `q2bot` once (`go build -o /tmp/q2bot ./cmd/q2bot`) and run three seeds at
   a time on four CPUs.
 - The ablations, the determinism check and the tests are the commands of [Reproduce](#reproduce).
