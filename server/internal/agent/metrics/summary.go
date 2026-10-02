@@ -36,8 +36,12 @@ type RunSummary struct {
 	// EpisodeSeeds are the seeds of the episodes in order.
 	EpisodeSeeds []uint64 `json:"episode_seeds,omitempty"`
 	// ModelDriven is false unless a model backend answered for the whole
-	// run (a budget switching to scripted-only clears it).
+	// run (a budget switching to scripted-only clears it). With a gate
+	// (Collector.SetGate) it is the gate's verdict.
 	ModelDriven bool `json:"model_driven"`
+	// Gate is the provenance gate's verdict (Collector.SetGate; nil
+	// without one).
+	Gate *Gate `json:"gate,omitempty"`
 
 	Started string `json:"started,omitempty"` // first event, RFC 3339 UTC
 	WallMs  int64  `json:"wall_ms"`
@@ -48,6 +52,7 @@ type RunSummary struct {
 
 	Totals    Totals           `json:"totals"`
 	Decisions DecisionStats    `json:"decisions"`
+	Ticks     *TickStats       `json:"ticks,omitempty"` // per-tick provenance (provenance events; nil without them)
 	API       APIStats         `json:"api"`
 	Budget    *BudgetState     `json:"budget,omitempty"`
 	Errors    int              `json:"errors"`
@@ -64,6 +69,10 @@ type EpisodeSummary struct {
 	GameMs  int64          `json:"game_ms"`
 	Totals  Totals         `json:"totals"`
 	Levels  []LevelSummary `json:"levels"`
+
+	// Ticks is the episode's per-tick provenance (nil without provenance
+	// events).
+	Ticks *TickStats `json:"ticks,omitempty"`
 }
 
 // LevelSummary is one level attempt sequence (from level_start to

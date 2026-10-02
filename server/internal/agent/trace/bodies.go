@@ -75,6 +75,12 @@ type UserCmd struct {
 	Side    int16    `json:"side"`
 	Up      int16    `json:"up"`
 	Impulse uint8    `json:"impulse,omitempty"`
+	// Seq is the netchan outgoing sequence the command was sent with and
+	// Ack the incoming acknowledged one then (the bot's own client state:
+	// its movement prediction replays the commands after Ack). Zero when
+	// not recorded.
+	Seq int `json:"seq,omitempty"`
+	Ack int `json:"ack,omitempty"`
 }
 
 // Field is the outcome of one decision field (one question).
@@ -89,9 +95,11 @@ type Field struct {
 	Fallback string `json:"fallback,omitempty"` // why the model's answer was not used
 }
 
-// Decision is the body of decision: one answered request of a lane.
+// Decision is the body of decision: one answered request of a lane (lane
+// fast or slow), or one decision tick of the bot (lane tick: Intent, Tick
+// and Cmds; see LaneTick).
 type Decision struct {
-	Lane         string          `json:"lane"` // fast | slow
+	Lane         string          `json:"lane"` // fast | slow | tick
 	Req          uint64          `json:"req"`  // request sequence
 	SnapGMs      int64           `json:"snap_gms"`
 	State        json.RawMessage `json:"state,omitempty"` // full state (when logged)
@@ -118,6 +126,12 @@ type Decision struct {
 	Timeout bool `json:"timeout,omitempty"`
 	// Stale: the answer arrived after its TTL and was not applied.
 	Stale bool `json:"stale,omitempty"`
+	// Intent, Tick and Cmds are set on lane tick events only: the Intent
+	// acted on with its provenance, what the bot executed, and the
+	// usercmds sent since the previous tick.
+	Intent *Intent   `json:"intent,omitempty"`
+	Tick   *Tick     `json:"tick,omitempty"`
+	Cmds   []UserCmd `json:"cmds,omitempty"`
 }
 
 // APICall is the body of api_call: one backend request.

@@ -28,6 +28,11 @@ const FrameMsec = 100
 type Driver struct {
 	Nav  *Navigator
 	Pred *Predictor
+	// Move, when set, may replace the navigator's intent for each command
+	// before it is aimed and composed (the combat layer's own movement:
+	// strafes, dodges); it sees the navigator's intent and the predicted
+	// state, and Navigator.SafeDir is valid in it.
+	Move func(in control.MoveIntent, s *navsim.State) control.MoveIntent
 	// Aim, when set, chooses the view of each command (the combat layer):
 	// the intent's wish direction is projected onto it, and MustFace
 	// intents override it.
@@ -82,6 +87,9 @@ func (d *Driver) Cmd(c *fakeclient.Client, msec int) shared.UserCmd {
 		in.Last = &d.last
 	}
 	intent := d.Nav.Tick(in)
+	if d.Move != nil {
+		intent = d.Move(intent, &st)
+	}
 	yaw, pitch := intent.FaceYaw, intent.FacePitch
 	if d.Aim != nil {
 		yaw, pitch = d.Aim(intent, &st)

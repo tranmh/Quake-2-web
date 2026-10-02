@@ -32,6 +32,11 @@ type Collector struct {
 	firstWall, lastWall int64
 	firstGMs, lastGMs   int64
 	seen                bool
+
+	// ticks accumulates the provenance events by episode; gate, when set,
+	// is the provenance gate Summary evaluates.
+	ticks map[int]*tickAcc
+	gate  *GateConfig
 }
 
 type episodeAcc struct {
@@ -50,7 +55,17 @@ func NewCollector() *Collector {
 		episodes: map[int]*episodeAcc{},
 		fields:   map[string]*Provenance{},
 		byStatus: map[string]int{},
+		ticks:    map[int]*tickAcc{},
 	}
+}
+
+// SetGate makes Summary evaluate the provenance gate with cfg: the
+// summary's Gate is set and ModelDriven becomes the gate's verdict.
+func (c *Collector) SetGate(cfg GateConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	g := cfg.withDefaults()
+	c.gate = &g
 }
 
 var _ trace.Sink = (*Collector)(nil)
@@ -291,6 +306,18 @@ func (c *Collector) add(e trace.Event) error {
 		ep.sum.GameMs = e.GMs - ep.startGMs
 		ep.ended = true
 
+	case trace.TypeProvenance:
+		var b trace.Provenance
+		if err := e.DecodeBody(&b); err != nil {
+			return err
+		}
+		acc := c.ticks[e.Ep]
+		if acc == nil {
+			acc = &tickAcc{}
+			c.ticks[e.Ep] = acc
+		}
+		acc.add(b)
+
 	case trace.TypeRunEnd:
 		var b trace.RunEnd
 		if err := e.DecodeBody(&b); err != nil {
@@ -351,6 +378,7 @@ func (c *Collector) Summary() RunSummary {
 			t.CombatMs += l.CombatMs
 		}
 		es.Totals = t
+		es.Ticks = c.ticks[n].stats()
 		s.Totals.add(t)
 		s.Episodes = append(s.Episodes, es)
 		s.EpisodeSeeds = append(s.EpisodeSeeds, es.Seed)
@@ -394,6 +422,29 @@ func (c *Collector) Summary() RunSummary {
 	a.LatencyMs = percentiles(c.latencies)
 	if s.Totals.CombatMs > 0 {
 		a.CombatQPS = float64(a.CombatCalls) / (float64(s.Totals.CombatMs) / 1000)
+	}
+
+	if len(c.ticks) > 0 {
+		var all tickAcc
+		eps := make([]int, 0, len(c.ticks))
+		for n := range c.ticks {
+			eps = append(eps, n)
+		}
+		sort.Ints(eps)
+		for _, n := range eps {
+			acc := c.ticks[n]
+			all.ticks += acc.ticks
+			for name, p := range acc.fields {
+				all.add(trace.Provenance{Fields: []trace.TickField{{Name: name, Default: p.Default, Model: p.Model,
+					Scripted: p.Scripted, Stale: p.Stale, Reflex: p.Reflex}}})
+			}
+		}
+		s.Ticks = all.stats()
+	}
+	if c.gate != nil {
+		g := evaluateGate(&s, *c.gate, c.modelBackend, c.scriptedOnly)
+		s.Gate = &g
+		s.ModelDriven = g.Passed
 	}
 	return s
 }

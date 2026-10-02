@@ -103,7 +103,8 @@ type Backend struct {
 	stats Stats
 }
 
-// New builds a backend from a trace's decision events.
+// New builds a backend from a trace's request decision events (lanes fast
+// and slow; the bot's tick events are skipped).
 func New(events []trace.Event, opt Options) (*Backend, error) {
 	b := &Backend{opt: opt, entries: map[uint64]*entry{}}
 	for i := range events {
@@ -114,6 +115,9 @@ func New(events []trace.Event, opt Options) (*Backend, error) {
 		var d trace.Decision
 		if err := e.DecodeBody(&d); err != nil {
 			return nil, fmt.Errorf("replay: event %d: %w", e.Seq, err)
+		}
+		if d.Lane == trace.LaneTick {
+			continue // a decision tick of the bot, not a request
 		}
 		if _, dup := b.entries[d.Req]; dup {
 			return nil, fmt.Errorf("replay: request %d recorded twice in episode %d", d.Req, opt.Episode)

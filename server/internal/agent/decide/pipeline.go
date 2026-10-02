@@ -163,6 +163,7 @@ type Pipeline struct {
 	started  bool
 	last     Intent
 	stats    PipelineStats
+	tick     TickInfo
 }
 
 // ErrNoBackend is returned by NewPipeline without a backend.
@@ -212,6 +213,7 @@ func (p *Pipeline) Intent() Intent { return p.last }
 // lockstep it waits only for results due by now.
 func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Intent {
 	if b == nil {
+		p.tick = TickInfo{}
 		return p.last
 	}
 	p.stats.Ticks++
@@ -229,6 +231,7 @@ func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Int
 
 	cx := Context{Target: p.last.Target, Mode: p.last.Mode, Objective: obj}
 	fast := p.proj.Fast(b, cx)
+	p.tick = TickInfo{Fast: fast}
 	act := Activity{Combat: len(fast.Enemies) > 0 || len(fast.Incoming) > 0}
 	act.Urgent = len(fast.Incoming) > 0 || p.last.Danger >= DangerModerate
 	for i := range fast.Enemies {
@@ -263,8 +266,10 @@ func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Int
 		} else {
 			ap = p.arb.Apply(r)
 		}
+		rec := &Record{Backend: p.cfg.Backend.Name(), Result: r, Applied: ap}
+		p.tick.Records = append(p.tick.Records, rec)
 		if p.cfg.OnRecord != nil {
-			p.cfg.OnRecord(&Record{Backend: p.cfg.Backend.Name(), Result: r, Applied: ap})
+			p.cfg.OnRecord(rec)
 		}
 	}
 	p.last = p.arb.Intent(now, b)
@@ -280,6 +285,7 @@ func (p *Pipeline) submit(l Lane, now int64, st *State, snap *worldmodel.Belief)
 		return false // a state that cannot fit the cap: skip the lane this tick
 	}
 	p.stats.Requests[l]++
+	p.tick.Requests = append(p.tick.Requests, req.Seq)
 	p.arb.Observe(req)
 	return p.sched.Submit(req)
 }

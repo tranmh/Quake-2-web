@@ -332,6 +332,8 @@ type Navigator struct {
 
 	stuck  stuckState
 	status Status
+
+	paths pathCache // PathDistance's last search
 }
 
 // New returns a navigator over graph g (resolved for the level's skill)
