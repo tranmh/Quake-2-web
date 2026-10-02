@@ -166,13 +166,14 @@ func TestLiveKill(t *testing.T) {
 	if !fought || b.Stats().FireCmds == 0 {
 		t.Errorf("fought %v, fire commands %d", fought, b.Stats().FireCmds)
 	}
-	// the help computer's layout arrives, but this port's HelpComputer
-	// renders its counters with an unsupported verb ("%3i" gives
-	// "%!i(int32=  0)"), so perception.ParseHelp rejects it and HelpKnown
-	// stays false: only the request and the layout are checked
+	// the help computer's layout arrives and parses (its "%3i" counters
+	// are formatted as in C)
 	bel := b.Belief()
 	if !bel.Inventory.Known || c.Counts.Layouts == 0 || maxSide < 2 {
 		t.Errorf("inventory known %v, %d layouts, %d side pairs", bel.Inventory.Known, c.Counts.Layouts, maxSide)
+	}
+	if !bel.HelpKnown || bel.Help.KillsMax == 0 {
+		t.Errorf("help computer known %v, %+v", bel.HelpKnown, bel.Help)
 	}
 	if tr := bel.TrackByLump(soldier); tr == nil || tr.Life == worldmodel.LifeAlive {
 		t.Errorf("the soldier's track: %+v", tr)

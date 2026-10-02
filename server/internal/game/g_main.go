@@ -234,13 +234,41 @@ func (g *Game) centerprintf(ent *Edict, format string, args ...any) {
 }
 func (g *Game) error(format string, args ...any) { g.gi.Error(cfmt(format, args...)) }
 
-// cfmt formats like C printf for the verbs used by the game: %i is %d.
+// cfmt formats like C printf for the verbs used by the game: %i is %d,
+// including with flags, width and precision ("%3i" in HelpComputer).
 // Callers must not rely on %g (C and Go differ); use cfmtG.
 func cfmt(format string, args ...any) string {
 	if len(args) == 0 {
 		return format
 	}
-	return fmt.Sprintf(strings.ReplaceAll(format, "%i", "%d"), args...)
+	return fmt.Sprintf(cIntVerbs(format), args...)
+}
+
+// cIntVerbs rewrites every C %i conversion (with any flags, width and
+// precision) to Go's %d, leaving %% and all other verbs alone.
+func cIntVerbs(format string) string {
+	if !strings.Contains(format, "i") {
+		return format
+	}
+	b := []byte(format)
+	for i := 0; i < len(b); i++ {
+		if b[i] != '%' {
+			continue
+		}
+		j := i + 1
+		if j < len(b) && b[j] == '%' {
+			i = j
+			continue
+		}
+		for j < len(b) && strings.IndexByte("-+ #0123456789.", b[j]) >= 0 {
+			j++
+		}
+		if j < len(b) && b[j] == 'i' {
+			b[j] = 'd'
+		}
+		i = j
+	}
+	return string(b)
 }
 
 // C: game/g_main.c:91 ShutdownGame
