@@ -1267,7 +1267,8 @@ func idleCmd(ps *shared.PlayerState, msec int) shared.UserCmd {
 // depends on (MustFace) wins; then a facing the route step needs; then
 // the target (slewed, led, with the fire gate deciding the trigger); then
 // a hit the bot did not see coming; then a point the step wants watched
-// while the bot stands; else the path heading.
+// while the bot stands; then the side an attacker only heard sounded from
+// (heardAttacker); else the path heading.
 func (b *Bot) aim(in control.MoveIntent, st *navsim.State) (float32, float32) {
 	eye := Vec3{st.Origin()[0], st.Origin()[1], st.Origin()[2] + st.ViewHeight}
 	if in.MustFace {
@@ -1295,6 +1296,11 @@ func (b *Bot) aim(in control.MoveIntent, st *navsim.State) (float32, float32) {
 	if b.dir.HasLook && b.standing() {
 		y, p, _ := b.shoot.Aim(eye, view[q2const.YAW], view[q2const.PITCH], AimTarget{Point: b.dir.Look}, navrt.CmdMsec)
 		return y, p
+	}
+	if t := heardAttacker(bel); t != nil {
+		// the path's movement does not depend on the view: look where the
+		// attacker sounded from while walking on
+		return b.shoot.Turn(eye, view[q2const.YAW], view[q2const.PITCH], Vec3{t.Loc[0], t.Loc[1], eye[2]}, navrt.CmdMsec)
 	}
 	b.shoot.SetView(in.FaceYaw, in.FacePitch)
 	return in.FaceYaw, in.FacePitch

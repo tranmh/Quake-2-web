@@ -94,6 +94,10 @@ type projTrack struct {
 	obsAt   int64
 }
 
+// Family names the voice family of a class: the Class of a track only
+// heard (Track.Class is the family then).
+func Family(c *perception.Class) string { return familyOf(c) }
+
 // familyOf names the voice family of a class (the monster's sound
 // directory): all soldiers are "soldier", both tanks "tank".
 func familyOf(c *perception.Class) string {

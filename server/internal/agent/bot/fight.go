@@ -80,6 +80,9 @@ const (
 	// recently (ms) they must have been seen or heard.
 	scanNear   = 700
 	scanMemory = 5000
+	// listenFor is how recently (ms) an attacker only heard must have
+	// attacked for the bot to look where it sounded from on the move.
+	listenFor = 1500
 	// lowHealth: under it the bot does not advance on a monster in view
 	// that attacks it within lowHealthNear; it sidesteps instead.
 	lowHealth     = 25
@@ -855,6 +858,27 @@ func (b *Bot) searchTick(bel *worldmodel.Belief) {
 	}
 	b.searchAt, b.searchUntil, b.searchYaw = d.At, d.At+searchFor, yaw
 	b.fight.noteReflex("scan")
+}
+
+// heardAttacker is the nearest monster only heard (placed by ear: the side
+// it sounded from) that attacked within listenFor and sounded near or mid:
+// on the move, the bot looks that way so it sees the attacker as soon as
+// it shows (nil: none).
+func heardAttacker(bel *worldmodel.Belief) *worldmodel.Track {
+	var best *worldmodel.Track
+	bd := float32(math.MaxFloat32)
+	for i := range bel.Tracks {
+		t := &bel.Tracks[i]
+		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.LocKnown || t.LocSeen ||
+			t.Visible || t.Awareness != worldmodel.Attacking || bel.Time-t.LastAttack > listenFor ||
+			t.Ear.Loud != perception.LoudNear && t.Ear.Loud != perception.LoudMid {
+			continue
+		}
+		if d := dist3(bel.Self.Origin, t.Loc); d < bd {
+			best, bd = t, d
+		}
+	}
+	return best
 }
 
 // scanSuspect is the nearest monster out of view that may have dealt a
