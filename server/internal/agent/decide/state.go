@@ -96,6 +96,10 @@ type Enemy struct {
 	Threat string `json:"threat"`
 	// Current marks the bot's current target.
 	Current bool `json:"current,omitempty"`
+	// Objective marks the monster the route's current step needs dead
+	// (a kill step's, once seen): listed while it is alive and its
+	// position known, however long ago it was seen.
+	Objective bool `json:"objective,omitempty"`
 }
 
 // Incoming is an enemy projectile flying at the bot.
@@ -147,6 +151,9 @@ type ObjectiveView struct {
 	// pickup or confirmation left before the exit): what the bot carries
 	// now is what it starts the next level with.
 	Exit bool
+	// Target is the track of the monster a kill step needs dead once the
+	// bot has seen it ("" none): the fast lane lists it (Enemy.Objective).
+	Target string
 }
 
 // Objective is the encoded ObjectiveView.
@@ -435,7 +442,11 @@ func ammoBucket(k WeaponKey, ammo int) string {
 // Fast returns the fast (combat) lane state.
 func (p *Projector) Fast(b *worldmodel.Belief, cx Context) State {
 	v := viewOf(b)
-	st := State{Me: p.me(b, &v), Enemies: p.enemies(b, &v, cx.Target), Incoming: p.incoming(b, &v)}
+	objective := ""
+	if cx.Objective != nil {
+		objective = cx.Objective.Target
+	}
+	st := State{Me: p.me(b, &v), Enemies: p.enemies(b, &v, cx.Target, objective), Incoming: p.incoming(b, &v)}
 	st.Me.Moving = string(cx.Moving)
 	if cx.TargetSince > 0 && cx.TargetSince <= b.Time {
 		for i := range st.Enemies {
@@ -475,12 +486,13 @@ func (p *Projector) me(b *worldmodel.Belief, v *view) Me {
 	return m
 }
 
-// isEnemy reports whether a track belongs in the enemies list.
-func (p *Projector) isEnemy(b *worldmodel.Belief, t *worldmodel.Track) bool {
+// isEnemy reports whether a track belongs in the enemies list (the
+// objective's monster, objective, however long ago it was observed).
+func (p *Projector) isEnemy(b *worldmodel.Belief, t *worldmodel.Track, objective string) bool {
 	if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.PosKnown {
 		return false
 	}
-	return t.Visible || b.Time-t.LastUpdate <= p.cfg.EnemyMemory
+	return t.Visible || t.ID == objective || b.Time-t.LastUpdate <= p.cfg.EnemyMemory
 }
 
 type rankedEnemy struct {
@@ -489,11 +501,11 @@ type rankedEnemy struct {
 	dist   float64
 }
 
-func (p *Projector) enemies(b *worldmodel.Belief, v *view, target string) []Enemy {
+func (p *Projector) enemies(b *worldmodel.Belief, v *view, target, objective string) []Enemy {
 	var all []rankedEnemy
 	for i := range b.Tracks {
 		t := &b.Tracks[i]
-		if !p.isEnemy(b, t) {
+		if !p.isEnemy(b, t, objective) {
 			continue
 		}
 		center := Vec3{t.Pos[0] + (t.Mins[0]+t.Maxs[0])/2, t.Pos[1] + (t.Mins[1]+t.Maxs[1])/2, t.Pos[2] + (t.Mins[2]+t.Maxs[2])/2}
@@ -502,7 +514,8 @@ func (p *Projector) enemies(b *worldmodel.Belief, v *view, target string) []Enem
 		hi := Vec3{t.Pos[0] + t.Maxs[0], t.Pos[1] + t.Maxs[1], t.Pos[2] + t.Maxs[2]}
 		e := Enemy{ID: t.ID, Class: t.Class, Bearing: v.bearing(center), Elev: v.elev(center), Dist: distBucket(d),
 			Units: int(math.Round(d)), Visible: t.Visible, Shootable: t.Shootable, Aim: v.aim(lo, hi, center),
-			State: t.Awareness.String(), Wounded: t.Wounded, Threat: threatBucket(t.Threat), Current: t.ID == target}
+			State: t.Awareness.String(), Wounded: t.Wounded, Threat: threatBucket(t.Threat), Current: t.ID == target,
+			Objective: t.ID == objective}
 		all = append(all, rankedEnemy{e: e, threat: t.Threat, dist: d})
 	}
 	sort.SliceStable(all, func(i, j int) bool {
@@ -522,17 +535,28 @@ func (p *Projector) enemies(b *worldmodel.Belief, v *view, target string) []Enem
 		}
 		out = append(out, all[i].e)
 	}
-	// keep the current target in the list (in place of the last)
-	if target != "" && len(all) > len(out) {
+	// keep the current target and the objective's monster in the list
+	// (in place of the last ones that are neither)
+	for _, id := range []string{target, objective} {
+		if id == "" || len(all) == len(out) {
+			continue
+		}
 		in := false
 		for i := range out {
-			in = in || out[i].ID == target
+			in = in || out[i].ID == id
 		}
 		for i := len(out); !in && i < len(all); i++ {
-			if all[i].e.ID == target {
-				out[len(out)-1] = all[i].e
-				in = true
+			if all[i].e.ID != id {
+				continue
 			}
+			for k := len(out) - 1; k >= 0; k-- {
+				if !out[k].Current && !out[k].Objective {
+					out[k] = all[i].e
+					in = true
+					break
+				}
+			}
+			break
 		}
 	}
 	return out
@@ -940,12 +964,13 @@ func FitState(st State, maxBytes int) (State, []byte, error) {
 	}
 }
 
-// dropEnemy removes the last enemy that is not the current target (the
-// projection puts a low-ranked current target last, in place of the last
-// of the top N), keeping the order of the rest. es is modified in place.
+// dropEnemy removes the last enemy that is neither the current target nor
+// the objective's monster (the projection puts a low-ranked one of those
+// in place of the last of the top N), keeping the order of the rest. es is
+// modified in place.
 func dropEnemy(es []Enemy) []Enemy {
 	i := len(es) - 1
-	for i > 0 && es[i].Current {
+	for i > 0 && (es[i].Current || es[i].Objective) {
 		i--
 	}
 	return append(es[:i], es[i+1:]...)

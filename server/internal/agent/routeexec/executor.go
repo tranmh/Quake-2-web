@@ -1105,7 +1105,7 @@ func (x *Executor) Objective() *decide.ObjectiveView {
 	at := p.point
 	if p.op == route.OpKill {
 		if k := x.killOrder(p); k != nil {
-			at = k.Pos
+			at, ov.Target = k.Pos, k.Track
 		}
 	}
 	if p.hasPoint || p.op == route.OpKill {

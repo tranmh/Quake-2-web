@@ -1,16 +1,265 @@
 # Agent evaluation: noisy and latent models
 
 This page measures how the agent copes with a model that is sometimes wrong (noisy) and always late (latent).
-It covers two rounds of change to the decision layer and the bot that this evaluation drove:
+It covers three rounds of change to the decision layer and the bot that this evaluation drove:
 
-- **Round 1**: the arbiter accumulates evidence across answers instead of trusting each answer alone.
-- **Round 2**: the arbiter learns per field how far to trust the model, and the bot recovers from stalls and
-  backs away from drain and melee monsters on its own.
+- **Round 1** (wave 7): the arbiter accumulates evidence across answers instead of trusting each answer alone.
+- **Round 2** (wave 7): the arbiter learns per field how far to trust the model, and the bot recovers from
+  stalls and backs away from drain and melee monsters on its own.
+- **Wave 8**: the fire policy and the movement are standing rules the controller applies to fresh state, the
+  bot gains reflexes that act inside the latency, and the route tables add optional detours for the weapons
+  and the quad damage demo3 is played with.
 
-Every number comes from a lockstep run you can repeat with the commands in [Reproduce](#reproduce). The design
-is in [ADR-0006](adr/0006-ai-agent.md) and the tools are in [AGENT.md](AGENT.md).
+Every number comes from a lockstep run you can repeat with the commands in [Reproduce](#reproduce) and
+[Reproduce (wave 8)](#reproduce-wave-8). The design is in [ADR-0006](adr/0006-ai-agent.md) and the tools are in
+[AGENT.md](AGENT.md).
 
 ## Read this first: what decides a run
+
+A run is decided on demo3. Every death there reloads the save made on arrival, so the bot plays the level
+from the same start until it gets through. The useful number is **demo3 survival**: demo3 exits ÷ demo3
+attempts, where attempts = deaths + 1 per visit. Same protocol for every row (lockstep, skill 1,
+`-max-deaths 25 -level-timeout 60m`); *before* is the wave-7 build, *after* this tree:
+
+| Policy | Before: seeds, runs won, demo3 survival | After: seeds, runs won, demo3 survival | p |
+|---|---|---|---|
+| scripted, 0 ms | 1–9, 9/9, 9/43 (21 %) | 1–9, 9/9, 9/27 (33 %) | 0.27 |
+| scripted, 212 ms | 1–9, 9/9, 9/89 (10 %) | 1–30, 30/30, 30/94 (32 %) | 0.0005 |
+| clean mock, 212 ms | 1–9, 7/9, 7/109 (6.4 %) | 1–50, 50/50, 50/127 (39 %) | < 10⁻⁹ |
+| noisy mock, 212 ms | 1–11, 7/11, 7/187 (3.7 %) | 1–20, 20/20, 20/52 (38 %) | < 10⁻⁹ |
+
+95 % (Wilson) intervals of the after rows: 19–52 %, 23–42 %, 31–48 % and 27–52 %. Every model run after is
+model-driven: target, fire_policy and mode from the model on ≥ 0.81 of decided ticks, ≤ 4.6 % of ticks on
+stale answers.
+
+[Wave 8](#wave-8-combat-under-latency) says what changed and how each part was measured;
+[Wave 7](#wave-7-what-decided-a-run) has the rounds before it.
+
+## Wave 8: combat under latency
+
+Wave 8 set out to make demo3 survivable for a model that answers 212 ms late. Two kinds of change did it:
+
+- **Answers as standing rules.** The fire policy and the movement now say what to do, and the controller
+  applies them to the state of every 25 ms command. An answer stays right while it is in flight.
+- **Equipment.** The route tables add optional detours for weapons, ammo and the quad damage, from the entity
+  lump. Every demo3 attempt starts from the save made on arrival, so what the bot carries in, and what it
+  fetches early on each attempt, counts for every attempt.
+
+The bot also gained four reflexes, and the scripted policy got three rule fixes. A predicted (extrapolated)
+fast-lane state was tried and dropped: it made no difference.
+
+### Results
+
+The table is in [Read this first](#read-this-first-what-decides-a-run); p is the two-sided Fisher exact test
+on the attempt counts, against the wave-7 build.
+
+- **The 212 ms policies gain the most.** The clean mock goes from 6.4 % to 39 %, the noisy one from 3.7 % to
+  38 %, the scripted policy at 212 ms from 10 % to 32 %. The scripted policy at 0 ms goes from 21 % to 33 %,
+  which on 9 seeds is not significant (p = 0.27).
+- **The latency gap is closed within noise.** The scripted policy survives 33 % at 0 ms and 32 % at 212 ms
+  (p = 1). Before, it was 21 % against 10 %. The clean mock (the same rules over the wire, with the local
+  fallback for missing answers) is level with the scripted backend at the same latency (39 % against 32 %,
+  p = 0.26).
+- **Victories are no longer a lottery.** All 70 model runs above and all 39 scripted ones win.
+  A demo3 visit takes 2 attempts at the median (the most: 13); before, a failing run spent all 26.
+- **Not all of it is latency handling.** The largest single steps were the demo3 detours (equipment on every
+  attempt; see the [development sequence](#development-sequence)). The standing-rule changes alone moved
+  survival by 1–7 points, each step within noise.
+
+### Gate verdicts
+
+| Gate | Requirement | Result | Verdict |
+|---|---|---|---|
+| (i) | clean mock, 212 ms: demo3 survival ≥ 15 % on ≥ 80 attempts | 50/127 (39.4 %; 95 % interval 31–48 %) over seeds 1–50; p < 10⁻⁹ against 7/109 (6.4 %) | **met** |
+| (ii) | scripted, 212 ms: ≥ 15 % | 30/94 (31.9 %; 23–42 %) over seeds 1–30; p = 0.0005 against 9/89 | **met** |
+| (iii) | scripted, 0 ms: no regression | seeds 1–9 all win, 9/27 (33 %) against 9/43 before. `TestCampaignScripted` passes: victory in 736 s of game time with 1 death (on demo3). | **met** |
+| (iv) | campaign wins, model-driven | clean seeds 1–5: 5/5, target/fire_policy/mode ≥ 0.85/0.88/0.91, stale ≤ 1.1 %. Noisy seeds 1–5: 5/5, ≥ 0.86/0.85/0.89, stale ≤ 4.6 %. All 50 clean and 20 noisy runs win and pass the provenance gate (lowest share 0.81). | **met** |
+| (v) | ablations fail or are worse | constant fails on demo1 (the 60 min level watchdog after 10 deaths); random fails on demo3 (26 deaths there), while every policy above wins every seed | **met** |
+| (vi) | fairness, determinism, tests | Two noisy seed-1 runs: `run.json` equal, traces equal (19,806 events). `q2bot replay -strict` of noisy seed 4: no divergence (56,353 events, 63,368 usercmds, 12,149 responses matched, 1 in flight at the end). `go test -count=1 ./...` passes (63 packages, the fairness differential included); `go test -race` over `./internal/agent/... ./cmd/q2bot/...` passes (25 packages); `gofmt`, `go vet` clean; no ported package changed. | **met** |
+
+### What changed
+
+**1. Movement: one `strafe` option, the side is the controller's** (`decide/vocab.go`, `decide/questions.go`,
+`control/reflex.go`, `bot/fight.go`).
+
+- The movement question asks `advance`, `retreat`, `strafe` or `hold`. `strafe_left` and `strafe_right` are
+  gone.
+- `control.Strafer` picks the side for every command:
+  - it keeps a side for a segment of 0.6–1.2 s, then takes the other; the lengths and the first side are drawn
+    from the run's seed and the segment's number, so a run repeats exactly;
+  - a side whose way is unsafe or blocked within 32 units flips at once;
+  - a dangerous projectile passing within 1.5 s makes it take that projectile's dodge side at once (the dodge
+    reflex itself still takes over within 0.35 s).
+- The fast lane's state tells the model what it is doing, for continuity: `me.moving` (the current
+  movement) and `me.target_since_s` (how long the current target has been the target).
+- The scripted policy (and so the clean mock) says `strafe` wherever it chose a side before. It no longer
+  depends on a clock. Before wave 8 the clean mock drew its strafe side from the request digest, which made it
+  strafe incoherently and kept its movement field untrusted (blip rate 7.8 %).
+
+**2. Fire policy as a standing rule** (`decide/questions.go`, `backend/scripted`).
+
+- The question says the aim, the view and the line of fire are checked for every shot.
+  `fire_when_aligned` is "fire whenever it is in view, the shot is clear and the crosshair is on it".
+- The scripted policy answers `fire_when_aligned` for a target within the weapon's range even when the target
+  is out of view or behind cover now. Before, it answered `hold`. That `hold` stayed in force for a latency
+  and the 0.4 s hysteresis after the target showed again.
+- `hold` is left for no target, no ammo and a target out of range; `suppress` for a close, dangerous target in
+  view.
+
+**3. Execution audit, and prediction tried.**
+
+- Nothing in the bot applies a geometric quantity from the old state. The target is a track id, aimed at
+  where the belief has it now. The fire gate judges each command. Advance, retreat and strafe directions are
+  taken against the target's current position. Search and scan yaws are world angles.
+- A predicted fast-lane state was tried. It moved the eye and the enemies in view along their velocities by
+  the backend's median latency (at most 128 units) and shortened the projectiles' times. Clean mock, seeds 1–9:
+  8/56 (14.3 %) with it against 9/67 (13.4 %) without (p = 1). Dropped.
+
+**4. Reflexes** (`bot/fight.go`, `bot/bot.go`). Each acts within a command or a frame, on the fair belief.
+
+| Reflex | What it does | Trace |
+|---|---|---|
+| retarget | The intent's fight target is dead or unknown (the next answer is a latency away): fight the most dangerous awake monster in view with a line of fire within 1000 units. On the move without a live target: shoot back at a monster in view that attacks. Fire when aligned if the intent holds fire. | target and fire_policy `retarget` |
+| scan | A hit with no bearing (a drain, a hit without knockback) and no target: turn towards the nearest awake monster seen or heard within 5 s and 700 units, else behind, then to the sides; a scan under way is not restarted. | tick reflex `scan` |
+| drain keep-off | The keep-off reflex also backs away from a parasite out of view that was awake and seen or heard within 2 s, while the bot takes hits without a bearing. | movement `keep_off` |
+| quad | Use a picked-up quad damage when the bot fights an awake monster in view. In single player the game only stores a picked-up quad (`Pickup_Powerup`); the player has to type `use Quad Damage`. | tick reflex `quad` |
+
+**5. Equipment: optional route steps** (`route`, `routeexec`, `fixtures/agent/routes`).
+
+- A route step may carry `"optional": true`. That is allowed for a goto, press, wait or pickup of an item that
+  is not a key.
+  - The executor gives an optional step one attempt. When it fails it skips the step and the optional steps
+    right after it (one detour: the button, the wait for the door, the pickups behind it).
+  - It skips an optional weapon pickup alone when the bot already holds that weapon.
+  - The last step cannot be optional. The table must validate with its optional steps removed as well, so no
+    required step relies on one. `q2nav plan` passes.
+- The demo tables use it:
+
+  | Table | Detour | Cost |
+  |---|---|---|
+  | demo1 | the shotgun and 2 boxes of shells on the lower floor east of the start | about 20 s |
+  | demo2a | button `*36` opens the closet next to the way from the car to the hatch: the machinegun and 2 boxes of bullets | a few seconds |
+  | demo3 | the quad damage, then the chaingun and 2 boxes of bullets next to the way to the ambush gunner | about 5 s |
+
+- Arrival at demo3 (first slow-lane state; weapons with ammo):
+
+  | Build | Runs | with the shotgun | with the machinegun | median health |
+  |---|---|---|---|---|
+  | before (wave 7), seeds 1–3, scripted 212 ms and clean | 6 | 2 | 0 | 82 |
+  | W8-1 (no detours yet), seeds 1–9, scripted 212 ms | 9 | 7 | 0 | 76 |
+  | after, clean mock, seeds 1–50 | 50 | 39 | 44 | 77 |
+  | after, scripted 212 ms, seeds 1–30 | 30 | 25 | 26 | 80 |
+  | after, noisy mock, seeds 1–20 | 20 | 19 | 20 | 81 |
+
+  The counts are of weapons with ammo: a shotgun whose shells are spent does not show. The armor picked up on
+  demo1 is spent before demo3 in both builds.
+- The route's kill monster is listed in the fast lane's state once seen (`objective: true`), however long ago.
+  Before, the route's kill step fought a gunner the model had not been told about. The bot then overrode the
+  model's target as `route_kill`: on 15 % of the ticks of clean seed 23, whose target share was 0.65 without
+  this listing and 0.87 with it.
+
+**6. Scripted rules** (`backend/scripted`). These apply to the clean and noisy mocks too.
+
+- *Weapon.* The weapon in hand is kept when it ranks at most 2 places below the best owned weapon in the
+  range band's order. Before, it was kept when it was among the best 3 owned, which keeps any of 3 weapons. So
+  the shotgun was kept at mid range against the machinegun.
+- *Blaster.* The blaster is kept only where it is the best owned weapon (far, against the shotgun's spread).
+- *Retreat.* Retreat when outnumbered: under 50 health at high danger, as well as under 30 at moderate
+  danger. Neutral within noise (scripted 212 ms, seeds 1–9: 9/50 with it against 9/53 without, p = 1). It is
+  kept as the policy's rule.
+
+**Format change.** Traces recorded before wave 8 do not replay with this build. Their movement options
+(`strafe_left`, `strafe_right`), question texts and states differ, so no request digest matches. Replay them
+with the build they were recorded with (`git checkout e2167b1`). `q2bot summarize`, `validate` and the web replay
+read them as before: the labels are data.
+
+### Development sequence
+
+Scripted policy at 212 ms and clean mock at 212 ms, seeds 1–9 each, gate protocol. Every step adds to the one
+above it. The dev builds W8-4 and W8-5 also carried the predicted state (dropped later; neutral, see 3).
+
+| Build | Adds | Scripted 212 ms | p (vs before) | Clean mock 212 ms | p (vs before) |
+|---|---|---|---|---|---|
+| before | wave 7 | 9/89 (10.1 %) | | 7/109 (6.4 %) | |
+| W8-1 | strafe and fire policy as standing rules, continuity hints | 9/70 (12.9 %) | 0.62 | 9/102 (8.8 %) | 0.61 |
+| W8-2 | retarget, scan, drain keep-off; demo1 and demo2 weapon detours | 9/65 (13.8 %) | 0.61 | 9/73 (12.3 %) | 0.19 |
+| W8-3 | weapon keep by rank distance | 9/78 (11.5 %) | 0.81 | 9/67 (13.4 %) | 0.18 |
+| W8-3 + chaingun | the demo3 chaingun detour alone | 9/40 (22.5 %) | 0.10 (0.17 vs W8-3) | | |
+| W8-4 | blaster rule (+ prediction) | 9/53 (17.0 %) | 0.30 | | |
+| W8-4r | outnumbered retreat | 9/50 (18.0 %) | 0.20 | | |
+| W8-5 | quad and chaingun detours, quad reflex; an owned weapon's skip no longer skips its ammo | 9/28 (32.1 %) | 0.013 (0.17 vs W8-4r) | | |
+| W8-5 − prediction | (seeds 1–30) | 30/93 (32.3 %) | 0.0003 | 30/90 (33.3 %) | 10⁻⁶ |
+| final | the route's kill monster listed (seeds 1–30, 1–50) | 30/94 (31.9 %) | 0.0005 | 50/127 (39.4 %) | < 10⁻⁹ |
+
+- No single step before the demo3 detours is significant on its own: each moves survival by 1–4 points on
+  9 seeds.
+- The standing-rule changes (W8-1 to W8-3) lift the clean mock from 6.4 % to 8.8–13.4 % and the scripted
+  policy from 10 % to 11.5–13.8 %. Pooled over the three builds that is 27/242 (11.2 %) against 7/109 for the
+  clean mock (p = 0.24) and 27/213 against 9/89 for the scripted policy (p = 0.70).
+- The demo3 detours give the largest steps. That is equipment on every attempt, not latency handling.
+- Listing the route's kill monster (final) leaves the scripted policy unchanged (30/94 against 30/93) and moves
+  the clean mock from 33 % to 39 % (p = 0.25). It is kept because it removes the `route_kill` overrides from the
+  provenance: without it clean seed 23 and noisy seed 14 were not model-driven (target 0.65 and 0.61).
+
+### What kills now
+
+The 173 demo3 deaths of the final runs (clean seeds 1–50, scripted 212 ms seeds 1–30, noisy seeds 1–20):
+
+- **Where.** 116 in the ambush gunner's area at the far end of the route, after a median of 20 kills (the
+  attempt got through most of the level and died at its hardest fight). 29 near the plat up to the exit, next
+  to the arrival, after a median of 31 kills: the last fights. 28 elsewhere, after a median of 9.
+- **What.** Monsters within 400 units at death, counted per death and class: gunner 131, soldier 91, parasite
+  73, berserker 41, light soldier 36, infantry 23.
+- **How.** The grenade escape reflex acted in the last 3 s of 50 deaths: gunner grenades are a main killer,
+  with the parasite's drain.
+- **Weapon.** The shotgun was in hand at 128 deaths, the chaingun at 24, the blaster at 12, the machinegun at
+  9: the bullets were spent, or the range rule chose the shotgun up close.
+- **Next.** Ammunition for the chaingun on the way to the gunner, and grenade avoidance in that fight, are the
+  open levers.
+
+### Caveats (wave 8)
+
+- **The mock is not Jev.** The clean mock answers with the scripted rules, so its numbers measure the rules
+  over the wire at 212 ms, not a model's judgment. The standing-rule question texts are written for a model;
+  how a real one reads them is for phase 9 (`jev-probe`, then a live run).
+- **The detours are static map knowledge.** They come from the entity lump through the route tables, which the
+  fairness rules allow as hints. They help every policy equally, including the ablations; both still fail.
+- **Small development samples.** The development steps were measured on 9 seeds each. Only the final rows have
+  the samples the gates ask for. The prediction was measured on the clean mock only.
+- **One quad per attempt.** The bot uses the quad in the first fight after it picks it up. A better moment (the
+  gunner's room) would need the route to say where the hard fight is.
+
+### Reproduce (wave 8)
+
+From `server/`, with `COMMON` as in [Reproduce](#reproduce):
+
+```sh
+# one row: a policy over seeds 1-30
+for s in $(seq 1 30); do
+  go run ./cmd/q2bot run -backend mock -mock-policy scripted -seed $s $COMMON   # clean mock, 212 ms
+  # noisy mock:      -backend mock -seed $s
+  # scripted 212 ms: -backend scripted -sim-latency 212ms -seed $s
+  # scripted 0 ms:   -backend scripted -seed $s
+done
+# demo3 survival over the runs in /tmp/agent-eval
+jq -s '[.[].episodes[0].levels[] | select(.map=="demo3")]
+       | {exits: map(select(.outcome=="exit")) | length, attempts: (map(.deaths+1) | add)}' /tmp/agent-eval/*/run.json
+```
+
+- Use a fresh `-out` directory per row; build `q2bot` once (`go build -o /tmp/q2bot ./cmd/q2bot`) and run three seeds at
+  a time on four CPUs.
+- The ablations, the determinism check and the tests are the commands of [Reproduce](#reproduce).
+- The prediction control was a scratch patch, not in the tree: `ProjectorConfig.Lead` set to the scheduler's
+  latency median, which moved the eye and the enemies in view along their velocities and shortened projectile
+  times.
+- The development builds are not in the tree either. Each row of the sequence is an intermediate state of the
+  wave-8 tree: the steps above it applied, the ones below not. W8-2 to W8-4r also skipped an owned weapon's
+  ammo together with it (W8-5 fixed that); W8-4 and W8-5 carried the prediction.
+
+## Wave 7: what decided a run
+
+*This section and the ones after it, down to [Caveats](#caveats), are the wave-7 evaluation as it was
+recorded; "final build" there means the wave-7 build `e2167b1`.*
 
 A run is decided on demo3. An attempt that gets through kills 35–40 monsters, and almost every attempt that
 fails dies before the route's first step (the ambush gunner) is done. The bot enters the level with the health
@@ -47,7 +296,7 @@ Three things follow:
     55 % of the time.
   - Whether a gate passes on its seeds says little about a change. The per-attempt counts above say more.
 
-## Gate verdicts (final build)
+## Gate verdicts (wave 7 build)
 
 | Gate | Requirement | Result | Verdict |
 |---|---|---|---|
@@ -321,7 +570,7 @@ Each row is one run. Columns:
 
 - Every run of the sweep is model-driven (model shares 0.87–0.97).
 - One seed per latency is a single draw of a lottery. The latency effect is better measured by the scripted
-  rows in [Read this first](#read-this-first-what-decides-a-run): 21 % at 0 ms against 10 % at 212 ms
+  rows in [Wave 7](#wave-7-what-decided-a-run): 21 % at 0 ms against 10 % at 212 ms
   (p ≈ 0.1).
 
 ### (f) Determinism

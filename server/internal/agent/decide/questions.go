@@ -51,6 +51,9 @@ func targetQuestion(st *State) (Question, bool) {
 		if e.Current {
 			b.WriteString(", current target")
 		}
+		if e.Objective {
+			b.WriteString(", the objective: the route needs it dead")
+		}
 		q.Options = append(q.Options, Option{Key: e.ID, Desc: b.String()})
 	}
 	q.Options = append(q.Options, Option{Key: OptNone, Desc: "no enemy is worth shooting"})
