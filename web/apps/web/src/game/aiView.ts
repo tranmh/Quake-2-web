@@ -58,13 +58,25 @@ export interface Fallback {
   reason: string;
 }
 
-/** Default-value reasons that mean the model answered (or was asked) and its answer was not usable. */
-const MODEL_FAILED = new Set(['missing', 'invalid', 'unknown_option', 'low_confidence', 'error', 'timeout']);
+/**
+ * Default-value reasons that mean the model answered (or was asked) and its answers were not usable. `weak`
+ * is the arbiter's (its accumulated evidence is too weak or split); `low_confidence` is its name in traces
+ * from before the evidence aggregation, kept for their replays.
+ */
+const MODEL_FAILED = new Set([
+  'missing',
+  'invalid',
+  'unknown_option',
+  'weak',
+  'low_confidence',
+  'error',
+  'timeout',
+]);
 
 /**
  * Fields of a model backend's decision that fell back from the model: the value acted on is the scripted
- * policy's, or the field's default because the model's answer was unusable (missing, invalid, low
- * confidence, an error or a timeout). A default for lack of a question or of a fresh answer (not_asked,
+ * policy's, or the field's default because the model's answers were unusable (missing, invalid, too weak
+ * as evidence, an error or a timeout). A default for lack of a question or of a fresh answer (not_asked,
  * no_answer, ttl), a stale value (it has a badge of its own) and a reflex override are no fallback. A
  * scripted or ablation backend never "falls back": scripted is what it is.
  */

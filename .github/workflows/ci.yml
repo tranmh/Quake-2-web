@@ -62,6 +62,8 @@ jobs:
       - run: make demo
       # the agent's nav graphs: without them the -race full-map nav tests skip (a -race build takes ~30 s/map)
       - run: make nav
+      # a scripted demo1 run and a noisy mock-Jev demo1 run held to the provenance gate (0.7), both validated
+      - run: make agent-smoke
       - uses: actions/download-artifact@v4
         with: { name: fixtures, path: fixtures/generated }
       - run: cd server && go vet ./... && test -z "$(gofmt -l .)"

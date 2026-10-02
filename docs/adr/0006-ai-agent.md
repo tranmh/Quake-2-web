@@ -59,8 +59,12 @@ lockstep sv.Server (virtual clock)  ─┐                                    �
   - `scripted` (the deterministic baseline, also the arbiter's fallback);
   - `replay` (recorded answers);
   - `constant` and `random` (ablations).
-  The arbiter checks answers, gates them by confidence and age, and falls back to the scripted policy. It
-  records the provenance of every field the bot acted on: model, scripted, stale, reflex or default.
+  The arbiter checks answers and accumulates them per field as time-decayed (`ArbiterConfig.Tau`, by
+  field), confidence-weighted evidence. The posterior decides a field while its newest answer is within its
+  TTL, its weight is at least `MinConfidence` and, for a choice, its top option is at least `MinPosterior`.
+  Otherwise the field falls back to the scripted policy (reason `weak` for too little or split evidence). A
+  value held by hysteresis stays model-sourced while the posterior still backs it. The arbiter records the
+  provenance of every field the bot acted on: model, scripted, stale, reflex or default.
 - **Map knowledge.**
   - A nav graph is built from the BSP by simulating the bit-exact `pmove` for every candidate edge. The edges
     carry conditions (mover poses, removed walls) and effects (the triggers they pass through). It is cached
@@ -107,7 +111,11 @@ Everything the bot knows comes from one of the following:
    - one-way drops come from nav region reachability;
    - a removable wall is assumed gone when the bot stands in a pocket that only it could open;
    - in a pit from which the route's goal cannot be reached, the bot types `kill` (a player command), which
-     counts as a death.
+     counts as a death;
+   - when the bot has stood within 24 units of one spot for 30 s of game time while its navigator kept
+     trying to move it (on at least 75 % of the frames) and reported itself stuck at least 8 times, it is
+     wedged and types `kill` too (`bot.wedgeTick`, reflex `wedged_kill`). That also counts as a death and
+     reloads `save0`, so it shows in every evaluation's death count.
 
 The game's level counters (`session.Truth`: kills and secrets) feed only `level_end` and `run.json`, for
 metrics. They never reach the bot. Without a collision map the perceiver fails closed: it sees nothing and
@@ -220,7 +228,11 @@ Rejected alternatives:
   - Inside a test binary (`testing.Testing()`), the jev client refuses every host that is not loopback.
   - CI sets `TYPESAFE_API_KEY: ""`. The mock backend and `jevtest` serve on loopback.
   - The only live job (`jev-live` in `agent-nightly.yml`) is manual (`workflow_dispatch`). It runs behind the
-    protected `jev-live` environment, which holds the key.
+    protected `jev-live` environment, which holds the key. A repo admin creates that environment before the
+    first dispatch, with required reviewers and deployment branches limited to `main`: a dispatch runs the
+    dispatching ref's copy of the workflow, so without the branch rule an approved dispatch from another
+    branch would hand the key to that branch's workflow. GitHub creates an environment that does not exist on
+    first reference, with no protection rules (the job then fails on the empty secret).
 - **The key.**
   - It is read from the environment only (`TYPESAFE_API_KEY`); no flag takes it.
   - It lives in a `trace.Secret`, which is redacted from logs, errors, traces, the recorder's Authorization

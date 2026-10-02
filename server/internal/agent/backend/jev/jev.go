@@ -117,6 +117,11 @@ type Config struct {
 	// caller's context has a deadline, an attempt that may still be
 	// retried gets at most its share of the time left, so the retry fits.
 	FastTimeout, SlowTimeout time.Duration
+	// UncapFast lifts the MaxFastTimeout cap on FastTimeout: for a
+	// lockstep run against a loopback server, whose answers must not
+	// depend on how fast the machine is (the attempt timeout then only
+	// guards against a hang). Never for a realtime client of the API.
+	UncapFast bool
 	// FastRetries and SlowRetries are the retries after a retryable
 	// failure. FastRetries defaults to 0; SlowRetries 0 means the default
 	// (1) and a negative value none.
@@ -296,7 +301,9 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 	defd(&cfg.FastTimeout, MaxFastTimeout)
-	cfg.FastTimeout = min(cfg.FastTimeout, MaxFastTimeout)
+	if !cfg.UncapFast {
+		cfg.FastTimeout = min(cfg.FastTimeout, MaxFastTimeout)
+	}
 	defd(&cfg.SlowTimeout, DefaultSlowTimeout)
 	defd(&cfg.BadSetTTL, DefaultBadSetTTL)
 	defd(&cfg.BreakerOpen, 5*time.Second)

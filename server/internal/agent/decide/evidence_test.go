@@ -272,17 +272,19 @@ func TestEvidenceStale(t *testing.T) {
 	}
 }
 
-// A score's value is the weighted mean of the answers' levels.
+// A score's value is the weighted mean of the answers' levels (once it
+// falls; it rises at once, TestEvidenceSafetyAsymmetry).
 func TestEvidenceScore(t *testing.T) {
 	b := testBelief()
 	a := newTestArbiter(ArbiterConfig{})
-	step(t, a, laneReq(t, 1, LaneSlow, 0, b), map[string]Answer{QDanger: score(1, 0.9)})
-	step(t, a, laneReq(t, 2, LaneSlow, 500, b), map[string]Answer{QDanger: score(3, 0.9)})
+	step(t, a, laneReq(t, 1, LaneSlow, 0, b), map[string]Answer{QDanger: score(3, 0.9)})
+	step(t, a, laneReq(t, 2, LaneSlow, 500, b), map[string]Answer{QDanger: score(1, 0.6)})
 	in := a.Intent(500, b)
 	w := math.Exp(-1) // danger's tau is 500 ms
-	want := (w*1 + 3) / (w + 1)
-	if math.Abs(in.Danger-want) > 1e-9 || in.Provenance.Danger.Source != SourceModel || in.Provenance.Danger.Seq != 2 {
-		t.Fatalf("danger %v (want %v) %+v", in.Danger, want, in.Provenance.Danger)
+	want := (0.9*w*3 + 0.6*1) / (0.9*w + 0.6)
+	conf := (0.9*w + 0.6) / (w + 1)
+	if p := in.Provenance.Danger; math.Abs(in.Danger-want) > 1e-9 || p.Source != SourceModel || p.Seq != 2 || math.Abs(p.Confidence-conf) > 1e-9 {
+		t.Fatalf("danger %v (want %v) %+v (confidence want %v)", in.Danger, want, p, conf)
 	}
 }
 
@@ -398,5 +400,78 @@ func TestEvidenceDwellHeldIsStale(t *testing.T) {
 	}
 	if in := fd.a.Intent(400, fd.b); in.FirePolicy != FireSuppress || in.Provenance.FirePolicy.Source != SourceModel {
 		t.Fatalf("after the dwell: %s %+v", in.FirePolicy, in.Provenance.FirePolicy)
+	}
+}
+
+// Safety comes first: danger rises at once to a fresh answer's level (and
+// falls with the accumulated evidence), and the newest answer's retreat at
+// critical danger is acted on at once.
+func TestEvidenceSafetyAsymmetry(t *testing.T) {
+	b := testBelief()
+	a := newTestArbiter(ArbiterConfig{})
+	seq := uint64(0)
+	slow := func(now int64, mode string, danger float64) Intent {
+		t.Helper()
+		seq++
+		req := laneReq(t, seq, LaneSlow, now, b)
+		step(t, a, req, map[string]Answer{QMode: noisyChoice(req.Question(QMode), mode, 0.9, 0.8), QDanger: score(danger, 0.8)})
+		return a.Intent(now, b)
+	}
+	now := int64(0)
+	for i := 0; i < 6; i++ {
+		slow(now, "fight", 1)
+		now += 500
+	}
+	// a retreat answer at danger 4 among fight answers at danger 1
+	in := slow(now, "retreat", 4)
+	if in.Danger != 4 || in.Mode != ModeRetreat || in.Provenance.Mode.Source != SourceModel {
+		t.Fatalf("critical retreat: danger %v mode %s %+v", in.Danger, in.Mode, in.Provenance.Mode)
+	}
+	// danger falls with the evidence, not at once
+	now += 500
+	in = slow(now, "fight", 1)
+	if in.Danger <= 1.5 || in.Danger >= 4 {
+		t.Fatalf("danger after one calm answer: %v", in.Danger)
+	}
+	// below RetreatDanger a lone retreat answer does not flip the mode
+	a = newTestArbiter(ArbiterConfig{})
+	now = 0
+	for i := 0; i < 6; i++ {
+		slow(now, "fight", 1)
+		now += 500
+	}
+	if in := slow(now, "retreat", 3); in.Mode != ModeFight {
+		t.Fatalf("a lone retreat at danger %v: %s", in.Danger, in.Mode)
+	}
+}
+
+// A weapon answer's keep is evidence for the weapon in hand at the time:
+// after a switch the earlier keeps back that weapon, not the new one.
+func TestEvidenceWeaponKeep(t *testing.T) {
+	b := testBelief() // the shotgun in hand
+	a := newTestArbiter(ArbiterConfig{})
+	seq := uint64(0)
+	slow := func(b *worldmodel.Belief, now int64, key string, conf float64) Intent {
+		t.Helper()
+		seq++
+		req := laneReq(t, seq, LaneSlow, now, b)
+		q := req.Question(QWeapon)
+		if q == nil {
+			t.Fatal("no weapon question")
+		}
+		step(t, a, req, map[string]Answer{QWeapon: noisyChoice(q, key, 0.9, conf)})
+		return a.Intent(now, b)
+	}
+	for i, now := 0, int64(0); i < 3; i, now = i+1, now+500 {
+		if in := slow(b, now, OptKeep, 0.8); in.Weapon != "" {
+			t.Fatalf("keep the shotgun: %q", in.Weapon)
+		}
+	}
+	// the bot switched to the machinegun; one unconfident keep (of the
+	// machinegun) does not outweigh three for the shotgun
+	b2 := testBelief()
+	b2.Self.Weapon = "Machinegun"
+	if in := slow(b2, 1500, OptKeep, 0.4); in.Weapon != WeaponShotgun || in.Provenance.Weapon.Source != SourceModel {
+		t.Fatalf("after the switch: %q %+v", in.Weapon, in.Provenance.Weapon)
 	}
 }

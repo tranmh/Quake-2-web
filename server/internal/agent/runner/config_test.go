@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/backend/jevtest"
 	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/decide"
@@ -414,5 +416,25 @@ func TestMockPolicy(t *testing.T) {
 		if err := bad.check(); !errors.Is(err, ErrConfig) {
 			t.Errorf("%+v: %v", bad, err)
 		}
+	}
+}
+
+// A lockstep mock run's fast lane waits out a loopback reply slower than
+// jev.MaxFastTimeout (a loaded machine): the wall clock must not decide
+// its answers.
+func TestMockLockstepSlowReply(t *testing.T) {
+	faults := jevtest.Faults{Latency: []time.Duration{jev.MaxFastTimeout + 200*time.Millisecond}}
+	b, err := newBackends(&Config{Backend: BackendMock, Session: SessionLockstep, Seed: 1, MockFaults: &faults}, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.close()
+	st := &decide.State{Me: decide.Me{HP: "ok", Health: 70, Weapon: "shotgun", Ammo: "ok"}}
+	req, err := decide.NewRequest(1, decide.LaneFast, 1000, st, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.client.Decide(context.Background(), req); err != nil {
+		t.Fatalf("a slow loopback reply failed the fast lane: %v", err)
 	}
 }

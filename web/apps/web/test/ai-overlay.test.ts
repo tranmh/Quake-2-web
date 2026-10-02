@@ -88,27 +88,28 @@ describe('aiView', () => {
       ...decision,
       provenance: {
         mode: 'default', // no fresh answer: not a fallback
-        target: 'default', // the model answered with too little confidence: a fallback
+        target: 'default', // the model's evidence is too weak or split: a fallback
         fire_policy: 'scripted',
         movement: 'stale',
         weapon: 'reflex', // an override: not a fallback
         pickup: 'default', // never asked: not a fallback
-        danger: 'scripted',
+        danger: 'default', // the same as target, as traces from before the evidence aggregation name it
       },
       // as the trace has them
       fallback: {
         mode: 'ttl',
-        target: 'low_confidence',
+        target: 'weak',
         fire_policy: 'timeout',
         movement: 'held',
         weapon: 'dry',
         pickup: 'not_asked',
+        danger: 'low_confidence',
       },
     };
     expect(fallbackFields(withReasons, true)).toEqual([
-      { field: 'target', reason: 'low_confidence' },
+      { field: 'target', reason: 'weak' },
       { field: 'fire_policy', reason: 'timeout' },
-      { field: 'danger', reason: 'scripted' },
+      { field: 'danger', reason: 'low_confidence' },
     ]);
     expect(fallbackFields(withReasons, false)).toEqual([]);
     expect(isModelBackend('jev')).toBe(true);

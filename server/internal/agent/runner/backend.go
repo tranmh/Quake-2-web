@@ -142,21 +142,23 @@ func mockFaults(cfg *Config) jevtest.Faults {
 
 // mockLockstep keeps the jev client's wall-clock state out of a lockstep
 // mock run, whose answers must depend on the run's seed alone: lockstep
-// compresses the wall clock, so a circuit breaker, a 429/529 cooldown or
-// a locally refused question set (all timed on the wall clock) would
-// decide answers by how fast the machine plays. The breaker never opens,
-// cooldowns and refused sets last a nanosecond, and the attempts get the
-// longest timeouts the client allows (the fast lane's is capped at
-// jev.MaxFastTimeout: a loopback round trip slower than that, on a
-// machine loaded that heavily, is the one wall-clock effect left).
+// compresses the wall clock, so a circuit breaker, a 429/529 cooldown, a
+// locally refused question set or an attempt timeout (all timed on the
+// wall clock) would decide answers by how fast the machine plays. The
+// breaker never opens, cooldowns and refused sets last a nanosecond, and
+// both lanes' attempts get mockAttemptTimeout, the fast lane's cap lifted
+// (a loaded machine once took longer than the 800 ms cap for a loopback
+// round trip, and that one timeout changed the run): the timeouts only
+// guard against a hang, as the scheduler's lockstep wait does.
 func mockLockstep(jc *jev.Config) {
 	jc.BreakerFailures = math.MaxInt32
 	jc.DefaultCooldown, jc.MaxCooldown, jc.BadSetTTL = time.Nanosecond, time.Nanosecond, time.Nanosecond
-	jc.FastTimeout, jc.SlowTimeout = jev.MaxFastTimeout, mockSlowTimeout
+	jc.UncapFast = true
+	jc.FastTimeout, jc.SlowTimeout = mockAttemptTimeout, mockAttemptTimeout
 }
 
-// mockSlowTimeout is a lockstep mock run's slow-lane attempt timeout.
-const mockSlowTimeout = 30 * time.Second
+// mockAttemptTimeout is a lockstep mock run's attempt timeout.
+const mockAttemptTimeout = 30 * time.Second
 
 // replayLatency is a replay's latency model: the recorded latency of a
 // recorded request, the run's simulated latency for the others (requests

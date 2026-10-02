@@ -238,14 +238,14 @@ type Bot struct {
 	kills                int
 	// wedged: where and since when the bot has stood (wedgeTick), the
 	// frames since then, how many of them its navigator was under way,
-	// the stuck reports it made meanwhile and its last stuck count
-	wedgeAt                            Vec3
-	wedgeSince                         int64
-	wedgeFrames, wedgeNav, wedgeStucks int
-	navStucks                          int
-	// testNav, when set, stands in for the navigator's status (tests):
-	// under way, and its stuck count for the goal
-	testNav func() (bool, int)
+	// the recoveries (stuck reports, repaths) it made meanwhile and its
+	// last count
+	wedgeAt                               Vec3
+	wedgeSince                            int64
+	wedgeFrames, wedgeNav, wedgeRecovered int
+	navRecoveries                         int
+	// testNav, when set, stands in for the navigator's status (tests)
+	testNav func() navEffort
 }
 
 // New returns a bot with no level: call Enter once the client is active on
@@ -336,7 +336,7 @@ func (b *Bot) Enter(lv Level) error {
 	b.pickID, b.badItems = "", b.badByKey[lv.Key]
 	b.ticks, b.pending, b.dropped = 0, nil, 0
 	b.trappedSince, b.killAt = 0, 0
-	b.wedgeSince, b.navStucks = 0, 0
+	b.wedgeSince, b.navRecoveries = 0, 0
 	b.shoot.Reset()
 	return nil
 }
@@ -856,40 +856,50 @@ func (b *Bot) trapTick(c *fakeclient.Client, bel *worldmodel.Belief) {
 	c.StringCmd("kill")
 }
 
-// Wedge recovery (units, ms, share, reports).
+// Wedge recovery (units, ms, share, recoveries).
 const (
 	// wedgeMove: the bot is wedged while its origin stays within
-	// wedgeMove of a spot for wedgeFor, its navigator under way (a path
-	// to follow, or stuck recovery) on at least wedgeShare of the frames
-	// and reporting itself stuck at least wedgeStuck times meanwhile: it
-	// tries to move, its recovery manoeuvres fail, and it does not move.
-	// (Standing still on purpose, waiting for a mover or holding in a
-	// fight, makes no stuck reports.)
-	wedgeMove  = 24
-	wedgeFor   = 30000
-	wedgeShare = 0.75
-	wedgeStuck = 8
+	// wedgeMove of a spot for wedgeFor, its navigator under way (a path to
+	// follow, or stuck recovery) on at least wedgeShare of the frames and
+	// recovering (a stuck report or a repath) at least wedgeRecover times
+	// meanwhile: it tries to move, its manoeuvres fail, and it does not
+	// move. Standing still on purpose (waiting for a mover, holding in a
+	// fight, a route step with no path in the believed state) is not; a
+	// bot that frees itself within wedgeFor (two minutes: some spots take
+	// a while) never trips it, and the campaign's stall watchdog (five
+	// minutes, fatal to the run) comes later.
+	wedgeMove    = 24
+	wedgeFor     = 120000
+	wedgeShare   = 0.75
+	wedgeRecover = 8
 )
 
-// navTrying reports a navigator trying to move the bot (it has a goal and
-// follows a path to it or recovers from being stuck) and its stuck count
-// for the goal (Status.Stucks).
-func (b *Bot) navTrying() (bool, int) {
+// navEffort is what the navigator does for the bot this frame: under way
+// (it has a goal and follows a path to it or recovers from being stuck),
+// and its recovery count for the goal (stuck reports plus repaths).
+type navEffort struct {
+	underWay   bool
+	recoveries int
+}
+
+// navTrying returns the navigator's effort.
+func (b *Bot) navTrying() navEffort {
 	if b.testNav != nil {
 		return b.testNav()
 	}
 	if b.nav == nil {
-		return false, 0
+		return navEffort{}
 	}
 	st := b.nav.Status()
+	e := navEffort{recoveries: st.Stucks + st.Repaths}
 	if _, has := b.nav.Goal(); !has {
-		return false, st.Stucks
+		return e
 	}
 	switch st.Follow {
 	case navrt.Following, navrt.Stuck, navrt.OffGraph:
-		return true, st.Stucks
+		e.underWay = true
 	}
-	return false, st.Stucks
+	return e
 }
 
 // wedgeTick gives up a level attempt the bot cannot move on from: it has
@@ -900,22 +910,22 @@ func (b *Bot) navTrying() (bool, int) {
 // loads the level-entry save.
 func (b *Bot) wedgeTick(c *fakeclient.Client, bel *worldmodel.Belief) {
 	o := bel.Self.Origin
-	trying, stucks := b.navTrying()
-	if stucks < b.navStucks {
-		b.navStucks = 0 // a new goal counts from 0
+	eff := b.navTrying()
+	if eff.recoveries < b.navRecoveries {
+		b.navRecoveries = 0 // a new goal counts from 0
 	}
-	newStucks := stucks - b.navStucks
-	b.navStucks = stucks
+	recovered := eff.recoveries - b.navRecoveries
+	b.navRecoveries = eff.recoveries
 	if b.wedgeSince == 0 || dist3(o, b.wedgeAt) > wedgeMove {
-		b.wedgeAt, b.wedgeSince, b.wedgeFrames, b.wedgeNav, b.wedgeStucks = o, b.now, 0, 0, 0
+		b.wedgeAt, b.wedgeSince, b.wedgeFrames, b.wedgeNav, b.wedgeRecovered = o, b.now, 0, 0, 0
 		return
 	}
 	b.wedgeFrames++
-	b.wedgeStucks += newStucks
-	if trying {
+	b.wedgeRecovered += recovered
+	if eff.underWay {
 		b.wedgeNav++
 	}
-	if b.now-b.wedgeSince < wedgeFor || float64(b.wedgeNav) < wedgeShare*float64(b.wedgeFrames) || b.wedgeStucks < wedgeStuck ||
+	if b.now-b.wedgeSince < wedgeFor || float64(b.wedgeNav) < wedgeShare*float64(b.wedgeFrames) || b.wedgeRecovered < wedgeRecover ||
 		b.killAt > 0 && b.now-b.killAt < trapRetry {
 		return
 	}
@@ -923,8 +933,8 @@ func (b *Bot) wedgeTick(c *fakeclient.Client, bel *worldmodel.Belief) {
 	b.kills++
 	b.fight.noteReflex("wedged_kill")
 	if b.cfg.Logf != nil {
-		b.cfg.Logf("bot: wedged at %v for %.0fs, the navigator under way on %d of %d frames, stuck %d times: kill", o,
-			float64(b.now-b.wedgeSince)/1000, b.wedgeNav, b.wedgeFrames, b.wedgeStucks)
+		b.cfg.Logf("bot: wedged at %v for %.0fs (of %d frames the navigator was under way on %d, %d recoveries): kill", o,
+			float64(b.now-b.wedgeSince)/1000, b.wedgeFrames, b.wedgeNav, b.wedgeRecovered)
 	}
 	b.wedgeSince = 0
 	c.StringCmd("kill")

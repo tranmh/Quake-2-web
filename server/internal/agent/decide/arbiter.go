@@ -258,7 +258,10 @@ type ArbiterConfig struct {
 
 	// Hysteresis. A mode switch needs ModeDelta (0.2) more probability
 	// for the new mode and the current one held ModeHold (1.5 s), except
-	// a switch to retreat at danger >= RetreatDanger (3.5). A target
+	// a switch to retreat at danger >= RetreatDanger (3.5), which the
+	// newest answer alone makes (safety comes first: danger also rises at
+	// once to a fresh answer's level and falls with the accumulated
+	// evidence, so the accumulation never delays a retreat). A target
 	// switch needs TargetDelta (0.15), or the current target dead or
 	// unseen for TargetLost (1 s). fire_policy and movement are held
 	// FastHold (0.4 s); weapon and pickup SlowHold (0.5 s).
@@ -277,7 +280,9 @@ type FieldOutcome struct {
 	Confidence float64
 	// Scripted is the fallback's answer to the same request ("" without).
 	Scripted string
-	// Reason is why the answer was not accepted ("" when it was).
+	// Reason is why the answer was not accepted as evidence ("" when it
+	// was, however low its confidence): missing, invalid or
+	// unknown_option.
 	Reason string
 }
 
@@ -334,9 +339,12 @@ type ArbiterStats struct {
 
 // cand is a candidate value for a field.
 type cand struct {
-	ok     bool // a value is present (reason may still gate it)
-	low    bool // its confidence is under the threshold (it weighs less)
-	value  string
+	ok    bool // a value is present (reason may still gate it)
+	low   bool // its confidence is under the threshold (it weighs less)
+	value string
+	// latest is the newest answer's top option (a posterior's candidate:
+	// the retreat exception acts on it)
+	latest string
 	score  float64
 	probs  map[string]float64
 	conf   float64
@@ -387,7 +395,10 @@ type fieldState struct {
 	asked   bool
 	qtype   QuestionType
 	opts    []string
-	cur     current
+	// keepAs is the weapon in hand in that request (weapon: its option
+	// keep names it; "" unknown)
+	keepAs string
+	cur    current
 }
 
 type fbEntry struct {
@@ -616,6 +627,7 @@ func (a *Arbiter) noteOptions(req *Request) {
 		q := req.Question(f.ID())
 		fs.asked = q != nil
 		fs.opts = fs.opts[:0]
+		fs.keepAs = keepWeapon(f, req)
 		if q == nil {
 			continue
 		}
@@ -725,7 +737,7 @@ func (a *Arbiter) Apply(r Result) Applied {
 		c.src, c.seq, c.snap = a.cfg.AnswerSource, req.Seq, req.SnapTime
 		fs.model = c
 		a.countValidation(f, &c)
-		a.addEvidence(f, &c)
+		a.addEvidence(f, req, &c)
 		o := FieldOutcome{Field: f, Value: displayValue(f, &c), Source: c.src, Confidence: c.conf, Reason: c.reason}
 		if fb != nil {
 			s := &fb.vals[f]
@@ -751,10 +763,23 @@ func (a *Arbiter) Apply(r Result) Applied {
 	return out
 }
 
-// addEvidence keeps an accepted answer as evidence of field f (only the
-// latest one when the field takes no accumulation: then a failed answer
-// leaves none).
-func (a *Arbiter) addEvidence(f Field, c *cand) {
+// keepWeapon is the weapon key the weapon question's keep option names in
+// req (the weapon in hand), "" for other fields or when unknown.
+func keepWeapon(f Field, req *Request) string {
+	if f != FieldWeapon || req.View == nil {
+		return ""
+	}
+	if w := req.View.Me.Weapon; w != "" && w != "none" {
+		return w
+	}
+	return ""
+}
+
+// addEvidence keeps an accepted answer to req as evidence of field f
+// (only the latest one when the field takes no accumulation: then a
+// failed answer leaves none). A weapon answer's keep counts for the weapon
+// in hand: keep means another weapon once the bot switched.
+func (a *Arbiter) addEvidence(f Field, req *Request, c *cand) {
 	fs := &a.f[f]
 	tau := a.cfg.Tau[f]
 	if tau < 0 {
@@ -763,7 +788,17 @@ func (a *Arbiter) addEvidence(f Field, c *cand) {
 	if !c.ok || c.reason != "" {
 		return
 	}
-	ev := append(fs.ev, evidence{seq: c.seq, snap: c.snap, w: c.conf, probs: c.probs, score: c.score})
+	probs := c.probs
+	if w := keepWeapon(f, req); w != "" {
+		probs = make(map[string]float64, len(c.probs))
+		for k, v := range c.probs {
+			if k == OptKeep {
+				k = w
+			}
+			probs[k] += v
+		}
+	}
+	ev := append(fs.ev, evidence{seq: c.seq, snap: c.snap, w: c.conf, probs: probs, score: c.score})
 	drop := max(0, len(ev)-maxEvidence)
 	for drop < len(ev)-1 && tau > 0 && c.snap-ev[drop].snap > tauHorizon*ms(tau) {
 		drop++
@@ -776,15 +811,17 @@ func (a *Arbiter) addEvidence(f Field, c *cand) {
 
 // posterior is a field's accumulated evidence at a time.
 type posterior struct {
-	n      int     // answers contributing
-	seq    uint64  // the newest one's request
-	snap   int64   // and its snapshot time
-	mass   float64 // the accumulated weight of the options still there
-	weak   bool    // too little weight, or no clear top option
-	value  string  // the top option (a score: its rounded mean level)
-	pvalue float64 // value's posterior probability
-	score  float64 // a score's mean level, a noul's mean P(true)
-	probs  map[string]float64
+	latest      string  // the newest answer's top option still there
+	latestScore float64 // and its score (a score: its level)
+	n           int     // answers contributing
+	seq         uint64  // the newest one's request
+	snap        int64   // and its snapshot time
+	mass        float64 // the accumulated weight of the options still there
+	weak        bool    // too little weight, or no clear top option
+	value       string  // the top option (a score: its rounded mean level)
+	pvalue      float64 // value's posterior probability
+	score       float64 // a score's mean level, a noul's mean P(true)
+	probs       map[string]float64
 }
 
 // posterior accumulates field f's evidence over the options of its latest
@@ -797,7 +834,7 @@ func (a *Arbiter) posterior(f Field, b *worldmodel.Belief, prefer string) poster
 		return p
 	}
 	newest := &fs.ev[len(fs.ev)-1]
-	p.seq, p.snap = newest.seq, newest.snap
+	p.seq, p.snap, p.latestScore = newest.seq, newest.snap, newest.score
 	tau := float64(ms(a.cfg.Tau[f]))
 	opts := make([]string, 0, len(fs.opts))
 	for _, o := range fs.opts {
@@ -806,21 +843,23 @@ func (a *Arbiter) posterior(f Field, b *worldmodel.Belief, prefer string) poster
 		}
 	}
 	mass := make([]float64, len(opts))
-	var wsum, ssum float64
+	var wsum, ssum, dsum float64
 	for i := range fs.ev {
 		e := &fs.ev[i]
-		w := e.w
+		decay := 1.0
 		if age := float64(newest.snap - e.snap); tau > 0 {
 			if age > tauHorizon*tau {
 				continue
 			}
-			w *= math.Exp(-age / tau)
+			decay = math.Exp(-age / tau)
 		} else if e != newest {
 			continue
 		}
+		w := e.w * decay
+		dsum += decay
 		p.n++
 		for j, o := range opts {
-			mass[j] += w * e.probs[o]
+			mass[j] += w * fs.prob(e, o)
 		}
 		wsum += w
 		ssum += w * e.score
@@ -839,6 +878,12 @@ func (a *Arbiter) posterior(f Field, b *worldmodel.Belief, prefer string) poster
 	if total <= 0 {
 		return p
 	}
+	lp := 0.0
+	for _, o := range opts {
+		if pr := fs.prob(newest, o); pr > lp+1e-12 {
+			p.latest, lp = o, pr
+		}
+	}
 	p.probs = make(map[string]float64, len(opts))
 	best := -1
 	for j, o := range opts {
@@ -850,9 +895,10 @@ func (a *Arbiter) posterior(f Field, b *worldmodel.Belief, prefer string) poster
 	}
 	p.value, p.pvalue = opts[best], p.probs[opts[best]]
 	if fs.qtype == Score {
-		lv := min(max(int(math.Round(p.score)), 0), len(opts)-1)
-		p.value = levelKey(lv)
-		p.pvalue = p.probs[p.value]
+		// a score's value is its mean level, its confidence the answers'
+		// (decay-weighted mean)
+		p.value = levelKey(min(max(int(math.Round(p.score)), 0), len(opts)-1))
+		p.pvalue = wsum / dsum
 	}
 	minW := a.cfg.MinConfidence
 	if fs.qtype == Noul {
@@ -860,6 +906,15 @@ func (a *Arbiter) posterior(f Field, b *worldmodel.Belief, prefer string) poster
 	}
 	p.weak = p.mass < minW-1e-9 || fs.qtype == Choice && p.pvalue < a.cfg.MinPosterior-1e-9
 	return p
+}
+
+// prob is evidence e's probability of option o of the field's latest
+// question (keep: the weapon in hand then, or a keep that named none).
+func (fs *fieldState) prob(e *evidence, o string) float64 {
+	if o == OptKeep && fs.keepAs != "" {
+		return e.probs[fs.keepAs] + e.probs[OptKeep]
+	}
+	return e.probs[o]
 }
 
 // usable reports whether a target or pickup value still names something
@@ -944,7 +999,13 @@ func (a *Arbiter) candidate(f Field, now int64, b *worldmodel.Belief, cur string
 	case p.weak:
 		reason = "weak"
 	default:
-		return p.cand(a.cfg.AnswerSource), ""
+		c := p.cand(a.cfg.AnswerSource)
+		if f == FieldDanger && p.latestScore > c.score {
+			// danger rises at once to the newest answer's level
+			c.score = p.latestScore
+			c.value = levelKey(min(max(int(math.Round(c.score)), 0), len(fs.opts)-1))
+		}
+		return c, ""
 	}
 	if fb := &fs.fb; fb.ok && fb.seq != 0 && now-fb.snap <= ms(a.fallbackTTL(l)) && a.usable(f, fb.value, b) {
 		return *fb, reason
@@ -957,7 +1018,7 @@ func (a *Arbiter) candidate(f Field, now int64, b *worldmodel.Belief, cur string
 
 // cand returns the posterior's decision as a candidate from src.
 func (p *posterior) cand(src Source) cand {
-	return cand{ok: true, value: p.value, score: p.score, probs: p.probs, conf: p.pvalue, seq: p.seq, snap: p.snap, src: src}
+	return cand{ok: true, value: p.value, latest: p.latest, score: p.score, probs: p.probs, conf: p.pvalue, seq: p.seq, snap: p.snap, src: src}
 }
 
 // switchAllowed applies the field's hysteresis to a change from cur to c.
@@ -987,6 +1048,10 @@ func (a *Arbiter) resolve(f Field, now int64, b *worldmodel.Belief, danger float
 	fs := &a.f[f]
 	cur := &fs.cur
 	c, reason := a.candidate(f, now, b, cur.value)
+	if f == FieldMode && reason == "" && c.latest == string(ModeRetreat) && c.value != c.latest && danger >= a.cfg.RetreatDanger {
+		// the newest answer's retreat at critical danger, at once
+		c.value, c.conf = c.latest, c.probs[c.latest]
+	}
 	prov := FieldProvenance{Source: c.src, Reason: reason, Confidence: c.conf, Seq: c.seq}
 	if f == FieldDanger {
 		return c.value, c.score, prov

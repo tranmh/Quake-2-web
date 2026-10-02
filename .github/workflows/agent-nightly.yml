@@ -142,14 +142,22 @@ jobs:
           key: q2demo-${{ hashFiles('tools/demo.sha256') }}
       - run: make demo
       - run: make nav
-      - run: cd server && go test -timeout 80m ./internal/agent/... ./internal/spectate/... ./cmd/q2bot ./cmd/q2nav
+      # CPU-bound: the seed sweeps and full-map gates, packages in parallel; the realtime InProc runs
+      # are left to the next step so they do not share the CPUs with them
+      - run: cd server && go test -timeout 80m -skip 'TestInProc' ./internal/agent/... ./internal/spectate/... ./cmd/q2bot ./cmd/q2nav
+      # realtime (wall-paced): TestInProcSmoke, TestInProcDemo1 and TestInProcDemo1Brain, one package at a time
+      - run: cd server && go test -p 1 -timeout 30m -run 'TestInProc' ./internal/agent/...
       # the gates that skip under -race unless Q2_AGENT_LONG is set
       - run: cd server && go test -race -timeout 60m -run 'TestCampaignScripted$|TestVisits|TestBuildDeterministic' ./internal/agent/campaign ./internal/agent/nav/navbuild
       - run: cd server && go test ./internal/spectate -run '^$' -fuzz FuzzRelayViewerPacket -fuzztime 60s -fuzzminimizetime 3s
 
   # Manual only: a real exchange with the Jev API (jev-probe), then a budget-capped campaign run. The key
-  # is the jev-live environment's secret (protect the environment with required reviewers); it is given
-  # to these two steps only.
+  # is the jev-live environment's secret; it is given to these two steps only. A repo admin must create
+  # the jev-live environment before the first dispatch, with required reviewers AND deployment branches
+  # limited to main: a dispatch runs the dispatching ref's copy of this workflow, so without the branch
+  # rule an approved dispatch from another branch hands the key to that branch's edited workflow. (An
+  # environment that does not exist is created on first reference without protection rules; this job
+  # then fails on the empty secret.)
   jev-live:
     if: github.event_name == 'workflow_dispatch' && inputs.jev_live
     runs-on: ubuntu-latest

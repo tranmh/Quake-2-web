@@ -299,6 +299,10 @@ func TestTimeouts(t *testing.T) {
 	if big.cfg.FastTimeout != MaxFastTimeout || big.cfg.SlowTimeout != DefaultSlowTimeout {
 		t.Fatalf("timeouts %v %v", big.cfg.FastTimeout, big.cfg.SlowTimeout)
 	}
+	// unless a lockstep run against a loopback server lifts the cap
+	if u := client(t, srv.URL(), func(cfg *Config) { cfg.FastTimeout, cfg.UncapFast = time.Minute, true }); u.cfg.FastTimeout != time.Minute {
+		t.Fatalf("uncapped fast timeout %v", u.cfg.FastTimeout)
+	}
 	if err := (&Error{Class: ClassCanceled}); !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("a canceled call is not context.Canceled")
 	}

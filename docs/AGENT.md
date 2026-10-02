@@ -17,13 +17,13 @@ replay its recordings and measure every decision.
 ```sh
 make demo                     # the free demo pak -> assets/demo/baseq2/pak0.pak
 make nav                      # nav graphs of demo1-3 + overlay dumps -> assets/nav (optional: built on first use)
-make agent-smoke              # scripted demo1 run + q2bot validate, in a temporary directory
+make agent-smoke              # scripted + noisy-mock demo1 runs (mock held to the 0.7 gate) + q2bot validate
 
 cd server
 go run ./cmd/q2bot run -backend scripted -require-complete            # the whole campaign, lockstep, ~30 s
 go run ./cmd/q2bot validate runs/<id>                                 # traces + every .dm2
 go run ./cmd/q2bot replay -trace runs/<id>/ep-000/trace.jsonl.gz -strict   # lockstep determinism
-go run ./cmd/q2bot run -backend mock -mock-policy noisy -min-model-share 0.7 -require-complete
+go run ./cmd/q2bot run -backend mock -mock-policy noisy -maps demo1 -min-model-share 0.7 -require-complete
 ```
 
 `q2bot run` prints a summary like this one (scripted, whole campaign, seed 1, `-max-deaths 25
@@ -125,6 +125,10 @@ Each package's `doc.go` describes it in detail; this is the overview.
     - dodging and repositioning;
     - weapon switches when dry.
   - It reads the inventory and the help computer as described in ADR-0006.
+  - It types `kill` (a death, then `load save0`) when it cannot go on: in a pit the route's goal cannot be
+    reached from, for 12 s (`trapTick`, reflex `trapped_kill`), or wedged, standing within 24 units for 30 s
+    while its navigator kept trying to move it and reported itself stuck at least 8 times (`wedgeTick`,
+    reflex `wedged_kill`). At most one such `kill` goes out every 6 s.
 - **Jev client** (`backend/jev`).
   - **Concurrency and retries.** The fast lane is never retried, and an attempt is capped at 800 ms (cut at
     the arbiter's TTL in realtime). A slow-lane attempt gets 1.2 s and one retry within the scheduler's 2.5 s
@@ -391,8 +395,9 @@ A **`decision`** event has one of three lanes:
 
 - Sources: `model`, `scripted`, `stale` (an answer held past its TTL), `reflex` (a reflex, watchdog or the
   route overrode the decided value) and `default`.
-- Fallback reasons: `no_answer`, `not_asked`, `missing`, `invalid`, `unknown_option`, `low_confidence`, `ttl`,
-  `error`, `timeout`, `gone`, `held`.
+- Fallback reasons: `no_answer`, `not_asked`, `missing`, `invalid`, `unknown_option`, `weak` (the accumulated
+  evidence is too weak or split), `ttl`, `error`, `timeout`, `gone`, `held`. Traces from before the arbiter's
+  evidence aggregation have `low_confidence` where `weak` is now.
 - Reflex reasons per field are documented on `trace.Intent` (`server/internal/agent/trace/tick.go`).
 
 ### Decision feed (`q2bot.decisions/1`)
@@ -443,9 +448,13 @@ The decide package projects the fair belief into one compact state per lane. The
   | `pickup` | choice | Item ids + `none` |
   | `danger` | score | 0..4: safe … critical |
 
-The arbiter is documented in `decide/doc.go` and `decide/arbiter.go`: it checks answers, gates them by
-confidence and age, applies hysteresis, and falls back to the scripted policy. The reflexes in `control` and
-`bot` execute the fire policy every 25 ms and always win. Goldens are regenerated with
+The arbiter is documented in `decide/doc.go` and `decide/arbiter.go`. It checks answers and accumulates
+them per field as time-decayed (`ArbiterConfig.Tau`, by field), confidence-weighted evidence. The posterior
+decides a field while the newest answer is within its TTL, the evidence's weight is at least `MinConfidence`
+and, for a choice, its top option is at least `MinPosterior`; otherwise the field falls back to the scripted
+policy, with reason `weak` for too little or split evidence. Hysteresis applies to the posterior, and a held
+value stays model-sourced while the posterior still backs it. The reflexes in `control` and `bot` execute the
+fire policy every 25 ms and always win. Goldens are regenerated with
 `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide ./internal/agent/backend/jev`.
 
 ## Metrics (Prometheus, `/metrics` of q2server)
@@ -496,8 +505,11 @@ confidence and age, applies hysteresis, and falls back to the scripted policy. T
     package.
   - `campaign.TestCampaignGod` (victory with god/notarget) and `campaign.TestCampaignScripted` (no cheats;
     under `-race` only with `Q2_AGENT_LONG=1`).
-  - `cmd/q2bot` `TestGate` (run, validate, replay -strict, summarize on demo1) and `TestMockGate` (a mock
-    demo1 run with `-min-model-share 0.99`).
+  - `cmd/q2bot` `TestGate` (run, validate, replay -strict, summarize on demo1) and `TestMockGate` (the gate's
+    mechanism: a mock demo1 run held to `-min-model-share 0.99` must exit 1, and `validate` must pass it at
+    0.01 and fail it at 0.99).
+  - `make agent-smoke` (the go job): a scripted demo1 run, then a noisy mock demo1 run with
+    `-require-complete -min-model-share 0.7`, both validated. This is the mock-Jev share that CI checks.
   - `spectate.TestRelayMatchesBot`, `cmd/q2server TestE2EBotWatch`, and `demo.TestFixtureDemo1Walker`.
 - **Long tests.** `Q2_AGENT_LONG=1` adds:
   - the seed sweeps (`TestCampaignScriptedSeeds`, `TestCampaignGodSeeds`, `navrt TestWalkSeedsLong`);
@@ -506,15 +518,19 @@ confidence and age, applies hysteresis, and falls back to the scripted policy. T
   - under `-race`, the tests that otherwise skip there (`TestCampaignScripted`, `TestVisits`,
     `TestBuildDeterministic`, the replay and live nav gates).
 
-  The nightly `long-tests` job runs the long suite, plus a `-race` pass of the campaign and navbuild gates.
+  The nightly `long-tests` job runs the long suite in two steps (the CPU-bound tests with `-skip TestInProc`,
+  then the realtime `TestInProc*` runs with `-p 1`, so wall-paced runs do not share the CPUs with the seed
+  sweeps), plus a `-race` pass of the campaign and navbuild gates. Its timeouts are estimates until a first
+  dispatched run is timed.
 - **Web.**
   - `pnpm -r test`: vitest. It covers the watch transport, decision feed, AI store and overlay, and the replay
     feed in `apps/web`, and the nav overlay in `apps/dev`. The dev package also runs its Playwright render
     tests there.
   - `make e2e` runs Playwright: `play.spec.ts` and `watch.spec.ts`, which starts a scripted bot, watches it
     live, stops it and replays it. `Q2_E2E_REQUIRE=1` turns its self-skips into failures.
-- **CI** (`.github/workflows/ci.yml`). The go job sets `TYPESAFE_API_KEY: ""` and runs `make demo nav`, then
-  `go test -race ./...`. The `e2e` job runs both Playwright suites with `Q2_E2E_REQUIRE=1`.
+- **CI** (`.github/workflows/ci.yml`). The go job sets `TYPESAFE_API_KEY: ""` and runs `make demo nav` and
+  `make agent-smoke`, then `go test -race ./...`. The `e2e` job runs both Playwright suites with
+  `Q2_E2E_REQUIRE=1`.
 - **Nightly** (`.github/workflows/agent-nightly.yml`).
   - Full lockstep campaigns: scripted with `-require-complete` plus `validate` and `replay -strict`; clean and
     noisy mock with `-min-model-share 0.7`; constant and random ablations, which must exit 1 and do measurably
@@ -523,6 +539,11 @@ confidence and age, applies hysteresis, and falls back to the scripted policy. T
   - Every run directory is uploaded.
   - A manual `jev-live` job (`workflow_dispatch` with `jev_live`) runs `jev-probe`, then a budget-capped
     `-backend jev` campaign. It uses the `TYPESAFE_API_KEY` secret of the protected `jev-live` environment.
+    A repo admin must create that environment before the first dispatch, with required reviewers and
+    deployment branches limited to `main`. A dispatch runs the dispatching ref's copy of the workflow, so
+    without the branch rule an approved dispatch from another branch hands the key to that branch's edited
+    workflow. An environment that does not exist is created on first reference with no protection rules (the
+    job then fails on the empty secret, but the environment stays unprotected).
 
 ## Troubleshooting
 

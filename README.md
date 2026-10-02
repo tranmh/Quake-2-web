@@ -61,7 +61,7 @@ make demo nav                                  # demo pak + nav graphs of demo1-
 cd server
 go run ./cmd/q2bot run -backend scripted -require-complete            # the whole campaign, ~30 s
 go run ./cmd/q2bot validate runs/<id>                                 # traces + demos
-go run ./cmd/q2bot run -backend mock -min-model-share 0.7 -require-complete
+go run ./cmd/q2bot run -backend mock -maps demo1 -min-model-share 0.7 -require-complete   # noisy mock Jev, gated
 go run ./cmd/q2nav plan -pak ../assets/demo/baseq2/pak0.pak           # validate the route tables
 ```
 
@@ -80,7 +80,7 @@ How to run, schemas and metrics: [`docs/AGENT.md`](docs/AGENT.md). Design and fa
 | Full stack | Go e2e (SP save/restore, DM, CTF over WebSocket, Postgres) and Playwright e2e in the browser (play a game; start, watch and replay a bot) |
 | AI agent: fairness | Import guards in every agent package the bot's decisions depend on (no `sv`/`game`/`host`/`session` linked); perturbation invariance (rewriting everything not perceived leaves the belief unchanged); a `.dm2` differential that rebuilds every decision byte for byte from the recording alone |
 | AI agent: navigation | Nav graph edges validated by bit-exact pmove simulation; sampled edges re-run on a live server 100/100 bit-exact per map; route tables re-derived from the entity lump and validated (`q2nav plan`) |
-| AI agent: play | Scripted lockstep campaign to `victory.pcx` without cheats (CI and nightly); lockstep runs replay with no divergence; nightly mock-Jev campaigns against the provenance gate (≥ 70 % of target/fire_policy/mode decided by the model) and ablations that must do measurably worse. Results: [`docs/AGENT-EVAL.md`](docs/AGENT-EVAL.md) |
+| AI agent: play | Scripted lockstep campaign to `victory.pcx` without cheats (CI and nightly); lockstep runs replay with no divergence; a mock-Jev demo1 run against the provenance gate (≥ 70 % of target/fire_policy/mode decided by the model) in CI (`make agent-smoke`) and full mock-Jev campaigns against it nightly, next to ablations that must do measurably worse. Results: [`docs/AGENT-EVAL.md`](docs/AGENT-EVAL.md) |
 
 ## Legal
 

@@ -375,7 +375,10 @@ func TestWedgeKill(t *testing.T) {
 	run := func(nav navFn, at func(now int64) Vec3, until int64) *modeBot {
 		m := newModeBot(t, "demo3", route.Step{Op: route.OpGoto, Pos: &route.Vec{-536, -472, -272}})
 		var now int64
-		m.testNav = func() (bool, int) { return nav(now) }
+		m.testNav = func() navEffort {
+			under, n := nav(now)
+			return navEffort{underWay: under, recoveries: n}
+		}
 		for now = 100; now <= until; now += 100 {
 			m.at(now, selfAt(at(now), 100))
 		}
