@@ -479,6 +479,7 @@ func (r *Runner) runStartBody() trace.RunStart {
 		if len(f.Latency) > 0 {
 			m[keyMockFaults] += " latency=" + Latency{Samples: f.Latency, Set: true}.String()
 		}
+		m[keyMockPolicy] = mockPolicyDesc(cfg)
 	}
 	return rs
 }

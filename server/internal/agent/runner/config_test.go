@@ -390,6 +390,21 @@ func TestMockFaultsLatency(t *testing.T) {
 	if got := r.runStartBody().Config[keyMockFaults]; !strings.HasSuffix(got, " latency=212ms") {
 		t.Errorf("run_start mock faults %q", got)
 	}
+	// run_start records the mock policy with the noise in effect
+	for _, tc := range []struct {
+		policy            string
+		noise, swap, lowc float64
+		want              string
+	}{
+		{MockPolicyNoisy, 0, 0, 0, "noisy noise=0.3 swap=0.1 lowconf=0.1"},
+		{MockPolicyNoisy, 0.5, -1, 0.2, "noisy noise=0.5 swap=0 lowconf=0.2"},
+		{MockPolicyScripted, 0.5, 0, 0, "scripted"},
+	} {
+		r.cfg.MockPolicy, r.cfg.MockNoise, r.cfg.MockSwap, r.cfg.MockLowConfidence = tc.policy, tc.noise, tc.swap, tc.lowc
+		if got := r.runStartBody().Config[keyMockPolicy]; got != tc.want {
+			t.Errorf("run_start mock policy %q, want %q", got, tc.want)
+		}
+	}
 }
 
 // The mock policy: noisy by default with jevtest's defaults, tunable, or

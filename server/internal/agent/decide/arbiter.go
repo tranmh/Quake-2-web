@@ -237,6 +237,18 @@ type ArbiterConfig struct {
 	// policy (reason weak): a lone answer under MinConfidence does, while
 	// one among confident answers only counts for less.
 	MinConfidence, MinNoulMargin, MinPosterior float64
+	// Confirm is how many of a choice field's newest answers confirm a
+	// change (2): when they all name the same top option, each with a
+	// confidence at least MinConfidence and a top probability at least
+	// ConfirmProb (0.6), and the evidence before them prefers another
+	// option, that is a change point: the evidence before them is dropped,
+	// so the field decides the new option (hysteresis still applies)
+	// however much older mass backed the old one. A lone answer, a swap,
+	// never confirms; a sustained change decides after Confirm answers at
+	// any answer rate. A negative Confirm disables it (the posterior alone
+	// then decides, a change taking as many answers as its mass needs).
+	Confirm     int
+	ConfirmProb float64
 
 	// FastTTL and SlowTTL are the least lifetimes of an answer, counted
 	// from its request's SnapTime (300 ms, 1500 ms); the actual TTL is at
@@ -445,6 +457,10 @@ func NewArbiter(cfg ArbiterConfig) *Arbiter {
 	deff(&cfg.MinConfidence, 0.35)
 	deff(&cfg.MinNoulMargin, 0.2)
 	deff(&cfg.MinPosterior, 0.4)
+	deff(&cfg.ConfirmProb, 0.6)
+	if cfg.Confirm == 0 {
+		cfg.Confirm = 2
+	}
 	for f := Field(0); f < NumFields; f++ {
 		switch {
 		case cfg.AnswerSource == SourceScripted:
@@ -807,6 +823,57 @@ func (a *Arbiter) addEvidence(f Field, req *Request, c *cand) {
 		ev = append(ev[:0], ev[drop:]...)
 	}
 	fs.ev = ev
+	if n := a.cfg.Confirm; n > 0 && tau > 0 && fs.qtype == Choice && len(fs.ev) > n && a.confirms(fs, n, tau) {
+		// a change point: the evidence before the confirming answers is
+		// about the state before the change
+		fs.ev = append(fs.ev[:0], fs.ev[len(fs.ev)-n:]...)
+	}
+}
+
+// confirms reports whether a field's n newest answers confirm a change
+// (ArbiterConfig.Confirm): they name the same top option, each with a
+// confidence of at least MinConfidence and a top probability of at least
+// ConfirmProb, and the evidence before them prefers another option.
+// Options are those of the field's latest question (fs.opts).
+func (a *Arbiter) confirms(fs *fieldState, n int, tau time.Duration) bool {
+	ev := fs.ev
+	x := ""
+	for i := len(ev) - n; i < len(ev); i++ {
+		top, p := fs.top(&ev[i])
+		if top == "" || ev[i].w < a.cfg.MinConfidence-1e-9 || p < a.cfg.ConfirmProb-1e-9 || x != "" && top != x {
+			return false
+		}
+		x = top
+	}
+	older := ev[:len(ev)-n]
+	ref, t := older[len(older)-1].snap, float64(ms(tau))
+	mass := make([]float64, len(fs.opts))
+	for i := range older {
+		e := &older[i]
+		w := e.w * math.Exp(-float64(ref-e.snap)/t)
+		for j, o := range fs.opts {
+			mass[j] += w * fs.prob(e, o)
+		}
+	}
+	best := 0
+	for j := range mass {
+		if mass[j] > mass[best]+1e-12 {
+			best = j
+		}
+	}
+	return mass[best] <= 0 || fs.opts[best] != x
+}
+
+// top is an answer's most probable option of the field's latest question
+// (ties: the options' order) and its probability ("" without options).
+func (fs *fieldState) top(e *evidence) (string, float64) {
+	key, best := "", -1.0
+	for _, o := range fs.opts {
+		if p := fs.prob(e, o); p > best+1e-12 {
+			key, best = o, p
+		}
+	}
+	return key, best
 }
 
 // posterior is a field's accumulated evidence at a time.

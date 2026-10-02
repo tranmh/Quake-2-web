@@ -29,6 +29,7 @@ const (
 	keyEpisodeTimeout    = "episode_timeout"
 	keyMaxDeaths         = "max_deaths"
 	keyMockFaults        = "mock.faults"
+	keyMockPolicy        = "mock.policy"
 )
 
 // recordedRun is what a trace says about the run that wrote it.

@@ -118,6 +118,27 @@ func mockPolicy(cfg *Config) jevtest.Policy {
 	return &jevtest.Noisy{Base: base, Seed: cfg.Seed, Noise: cfg.MockNoise, SecondBest: cfg.MockSwap, LowConfidence: cfg.MockLowConfidence}
 }
 
+// mockPolicyDesc describes the mock policy with the noise it applies (the
+// values in effect: Config's zero takes jevtest's default, a negative
+// value is off), for run_start's config (keyMockPolicy): a run's record
+// says whether its model was clean or noisy.
+func mockPolicyDesc(cfg *Config) string {
+	if cfg.MockPolicy == MockPolicyScripted {
+		return MockPolicyScripted
+	}
+	eff := func(v, d float64) float64 {
+		switch {
+		case v < 0:
+			return 0
+		case v == 0:
+			return d
+		}
+		return v
+	}
+	return fmt.Sprintf("%s noise=%g swap=%g lowconf=%g", MockPolicyNoisy, eff(cfg.MockNoise, 0.3), eff(cfg.MockSwap, 0.1),
+		eff(cfg.MockLowConfidence, 0.1))
+}
+
 // mockMaxCalls bounds the calls the mock server keeps (the runner never
 // reads them; a long realtime mock run would otherwise keep every body).
 const mockMaxCalls = 64

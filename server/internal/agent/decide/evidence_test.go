@@ -101,8 +101,9 @@ func TestEvidenceSwapDoesNotFlip(t *testing.T) {
 	}
 }
 
-// A sustained change flips the decision within a bounded number of
-// answers: three for the fast fields at 10 Hz, three for the mode at 2 Hz.
+// A sustained change flips the decision after exactly two answers (the
+// confirmation, ArbiterConfig.Confirm), on the fast lane at 10 Hz and on
+// the slow lane's mode at 2 Hz.
 func TestEvidenceSustainedChangeFlips(t *testing.T) {
 	type tc struct {
 		lane     Lane
@@ -132,8 +133,8 @@ func TestEvidenceSustainedChangeFlips(t *testing.T) {
 			for k := 1; ; k++ {
 				in := fd.answer(c.lane, now, c.to, 0.85, 0.7)
 				if c.check(in) {
-					if k < 2 || k > 3 {
-						t.Fatalf("flipped after %d answers, want 2..3", k)
+					if k != 2 {
+						t.Fatalf("flipped after %d answers, want 2", k)
 					}
 					var p FieldProvenance
 					switch name {
@@ -474,4 +475,75 @@ func TestEvidenceWeaponKeep(t *testing.T) {
 	if in := slow(b2, 1500, OptKeep, 0.4); in.Weapon != WeaponShotgun || in.Provenance.Weapon.Source != SourceModel {
 		t.Fatalf("after the switch: %q %+v", in.Weapon, in.Provenance.Weapon)
 	}
+}
+
+// Two agreeing confident answers confirm a change however much older
+// evidence backed the old value and however fast the answers come; a
+// lone answer, two answers that disagree, two unconfident ones or two
+// with a split top do not, and without confirmation the posterior takes
+// more answers.
+func TestEvidenceConfirmation(t *testing.T) {
+	const period = 50 // 20 Hz: the older mass is large (tau 300 ms)
+	from, to := map[string]string{QTarget: "e1", QFirePolicy: "hold"}, map[string]string{QTarget: "e3", QFirePolicy: "suppress"}
+	flipped := func(in Intent) (bool, bool) { return in.Target == "e3", in.FirePolicy == FireSuppress }
+	history := func(cfg ArbiterConfig) (*feeder, int64) {
+		fd := &feeder{t: t, a: newTestArbiter(cfg), b: testBelief()}
+		now := int64(1000)
+		for i := 0; i < 30; i++ {
+			fd.answer(LaneFast, now, from, 0.9, 0.8)
+			now += period
+		}
+		return fd, now
+	}
+	t.Run("confirmed", func(t *testing.T) {
+		fd, now := history(ArbiterConfig{})
+		in := fd.answer(LaneFast, now, to, 0.9, 0.8)
+		if tg, fp := flipped(in); tg || fp {
+			t.Fatalf("one answer flipped: %+v", in)
+		}
+		in = fd.answer(LaneFast, now+period, to, 0.9, 0.8)
+		if tg, fp := flipped(in); !tg || !fp {
+			t.Fatalf("two agreeing answers did not flip: target %q fire %s", in.Target, in.FirePolicy)
+		}
+		for _, f := range []Field{FieldTarget, FieldFirePolicy} {
+			if p := in.Provenance.Get(f); p.Source != SourceModel || p.Reason != "" || p.Seq != fd.seq || p.Confidence < 0.8 {
+				t.Errorf("%s provenance %+v", f.ID(), p)
+			}
+		}
+		// the old value's evidence is gone: one answer back does not flip
+		// it back
+		in = fd.answer(LaneFast, now+2*period, from, 0.9, 0.8)
+		if tg, _ := flipped(in); !tg {
+			t.Fatalf("one answer for the old value flipped back: %q", in.Target)
+		}
+	})
+	for name, tc := range map[string]struct {
+		second map[string]string
+		top    float64
+		conf   float64
+	}{
+		"disagree":    {map[string]string{QTarget: "e2", QFirePolicy: "fire_when_aligned"}, 0.9, 0.8},
+		"unconfident": {to, 0.9, 0.3},
+		"split":       {to, 0.55, 0.8},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fd, now := history(ArbiterConfig{})
+			top, conf := 0.9, 0.8
+			if name != "disagree" {
+				top, conf = tc.top, tc.conf
+			}
+			fd.answer(LaneFast, now, to, top, conf)
+			in := fd.answer(LaneFast, now+period, tc.second, tc.top, tc.conf)
+			if tg, fp := flipped(in); tg || fp {
+				t.Fatalf("flipped: target %q fire %s", in.Target, in.FirePolicy)
+			}
+		})
+	}
+	t.Run("disabled", func(t *testing.T) {
+		fd, now := history(ArbiterConfig{Confirm: -1})
+		fd.answer(LaneFast, now, to, 0.9, 0.8)
+		if tg, fp := flipped(fd.answer(LaneFast, now+period, to, 0.9, 0.8)); tg || fp {
+			t.Fatal("without confirmation two answers outweighed 30")
+		}
+	})
 }
