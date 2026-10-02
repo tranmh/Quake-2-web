@@ -13,7 +13,9 @@ import (
 	"quake2web/server/internal/agent/campaign"
 	"quake2web/server/internal/agent/decide"
 	"quake2web/server/internal/agent/route"
+	"quake2web/server/internal/agent/session"
 	"quake2web/server/internal/fakeclient"
+	"quake2web/server/internal/host"
 	"quake2web/server/internal/sv"
 )
 
@@ -199,7 +201,10 @@ type Config struct {
 	// DefaultModelLatency for jev and mock, none for local backends). A
 	// replay answers with each recorded request's recorded latency and
 	// uses this one (unset: the recorded backend's default) for the
-	// requests its trace lacks.
+	// requests its trace lacks. In an InProc session it delays the mock
+	// server's replies instead (unless MockFaults sets a latency), so a
+	// realtime mock bot answers about as late as the real API; the other
+	// backends ignore it there.
 	SimLatency Latency
 
 	// Episodes is the number of episodes (0: 1); Seed the run's seed
@@ -256,6 +261,16 @@ type Config struct {
 	// MapCache shares loaded maps between the sessions (nil: one per run).
 	MapCache *sv.MapCache
 
+	// Userinfo is the bot client's userinfo ("": fakeclient's default),
+	// e.g. with the password of the game it joins.
+	Userinfo string
+	// NewInstance, when set, makes the realtime game of an InProc
+	// episode instead of an instance on a private host: the API server
+	// runs its bots in games of its own (Manager). It returns the running
+	// single-player instance on spec's start map and a cleanup, called
+	// once the episode's session has closed (it stops the game).
+	NewInstance func(ep int, spec session.Spec, seed uint32) (*host.Instance, func(), error)
+
 	// OnServerMessage, when set, also receives the bot client's server
 	// messages (a spectate.Stream, say), after the demo recorder.
 	OnServerMessage func(c *fakeclient.Client, payload []byte, spans []fakeclient.Span)
@@ -299,6 +314,9 @@ func (c *Config) check() error {
 	case SessionLockstep, SessionInProc:
 	default:
 		return fmt.Errorf("%w: unknown session %q (lockstep|inproc)", ErrConfig, c.Session)
+	}
+	if c.NewInstance != nil && c.Session != SessionInProc {
+		return fmt.Errorf("%w: NewInstance needs an inproc session", ErrConfig)
 	}
 	if c.Backend == BackendReplay {
 		if c.ReplayTrace == "" {

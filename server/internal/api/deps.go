@@ -94,7 +94,7 @@ type GameHost interface {
 }
 
 // Deps are the router's collaborators. Host may be nil (games endpoints
-// then answer 503).
+// then answer 503), and so may Bots (bots endpoints answer 503).
 type Deps struct {
 	Config  config.Config
 	Log     *slog.Logger
@@ -104,11 +104,16 @@ type Deps struct {
 	Tickets auth.TicketService
 	Catalog *Catalog
 	Host    GameHost
+	Bots    BotHost
 	Metrics *prometheus.Registry
 	// LoginLimiterIP / LoginLimiterEmail rate-limit POST /auth/login
 	// (defaults: 20/min per IP, 10 per 10 min per email).
 	LoginLimiterIP    *auth.Limiter
 	LoginLimiterEmail *auth.Limiter
+	// BotWatchLimiter rate-limits POST /api/v1/bots/{id}/watch, which
+	// issues two one-time tickets and works anonymously for public bots:
+	// per account, or per IP for anonymous callers (default 30/min).
+	BotWatchLimiter *auth.Limiter
 }
 
 type server struct {
@@ -128,6 +133,7 @@ type server struct {
 //	/api/v1/maps /api/v1/maps/{name}/manifest
 //	/api/v1/saves[/{slot}[/data]] /api/v1/settings
 //	/api/v1/games[/{id}[/join]] /api/v1/games/from-save
+//	/api/v1/bots[/{id}[/watch|/artifacts/{name...}]]
 //	/assets/{sha256}
 func NewRouter(d Deps) http.Handler {
 	if d.Log == nil {
@@ -141,6 +147,9 @@ func NewRouter(d Deps) http.Handler {
 	}
 	if d.LoginLimiterEmail == nil {
 		d.LoginLimiterEmail = auth.NewLimiter(10, 10*time.Minute)
+	}
+	if d.BotWatchLimiter == nil {
+		d.BotWatchLimiter = auth.NewLimiter(30, time.Minute)
 	}
 	s := &server{Deps: d, metrics: newHTTPMetrics(d.Metrics), uploads: map[int64]int{}}
 	mux := http.NewServeMux()
@@ -186,6 +195,13 @@ func NewRouter(d Deps) http.Handler {
 	h("GET /api/v1/games/{id}", s.getGame)
 	h("POST /api/v1/games/{id}/join", s.joinGame)
 	h("DELETE /api/v1/games/{id}", s.deleteGame)
+
+	h("POST /api/v1/bots", s.createBot)
+	h("GET /api/v1/bots", s.listBots)
+	h("GET /api/v1/bots/{id}", s.getBot)
+	h("DELETE /api/v1/bots/{id}", s.deleteBot)
+	h("POST /api/v1/bots/{id}/watch", s.watchBot)
+	h("GET /api/v1/bots/{id}/artifacts/{name...}", s.botArtifact)
 
 	h("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint")

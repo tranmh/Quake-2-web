@@ -10,6 +10,11 @@
 //	q2server                                   # API + games, env config
 //	q2server -map demo1 -mode dm -udp :27910   # plus a default DM game
 //	q2server -gamemodule stub                  # the minimal stub game
+//	q2server -bot demo1,demo2,demo3            # plus a public demo bot (enables bots)
+//
+// With Q2_BOTS_ENABLED the server also runs AI bots (agent/runner.Manager):
+// /api/v1/bots, their live view at /ws/v1/bots/{id}/watch and their
+// decision feed at /ws/v1/bots/{id}/decisions.
 //
 // Game data is read from ingested paksets (blob store + asset index), never
 // from a local directory: the demo pak (Q2_DEMO_PAK) is ingested on start.
@@ -27,11 +32,16 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"quake2web/server/internal/agent/backend/jev"
+	"quake2web/server/internal/agent/runner"
+	"quake2web/server/internal/agent/trace"
 	"quake2web/server/internal/api"
 	"quake2web/server/internal/config"
+	"quake2web/server/internal/db"
 	"quake2web/server/internal/host"
 	qnet "quake2web/server/internal/net"
 	"quake2web/server/internal/qcommon/crand"
@@ -71,6 +81,8 @@ func run() error {
 	healthcheck := flag.Bool("healthcheck", false, "probe /healthz of the local server and exit 0 when healthy (container health checks)")
 	cvars := cvarFlags{}
 	flag.Var(cvars, "set", "cvar name=value for the default game (repeatable)")
+	botMaps := flag.String("bot", "", "start a public server-owned bot on these maps (a prefix of the campaign, e.g. demo1,demo2,demo3); enables bots")
+	botBackend := flag.String("bot-backend", runner.BackendScripted, "backend of the -bot bot: scripted, mock, constant, random or jev")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -85,6 +97,10 @@ func run() error {
 	}
 	log := api.NewLogger(cfg)
 	slog.SetDefault(log)
+	if *botMaps != "" && !cfg.Bots.Enabled {
+		log.Info("-bot: enabling bots")
+		cfg.Bots.Enabled = true
+	}
 
 	var gm host.GameModule
 	switch *module {
@@ -113,6 +129,14 @@ func run() error {
 			return fmt.Errorf("default game: %w", err)
 		}
 		log.Info("default game running", "id", gid, "map", *mapName, "mode", *mode)
+	}
+
+	if *botMaps != "" {
+		b, err := startDemoBot(ctx, st.Bots, *botMaps, *botBackend)
+		if err != nil {
+			return fmt.Errorf("-bot: %w", err)
+		}
+		log.Info("demo bot running", "bot", b.ID, "maps", strings.Join(b.Maps, ","), "backend", b.Backend)
 	}
 
 	if *udp != "" {
@@ -153,6 +177,9 @@ func run() error {
 	if err := srv.Shutdown(sctx); err != nil {
 		log.Warn("http shutdown", "err", err)
 	}
+	if st.Bots != nil {
+		st.Bots.Close() // the bots end their runs while their games still run
+	}
 	games.Close() // autosaves single player games, disconnects clients
 	return nil
 }
@@ -163,14 +190,21 @@ type stackOptions struct {
 	IdleTimeout  time.Duration
 	ReapInterval time.Duration
 	InsecureWS   bool
+	// RoutesDir and NavDir locate the bots' route tables and nav cache
+	// ("": $Q2_ROUTES_DIR / $Q2_NAV_DIR, else the repository's).
+	RoutesDir, NavDir string
 }
 
-// stack is a fully wired server: API app, game host and the HTTP handler
-// serving both (the WebSocket endpoint and the API router).
+// stack is a fully wired server: API app, game host, the bots (when
+// enabled) and the HTTP handler serving them (the WebSocket endpoints and
+// the API router).
 type stack struct {
 	App     *api.App
 	Games   *host.Games
+	Bots    *runner.Manager // nil unless cfg.Bots.Enabled
 	Handler http.Handler
+
+	closeOnce sync.Once
 }
 
 // newStack bootstraps the API (database, blob store, demo pakset) and the
@@ -225,17 +259,92 @@ func newStack(ctx context.Context, cfg config.Config, log *slog.Logger, opt stac
 		return nil, err
 	}
 	app.Host = games
+	st := &stack{App: app, Games: games}
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /ws/v1/games/{id}", games.Handler())
+	if cfg.Bots.Enabled {
+		bots, err := newBots(ctx, cfg, log, app, games, h, opt)
+		if err != nil {
+			games.Close()
+			app.Close()
+			return nil, err
+		}
+		st.Bots = bots
+		app.Bots = bots
+		mux.Handle("GET /ws/v1/bots/{id}/watch", bots.WatchHandler())
+		mux.Handle("GET /ws/v1/bots/{id}/decisions", bots.DecisionsHandler())
+	}
 	mux.Handle("/", api.NewRouter(app.Deps))
-	return &stack{App: app, Games: games, Handler: mux}, nil
+	st.Handler = mux
+	return st, nil
 }
 
-// Close stops the games (autosaving single player ones) and the API app.
+// newBots makes the bot manager: bots play realtime single-player games
+// of the server's own host on the demo pakset, their daily spend is kept
+// in the database and their streams follow the game WebSocket's rules.
+func newBots(ctx context.Context, cfg config.Config, log *slog.Logger, app *api.App, games *host.Games, h *host.Host,
+	opt stackOptions) (*runner.Manager, error) {
+	bc := cfg.Bots
+	fs := func(ctx context.Context) (runner.FileSystem, error) {
+		idx, err := app.Catalog.PaksetIndex(ctx, api.DemoPaksetID)
+		if err != nil {
+			return nil, fmt.Errorf("pakset %s: %w", api.DemoPaksetID, err)
+		}
+		return host.NewIndexFS(idx, app.Store), nil
+	}
+	m, err := runner.NewManager(ctx, runner.ManagerConfig{
+		Games: games, FS: fs, Pakset: api.DemoPaksetID, Tickets: app.Tickets, PublicWSURL: cfg.PublicWSURL,
+		Dir: bc.RunsDir, Keep: bc.RunsKeep, MaxBots: bc.Max, MaxPerUser: bc.PerUser, AllowUsers: bc.AllowUsers,
+		MaxViewers: bc.MaxViewers, MaxRun: bc.MaxRun,
+		Jev: jev.Config{APIKey: trace.NewSecret(bc.APIKey.Reveal()), BaseURL: bc.JevBaseURL, AllowCustomBase: bc.JevAllowCustomBase,
+			Model: bc.JevModel},
+		BudgetUSDPerRun: bc.BudgetUSDPerRun, DailyUSD: bc.BudgetUSDPerDay, SpendStore: db.BotSpendStore(app.Repo),
+		JevMaxQPS:      bc.JevMaxQPS,
+		RoutesDir:      opt.RoutesDir,
+		NavDir:         opt.NavDir,
+		RequireTickets: h.RequireTickets, OriginPatterns: h.OriginPatterns, RemoteIP: h.RemoteIP,
+		Log: log.With("component", "bots"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bots: %w", err)
+	}
+	if err := m.RegisterMetrics(app.Metrics); err != nil {
+		m.Close()
+		return nil, err
+	}
+	jevState := "off (no TYPESAFE_API_KEY)"
+	if bc.APIKey.IsSet() {
+		jevState = "on, model " + bc.JevModel
+	}
+	log.Info("bots enabled", "runs", bc.RunsDir, "max", bc.Max, "per_user", bc.PerUser, "allow_users", bc.AllowUsers, "jev", jevState)
+	return m, nil
+}
+
+// startDemoBot starts the -bot bot: public and owned by the server (no
+// account), on the comma separated maps.
+func startDemoBot(ctx context.Context, bots *runner.Manager, maps, backend string) (api.BotInfo, error) {
+	var list []string
+	for _, m := range strings.Split(maps, ",") {
+		if m = strings.TrimSpace(m); m != "" {
+			list = append(list, m)
+		}
+	}
+	return bots.Start(ctx, api.BotSpec{Name: "demo bot", Maps: list, Backend: backend, Public: true},
+		api.BotUser{Name: "server", Admin: true})
+}
+
+// Close stops the bots (their runs end while their games still run), then
+// the games (autosaving single player ones) and the API app. It is
+// idempotent.
 func (s *stack) Close() {
-	s.Games.Close()
-	s.App.Close()
+	s.closeOnce.Do(func() {
+		if s.Bots != nil {
+			s.Bots.Close()
+		}
+		s.Games.Close()
+		s.App.Close()
+	})
 }
 
 // probe GETs http://127.0.0.1:<port>/healthz.

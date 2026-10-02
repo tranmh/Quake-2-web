@@ -823,3 +823,31 @@ func (p *Postgres) ActiveBan(ctx context.Context, userID int64, ip string, now t
 }
 
 var _ Repo = (*Postgres)(nil)
+
+// ---- bot spend ----
+
+// BotSpend implements Repo.
+func (p *Postgres) BotSpend(ctx context.Context, day string) (float64, error) {
+	if err := checkBotSpend(day, 0); err != nil {
+		return 0, err
+	}
+	var usd float64
+	err := p.Pool.QueryRow(ctx, `SELECT usd FROM bot_spend WHERE day = $1::date`, day).Scan(&usd)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return usd, mapErr(err)
+}
+
+// AddBotSpend implements Repo.
+func (p *Postgres) AddBotSpend(ctx context.Context, day string, usd float64) (float64, error) {
+	if err := checkBotSpend(day, usd); err != nil {
+		return 0, err
+	}
+	var total float64
+	err := p.Pool.QueryRow(ctx,
+		`INSERT INTO bot_spend (day, usd) VALUES ($1::date, $2)
+		 ON CONFLICT (day) DO UPDATE SET usd = bot_spend.usd + EXCLUDED.usd, updated_at = now()
+		 RETURNING usd`, day, usd).Scan(&total)
+	return total, mapErr(err)
+}

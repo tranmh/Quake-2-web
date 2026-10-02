@@ -30,6 +30,7 @@ type Memory struct {
 	settings  map[int64]memSettings
 	games     map[string]Game
 	bans      []Ban
+	botSpend  map[string]float64
 }
 
 type memSave struct {
@@ -59,6 +60,7 @@ func NewMemory() *Memory {
 		saves:     map[int64]map[string]memSave{},
 		settings:  map[int64]memSettings{},
 		games:     map[string]Game{},
+		botSpend:  map[string]float64{},
 	}
 }
 
@@ -708,3 +710,24 @@ func (m *Memory) ActiveBan(_ context.Context, userID int64, ip string, now time.
 }
 
 var _ Repo = (*Memory)(nil)
+
+// BotSpend implements Repo.
+func (m *Memory) BotSpend(_ context.Context, day string) (float64, error) {
+	if err := checkBotSpend(day, 0); err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.botSpend[day], nil
+}
+
+// AddBotSpend implements Repo.
+func (m *Memory) AddBotSpend(_ context.Context, day string, usd float64) (float64, error) {
+	if err := checkBotSpend(day, usd); err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.botSpend[day] += usd
+	return m.botSpend[day], nil
+}

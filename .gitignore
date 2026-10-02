@@ -23,5 +23,15 @@ test-results/
 /server/q2server
 /server/q2ingest
 /server/wsbridge
+/server/q2bot
+/server/q2nav
+/server/genconst
+# `go build` in a command's own directory
+/server/cmd/genconst/genconst
+/server/cmd/q2bot/q2bot
+/server/cmd/q2ingest/q2ingest
+/server/cmd/q2nav/q2nav
+/server/cmd/q2server/q2server
+/server/cmd/wsbridge/wsbridge
 __pycache__/
 .pnpm-store/

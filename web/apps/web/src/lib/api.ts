@@ -144,6 +144,8 @@ export interface BotInfo {
   name: string;
   ownerId?: number;
   status: BotStatus;
+  /** why the run failed or was stopped */
+  reason?: string;
   backend: string;
   model?: string;
   maps: string[];
@@ -237,12 +239,16 @@ export interface FeedDecision {
   costUsd?: number;
 }
 
-export type FeedEventKind = 'level_start' | 'level_end' | 'death' | 'reload' | 'kill' | 'damage' | 'stuck' | 'budget';
+export type FeedEventKind =
+  'level_start' | 'level_end' | 'death' | 'reload' | 'kill' | 'damage' | 'stuck' | 'budget';
 
 export interface FeedEvent {
   t: 'event';
   kind: FeedEventKind;
   sf: number;
+  /** the trace's level index and map */
+  lvl?: number;
+  map?: string;
   data: Record<string, unknown>;
 }
 
@@ -325,7 +331,9 @@ const V1 = '/api/v1';
 export const api = {
   // ---- auth
   register: (email: string, password: string, displayName: string) =>
-    request<{ user: User }>('POST', `${V1}/auth/register`, { email, password, displayName }).then((r) => r.user),
+    request<{ user: User }>('POST', `${V1}/auth/register`, { email, password, displayName }).then(
+      (r) => r.user,
+    ),
   login: (email: string, password: string) =>
     request<{ user: User }>('POST', `${V1}/auth/login`, { email, password }).then((r) => r.user),
   logout: () => request<void>('POST', `${V1}/auth/logout`),
@@ -352,14 +360,17 @@ export const api = {
     ),
   deletePakset: (id: string) => request<void>('DELETE', `${V1}/paksets/${encodeURIComponent(id)}`),
   listMaps: (pakset = 'demo') =>
-    request<{ pakset: string; maps: MapSummary[] }>('GET', `${V1}/maps?pakset=${encodeURIComponent(pakset)}`).then(
-      (r) => r.maps,
-    ),
+    request<{ pakset: string; maps: MapSummary[] }>(
+      'GET',
+      `${V1}/maps?pakset=${encodeURIComponent(pakset)}`,
+    ).then((r) => r.maps),
 
   // ---- games
   listGames: () => request<{ games: GameInfo[] }>('GET', `${V1}/games`).then((r) => r.games),
-  getGame: (id: string) => request<{ game: GameInfo }>('GET', `${V1}/games/${encodeURIComponent(id)}`).then((r) => r.game),
-  createGame: (spec: GameSpec) => request<{ game: GameInfo }>('POST', `${V1}/games`, spec).then((r) => r.game),
+  getGame: (id: string) =>
+    request<{ game: GameInfo }>('GET', `${V1}/games/${encodeURIComponent(id)}`).then((r) => r.game),
+  createGame: (spec: GameSpec) =>
+    request<{ game: GameInfo }>('POST', `${V1}/games`, spec).then((r) => r.game),
   joinGame: (id: string) => request<JoinResponse>('POST', `${V1}/games/${encodeURIComponent(id)}/join`),
   deleteGame: (id: string) => request<void>('DELETE', `${V1}/games/${encodeURIComponent(id)}`),
 
@@ -373,10 +384,12 @@ export const api = {
   putSettings: (config: string) => request<Settings>('PUT', `${V1}/settings`, { config }),
 
   // ---- bots
-  listBots: () => request<{ bots: BotInfo[] | null }>('GET', `${V1}/bots`).then((r) => (r.bots ?? []).map(normalizeBot)),
+  listBots: () =>
+    request<{ bots: BotInfo[] | null }>('GET', `${V1}/bots`).then((r) => (r.bots ?? []).map(normalizeBot)),
   getBot: (id: string) =>
     request<{ bot: BotInfo }>('GET', `${V1}/bots/${encodeURIComponent(id)}`).then((r) => normalizeBot(r.bot)),
-  createBot: (spec: BotSpec) => request<{ bot: BotInfo }>('POST', `${V1}/bots`, spec).then((r) => normalizeBot(r.bot)),
+  createBot: (spec: BotSpec) =>
+    request<{ bot: BotInfo }>('POST', `${V1}/bots`, spec).then((r) => normalizeBot(r.bot)),
   /** stops a running bot (owner or admin) */
   stopBot: (id: string) => request<void>('DELETE', `${V1}/bots/${encodeURIComponent(id)}`),
   /** one-time tickets for both watch streams (409 when the bot is not live) */
@@ -445,7 +458,8 @@ export function uploadPak(
     xhr.open('POST', `${V1}/paks`);
     xhr.withCredentials = true;
     xhr.responseType = 'text';
-    xhr.upload.onprogress = (e) => onProgress({ loaded: e.loaded, total: e.lengthComputable ? e.total : file.size });
+    xhr.upload.onprogress = (e) =>
+      onProgress({ loaded: e.loaded, total: e.lengthComputable ? e.total : file.size });
     xhr.onerror = () => reject(new ApiError(0, 'network', 'upload failed (network error)'));
     xhr.onabort = () => reject(new DOMException('upload aborted', 'AbortError'));
     xhr.onload = () => {
@@ -458,7 +472,13 @@ export function uploadPak(
       if (xhr.status >= 200 && xhr.status < 300) resolve(json as { pak: Pak; owned: boolean; job?: Job });
       else {
         const err = (json as { error?: { code?: string; message?: string } } | undefined)?.error;
-        reject(new ApiError(xhr.status, err?.code ?? 'http_' + xhr.status, err?.message ?? `upload failed (${xhr.status})`));
+        reject(
+          new ApiError(
+            xhr.status,
+            err?.code ?? 'http_' + xhr.status,
+            err?.message ?? `upload failed (${xhr.status})`,
+          ),
+        );
       }
     };
     signal?.addEventListener('abort', () => xhr.abort());

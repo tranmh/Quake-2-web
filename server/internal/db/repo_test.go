@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -270,6 +271,68 @@ func runRepoSuite(t *testing.T, r Repo) {
 	if b, err := r.ActiveBan(ctx, u2.ID, "", now); err != nil || b == nil || b.Reason != "cheat" || b.CreatedBy != u.ID {
 		t.Fatal(b, err)
 	}
+
+	runBotSpendSuite(t, r)
+}
+
+// runBotSpendSuite checks the bots' daily spend: per day, additive,
+// atomic under concurrent adds, and validated.
+func runBotSpendSuite(t *testing.T, r Repo) {
+	ctx := context.Background()
+	if v, err := r.BotSpend(ctx, "2026-10-02"); err != nil || v != 0 {
+		t.Fatalf("unknown day: %v %v", v, err)
+	}
+	if v, err := r.AddBotSpend(ctx, "2026-10-02", 0.125); err != nil || v != 0.125 {
+		t.Fatalf("first add: %v %v", v, err)
+	}
+	if v, err := r.AddBotSpend(ctx, "2026-10-02", 0.25); err != nil || v != 0.375 {
+		t.Fatalf("second add: %v %v", v, err)
+	}
+	if v, err := r.AddBotSpend(ctx, "2026-10-03", 0); err != nil || v != 0 {
+		t.Fatalf("zero add: %v %v", v, err)
+	}
+	if v, err := r.BotSpend(ctx, "2026-10-02"); err != nil || v != 0.375 {
+		t.Fatalf("day total: %v %v", v, err)
+	}
+	if v, err := r.BotSpend(ctx, "2026-10-01"); err != nil || v != 0 {
+		t.Fatalf("other day: %v %v", v, err)
+	}
+	// concurrent adds (several q2server processes, or bots flushing at
+	// once) never lose an update
+	const n = 16
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() { _, err := r.AddBotSpend(ctx, "2026-10-04", 0.5); errs <- err }()
+	}
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v, err := r.BotSpend(ctx, "2026-10-04"); err != nil || v != n*0.5 {
+		t.Fatalf("concurrent total: %v %v", v, err)
+	}
+	for _, day := range []string{"", "2026-13-01", "2026-1-2", "02.10.2026", "2026-10-02; DROP TABLE users"} {
+		if _, err := r.BotSpend(ctx, day); err == nil {
+			t.Errorf("BotSpend(%q) accepted", day)
+		}
+		if _, err := r.AddBotSpend(ctx, day, 1); err == nil {
+			t.Errorf("AddBotSpend(%q) accepted", day)
+		}
+	}
+	for _, usd := range []float64{-0.01, math.NaN(), math.Inf(1)} {
+		if _, err := r.AddBotSpend(ctx, "2026-10-02", usd); err == nil {
+			t.Errorf("AddBotSpend(%v) accepted", usd)
+		}
+	}
+	// the adapter is the agent/budget.SpendStore shape
+	st := BotSpendStore(r)
+	if v, err := st.AddSpend(ctx, "2026-10-02", 0.625); err != nil || v != 1 {
+		t.Fatalf("store add: %v %v", v, err)
+	}
+	if v, err := st.LoadSpend(ctx, "2026-10-02"); err != nil || v != 1 {
+		t.Fatalf("store load: %v %v", v, err)
+	}
 }
 
 func TestMemoryRepo(t *testing.T) { runRepoSuite(t, NewMemory()) }
@@ -290,15 +353,15 @@ func TestPostgresRepo(t *testing.T) {
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatal("up:", err)
 	}
-	if v, err := pg.MigrationVersion(ctx); err != nil || v != 1 {
+	if v, err := pg.MigrationVersion(ctx); err != nil || v != 2 {
 		t.Fatal(v, err)
 	}
 	if err := pg.MigrateDownAll(ctx); err != nil {
 		t.Fatal("down:", err)
 	}
 	var n int
-	if err := pg.Pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='users'`).Scan(&n); err != nil || n != 0 {
-		t.Fatal("users table survived down", n, err)
+	if err := pg.Pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('users', 'bot_spend')`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("tables survived down", n, err)
 	}
 	if err := pg.Migrate(ctx); err != nil {
 		t.Fatal("up again:", err)

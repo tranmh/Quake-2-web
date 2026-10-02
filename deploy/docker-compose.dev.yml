@@ -41,14 +41,36 @@ services:
       Q2_CORS_ORIGINS: http://localhost:3000
       Q2_LOG_FORMAT: text
       Q2_LOG_LEVEL: info
+      # AI bots (see .env.example): the run directories live on the data
+      # volume, the nav cache and route tables come from the bind mounts;
+      # TYPESAFE_API_KEY stays server side (from ../.env, never the web app)
+      Q2_BOTS_ENABLED: ${Q2_BOTS_ENABLED:-true}
+      Q2_BOTS_MAX: ${Q2_BOTS_MAX:-4}
+      Q2_BOTS_PER_USER: ${Q2_BOTS_PER_USER:-1}
+      Q2_BOTS_ALLOW_USERS: ${Q2_BOTS_ALLOW_USERS:-true}
+      Q2_BOT_MAX_VIEWERS: ${Q2_BOT_MAX_VIEWERS:-8}
+      Q2_BOT_RUNS_DIR: /data/bots
+      Q2_BOT_RUNS_KEEP: ${Q2_BOT_RUNS_KEEP:-50}
+      Q2_BOT_MAX_RUN: ${Q2_BOT_MAX_RUN:-30m}
+      Q2_BOT_BUDGET_USD_PER_RUN: ${Q2_BOT_BUDGET_USD_PER_RUN:-1}
+      Q2_BOT_BUDGET_USD_PER_DAY: ${Q2_BOT_BUDGET_USD_PER_DAY:-5}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      JEV_BASE_URL: ${JEV_BASE_URL:-}
+      JEV_ALLOW_CUSTOM_BASE: ${JEV_ALLOW_CUSTOM_BASE:-false}
+      Q2_JEV_MODEL: ${Q2_JEV_MODEL:-jev-1.13.0}
+      Q2_JEV_MAX_QPS: ${Q2_JEV_MAX_QPS:-20}
+      Q2_NAV_DIR: /assets/nav
+      Q2_ROUTES_DIR: /fixtures/agent/routes
     # flags: -gamemodule stub, -map demo1 -mode dm (a default public game),
-    # -idle 5m, -udp :27910 (then also publish 27910/udp)
+    # -idle 5m, -udp :27910 (then also publish 27910/udp),
+    # -bot demo1,demo2,demo3 -bot-backend scripted (a public demo bot)
     command: ["-idle", "10m"]
     ports:
       - "8080:8080"
     volumes:
       - blobs:/data
       - ../assets:/assets:ro
+      - ../fixtures:/fixtures:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/q2server", "-healthcheck"]
       interval: 5s

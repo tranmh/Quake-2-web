@@ -8,10 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"quake2web/server/internal/agent/backend/jevtest"
 	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/decide"
 	"quake2web/server/internal/agent/route"
+	"quake2web/server/internal/agent/session"
 	"quake2web/server/internal/agent/trace"
+	"quake2web/server/internal/host"
 	"quake2web/server/internal/qcommon/shared"
 )
 
@@ -135,6 +138,8 @@ func TestConfigCheck(t *testing.T) {
 		{Config{FS: nopFS{}, Skill: &skill}, "skill 7"},
 		{Config{FS: nopFS{}, MinModelShare: 1.5}, "gate thresholds"},
 		{Config{FS: nopFS{}, Budget: budget.Limits{USD: -1}}, "negative budget"},
+		{Config{FS: nopFS{}, NewInstance: func(int, session.Spec, uint32) (*host.Instance, func(), error) { return nil, nil, nil }},
+			"NewInstance needs an inproc session"},
 	}
 	for _, tc := range bad {
 		c := tc.cfg
@@ -354,5 +359,33 @@ func TestComparator(t *testing.T) {
 	}
 	if got := feed(4, 0, shared.UserCmd{Msec: 25, UpMove: 9}); got.UpMove != 9 || cc.badCmds != 2 {
 		t.Fatalf("unrecorded step: %+v", got)
+	}
+}
+
+// An InProc mock run delays the mock server's replies by its simulated
+// latency (unless the faults set one); a lockstep run simulates it in the
+// scheduler instead.
+func TestMockFaultsLatency(t *testing.T) {
+	inproc := &Config{Backend: BackendMock, Session: SessionInProc, SimLatency: Latency{Fixed: 212 * time.Millisecond, Set: true}}
+	if f := mockFaults(inproc); len(f.Latency) != 1 || f.Latency[0] != 212*time.Millisecond || f.Server != DefaultMockFaults().Server {
+		t.Errorf("inproc fixed: %+v", f)
+	}
+	inproc.SimLatency, _ = ParseLatency("80ms,300ms")
+	if f := mockFaults(inproc); len(f.Latency) != 2 || f.Latency[1] != 300*time.Millisecond {
+		t.Errorf("inproc samples: %+v", f)
+	}
+	own := jevtest.Faults{Latency: []time.Duration{time.Millisecond}}
+	inproc.MockFaults = &own
+	if f := mockFaults(inproc); len(f.Latency) != 1 || f.Latency[0] != time.Millisecond {
+		t.Errorf("configured fault latency: %+v", f)
+	}
+	lockstep := &Config{Backend: BackendMock, Session: SessionLockstep, SimLatency: Latency{Fixed: time.Second, Set: true}}
+	if f := mockFaults(lockstep); len(f.Latency) != 0 {
+		t.Errorf("lockstep: %+v", f)
+	}
+	r := &Runner{cfg: Config{Backend: BackendMock, Session: SessionInProc, SimLatency: Latency{Fixed: 212 * time.Millisecond, Set: true}},
+		camp: campaignOf("demo1"), be: &backends{}}
+	if got := r.runStartBody().Config[keyMockFaults]; !strings.HasSuffix(got, " latency=212ms") {
+		t.Errorf("run_start mock faults %q", got)
 	}
 }

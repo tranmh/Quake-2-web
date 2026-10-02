@@ -407,6 +407,13 @@ type Options struct {
 	APIKey string
 	// Model is the model id the server reports (DefaultModel).
 	Model string
+	// MaxCalls bounds the calls the server keeps for Calls, the newest
+	// first (0: all of them). A long-running server (a realtime mock bot
+	// answering ten requests a second for an hour) sets it so the
+	// recorded bodies do not grow without bound. With a bound, Attempt
+	// falls back to counting only recent calls of a digest when the
+	// client sends no X-Retry-Count (the jev client always does).
+	MaxCalls int
 }
 
 // Server is the fake Jev server.
@@ -418,6 +425,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	calls    []Call
+	n        int // calls received
 	attempts map[string]int
 }
 
@@ -443,7 +451,8 @@ func (s *Server) URL() string { return s.srv.URL }
 // Close stops the server.
 func (s *Server) Close() { s.srv.Close() }
 
-// Calls returns the calls received so far, in arrival order.
+// Calls returns the calls received so far, in arrival order (with
+// Options.MaxCalls, at least the newest MaxCalls of them).
 func (s *Server) Calls() []Call {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -458,7 +467,7 @@ func (s *Server) Hits() int { return int(s.hits.Load()) }
 func (s *Server) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.calls)
+	return s.n
 }
 
 func writeError(w http.ResponseWriter, status int, typ, msg string) {
@@ -538,8 +547,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	digest := wr.Digest()
 	s.mu.Lock()
-	c := Call{N: len(s.calls), Model: wr.Model, State: wr.State, Questions: wr.Questions, Digest: digest,
+	c := Call{N: s.n, Model: wr.Model, State: wr.State, Questions: wr.Questions, Digest: digest,
 		Attempt: s.attempts[digest], Body: body, Header: r.Header.Clone()}
+	s.n++
+	if m := s.opt.MaxCalls; m > 0 && len(s.attempts) >= 4*m {
+		s.attempts = map[string]int{} // retries follow their first attempt within seconds
+	}
 	s.attempts[digest]++
 	if v := r.Header.Get("X-Retry-Count"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -549,6 +562,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	fault, lat := s.fault(&c)
 	c.Fault = fault
 	s.calls = append(s.calls, c)
+	if m := s.opt.MaxCalls; m > 0 && len(s.calls) >= 2*m {
+		s.calls = append([]Call(nil), s.calls[len(s.calls)-m:]...) // amortized O(1) per call
+	}
 	s.mu.Unlock()
 
 	if lat > 0 {

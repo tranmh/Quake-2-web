@@ -473,12 +473,12 @@ func (r *Runner) runStartBody() trace.RunStart {
 		m[keyMaxDeaths] = strconv.Itoa(cfg.MaxDeaths)
 	}
 	if cfg.Backend == BackendMock {
-		f := DefaultMockFaults()
-		if cfg.MockFaults != nil {
-			f = *cfg.MockFaults
-		}
+		f := mockFaults(cfg)
 		m[keyMockFaults] = fmt.Sprintf("seed=%d server=%g missing=%g ratelimit=%g overload=%g malformed=%g", f.Seed, f.Server,
 			f.Missing, f.RateLimit, f.Overload, f.Malformed)
+		if len(f.Latency) > 0 {
+			m[keyMockFaults] += " latency=" + Latency{Samples: f.Latency, Set: true}.String()
+		}
 	}
 	return rs
 }
@@ -729,7 +729,7 @@ func (r *Runner) episodeReport(ep int, seed uint64, res campaign.EpisodeResult, 
 func (r *Runner) newSession(ep int, seed uint64, hooks []func(*fakeclient.Client, []byte, []fakeclient.Span),
 	logf func(string, ...any)) (session.Session, func(), error) {
 	cfg := &r.cfg
-	opt := fakeclient.Options{MaxHistory: 256}
+	opt := fakeclient.Options{MaxHistory: 256, Userinfo: cfg.Userinfo}
 	if len(hooks) > 0 {
 		opt.OnServerMessage = func(c *fakeclient.Client, payload []byte, spans []fakeclient.Span) {
 			for _, h := range hooks {
@@ -745,16 +745,32 @@ func (r *Runner) newSession(ep int, seed uint64, hooks []func(*fakeclient.Client
 	spec := session.Spec{Map: r.visits[0], Skill: r.skill}
 	switch cfg.Session {
 	case SessionInProc:
-		if r.host == nil {
-			r.host = host.New()
-		}
-		inst, err := session.NewInstance(r.host, session.InstanceConfig{ID: fmt.Sprintf("bot-%s-%03d", r.id, ep), FS: cfg.FS,
-			Spec: spec, Seed: uint32(seed), Maps: r.maps, Printf: printf})
-		if err != nil {
-			return nil, nil, err
+		var inst *host.Instance
+		var stop func()
+		if cfg.NewInstance != nil {
+			i, cleanup, err := cfg.NewInstance(ep, spec, uint32(seed))
+			if err != nil {
+				return nil, nil, err
+			}
+			inst, stop = i, cleanup
+		} else {
+			if r.host == nil {
+				r.host = host.New()
+			}
+			i, err := session.NewInstance(r.host, session.InstanceConfig{ID: fmt.Sprintf("bot-%s-%03d", r.id, ep), FS: cfg.FS,
+				Spec: spec, Seed: uint32(seed), Maps: r.maps, Printf: printf})
+			if err != nil {
+				return nil, nil, err
+			}
+			inst, stop = i, i.Stop
 		}
 		p := session.NewInProc(inst, session.InProcConfig{FS: cfg.FS, Client: opt})
-		return p, func() { _ = p.Close(); inst.Stop() }, nil
+		return p, func() {
+			_ = p.Close()
+			if stop != nil {
+				stop()
+			}
+		}, nil
 	default:
 		l := session.NewLockstep(session.LockstepConfig{FS: cfg.FS, Spec: spec, Seed: uint32(seed), Client: opt, Maps: r.maps,
 			Printf: printf})

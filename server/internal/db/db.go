@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"time"
 )
 
@@ -257,6 +259,44 @@ type Repo interface {
 	CreateBan(ctx context.Context, b Ban) (Ban, error)
 	// ActiveBan returns the first unexpired ban matching the user or IP.
 	ActiveBan(ctx context.Context, userID int64, ip string, now time.Time) (*Ban, error)
+
+	// BotSpend returns the USD the server's bots spent on day, a UTC date
+	// "2006-01-02" (0 for a day without spend).
+	BotSpend(ctx context.Context, day string) (float64, error)
+	// AddBotSpend adds usd (finite, >= 0) to day's spend atomically and
+	// returns the new total.
+	AddBotSpend(ctx context.Context, day string, usd float64) (float64, error)
+}
+
+// BotSpendDay is the layout of a bot spend day (a UTC date).
+const BotSpendDay = "2006-01-02"
+
+// checkBotSpend validates a BotSpend/AddBotSpend day and amount.
+func checkBotSpend(day string, usd float64) error {
+	if t, err := time.Parse(BotSpendDay, day); err != nil || t.Format(BotSpendDay) != day {
+		return fmt.Errorf("db: bot spend day %q is not a YYYY-MM-DD date", day)
+	}
+	if usd < 0 || math.IsNaN(usd) || math.IsInf(usd, 0) {
+		return fmt.Errorf("db: bot spend %v is not a non-negative amount", usd)
+	}
+	return nil
+}
+
+// BotSpendStore adapts a Repo to the bots' daily spend store
+// (agent/budget.SpendStore: LoadSpend and AddSpend).
+func BotSpendStore(r Repo) SpendStore { return SpendStore{r} }
+
+// SpendStore is the agent/budget.SpendStore of a Repo (BotSpendStore).
+type SpendStore struct{ r Repo }
+
+// LoadSpend returns day's spend (Repo.BotSpend).
+func (s SpendStore) LoadSpend(ctx context.Context, day string) (float64, error) {
+	return s.r.BotSpend(ctx, day)
+}
+
+// AddSpend adds to day's spend (Repo.AddBotSpend).
+func (s SpendStore) AddSpend(ctx context.Context, day string, usd float64) (float64, error) {
+	return s.r.AddBotSpend(ctx, day, usd)
 }
 
 // NewSaveStore adapts a Repo to SaveStore.

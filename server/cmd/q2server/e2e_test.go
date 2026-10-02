@@ -9,14 +9,21 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
+	"quake2web/server/internal/agent/runner"
 	"quake2web/server/internal/api"
+	"quake2web/server/internal/auth"
 	"quake2web/server/internal/config"
 	"quake2web/server/internal/db"
 	"quake2web/server/internal/db/dbtest"
+	"quake2web/server/internal/demo"
 	"quake2web/server/internal/fakeclient"
 	qnet "quake2web/server/internal/net"
 	"quake2web/server/internal/q2const"
@@ -421,5 +428,368 @@ func TestE2ECTF(t *testing.T) {
 	drive(ctx, t, a, 500*time.Millisecond, shared.UserCmd{Msec: 25})
 	if !strings.Contains(strings.ToLower(strings.Join(a.Prints, "")), "red team") {
 		t.Errorf("team red not acknowledged: %q", a.Prints)
+	}
+}
+
+// newE2EBots is newE2E with bots enabled for every account.
+func newE2EBots(t *testing.T) *e2e {
+	t.Helper()
+	pak := testutil.RequireFile(t, testutil.DemoPakPath())
+	cfg := config.Default()
+	cfg.BlobDir = t.TempDir()
+	cfg.DemoPak = pak
+	cfg.CookieSecure = false
+	cfg.Bots.Enabled = true
+	cfg.Bots.AllowUsers = true
+	cfg.Bots.RunsDir = t.TempDir()
+	cfg.Bots.MaxRun = 2 * time.Minute
+	var out io.Writer = io.Discard
+	if testing.Verbose() {
+		out = &testWriter{t}
+	}
+	log := slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	st, err := newStack(context.Background(), cfg, log, stackOptions{IdleTimeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &e2e{t: t, st: st, srv: httptest.NewServer(st.Handler)}
+	t.Cleanup(func() {
+		e.srv.Close()
+		st.Close()
+	})
+	return e
+}
+
+func (e *e2e) wsURL(path string) string { return "ws" + strings.TrimPrefix(e.srv.URL, "http") + path }
+
+// readFeed reads decision feed messages until done returns true.
+func readFeed(ctx context.Context, t *testing.T, c *websocket.Conn, done func(msg map[string]any) bool) {
+	t.Helper()
+	for {
+		typ, b, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("decision feed: %v", err)
+		}
+		if typ != websocket.MessageText {
+			t.Fatalf("decision feed: %v message", typ)
+		}
+		var msg map[string]any
+		if err := json.Unmarshal(b, &msg); err != nil {
+			t.Fatalf("decision feed: %v (%s)", err, b)
+		}
+		if done(msg) {
+			return
+		}
+	}
+}
+
+// TestE2EBotWatch drives a bot through the API: a user starts a scripted
+// bot, watches its live view over the relay with a protocol 34 client and
+// follows its decision feed, then stops it and fetches its artifacts.
+func TestE2EBotWatch(t *testing.T) {
+	e := newE2EBots(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	alice, bob := e.signup("alice"), e.signup("bob")
+
+	var created struct{ Bot api.BotInfo }
+	e.do(alice.c, "POST", "/api/v1/bots", map[string]any{"backend": "scripted", "maps": []string{"demo1"}}, http.StatusCreated, &created)
+	b := created.Bot
+	if b.ID == "" || b.OwnerID != alice.id || b.Status != api.BotStarting || b.Backend != "scripted" || b.Public ||
+		len(b.Maps) != 1 || b.Maps[0] != "demo1" || b.Skill != 1 {
+		t.Fatalf("created %+v", b)
+	}
+	// private: bob neither sees nor watches it
+	var list struct{ Bots []api.BotInfo }
+	e.do(bob.c, "GET", "/api/v1/bots", nil, http.StatusOK, &list)
+	if len(list.Bots) != 0 {
+		t.Fatalf("bob sees %+v", list.Bots)
+	}
+	e.do(bob.c, "GET", "/api/v1/bots/"+b.ID, nil, http.StatusNotFound, nil)
+	e.do(bob.c, "POST", "/api/v1/bots/"+b.ID+"/watch", nil, http.StatusNotFound, nil)
+	e.do(bob.c, "DELETE", "/api/v1/bots/"+b.ID, nil, http.StatusNotFound, nil)
+	// a jev bot is for administrators
+	e.do(alice.c, "POST", "/api/v1/bots", map[string]any{"backend": "jev", "maps": []string{"demo1"}}, http.StatusForbidden, nil)
+
+	var w api.BotWatch
+	e.do(alice.c, "POST", "/api/v1/bots/"+b.ID+"/watch", nil, http.StatusOK, &w)
+	if w.Ticket == "" || w.DecisionsTicket == "" || w.Pakset != "demo" ||
+		!strings.HasPrefix(w.WSURL, "/ws/v1/bots/"+b.ID+"/watch?ticket=") || !strings.HasPrefix(w.DecisionsURL, "/ws/v1/bots/"+b.ID+"/decisions?ticket=") {
+		t.Fatalf("watch %+v", w)
+	}
+
+	// the decision feed: hello, then decisions with their provenance
+	feed, _, err := websocket.Dial(ctx, e.wsURL(w.DecisionsURL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer feed.CloseNow() //nolint:errcheck
+	var hello map[string]any
+	readFeed(ctx, t, feed, func(m map[string]any) bool { hello = m; return true })
+	if hello["t"] != "hello" || hello["bot"] != b.ID || hello["backend"] != "scripted" {
+		t.Fatalf("hello %v", hello)
+	}
+
+	// the live view: a viewer joins the relay as a protocol 34 client
+	conn, err := qnet.DialWS(ctx, e.wsURL(w.WSURL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	viewer := fakeclient.New(conn, fakeclient.Options{Printf: func(string, ...any) {}})
+	if err := viewer.Handshake(ctx); err != nil {
+		t.Fatalf("viewer handshake: %v", err)
+	}
+	if viewer.ServerData.AttractLoop != 1 || viewer.State != fakeclient.CaActive || viewer.MapName() != "demo1" {
+		t.Fatalf("viewer: attractloop %d, state %v, map %q", viewer.ServerData.AttractLoop, viewer.State, viewer.MapName())
+	}
+	first := viewer.Frame.ServerFrame
+	for end := time.Now().Add(1500 * time.Millisecond); time.Now().Before(end); {
+		viewer.SendCmd(shared.UserCmd{Msec: 50})
+		if err := viewer.Poll(ctx, 50*time.Millisecond); err != nil {
+			t.Fatalf("viewer poll: %v", err)
+		}
+	}
+	if got := viewer.Frame.ServerFrame; got < first+5 || !viewer.Frame.Valid {
+		t.Fatalf("viewer frames: %d -> %d (valid %v)", first, got, viewer.Frame.Valid)
+	}
+	// a watch ticket is single use
+	if c2, err := qnet.DialWS(ctx, e.wsURL(w.WSURL)); err == nil {
+		c2.Close()
+		t.Fatal("watch ticket accepted twice")
+	}
+	if c2, _, err := websocket.Dial(ctx, e.wsURL(w.DecisionsURL), nil); err == nil {
+		c2.CloseNow() //nolint:errcheck
+		t.Fatal("decisions ticket accepted twice")
+	}
+	// an expired ticket is refused
+	var w2 api.BotWatch
+	e.do(alice.c, "POST", "/api/v1/bots/"+b.ID+"/watch", nil, http.StatusOK, &w2)
+	tickets := e.st.App.Tickets.(*auth.Tickets)
+	tickets.SetClock(func() time.Time { return time.Now().Add(2 * auth.TicketTTL) })
+	if c2, err := qnet.DialWS(ctx, e.wsURL(w2.WSURL)); err == nil {
+		c2.Close()
+		t.Fatal("expired watch ticket accepted")
+	}
+	if c2, _, err := websocket.Dial(ctx, e.wsURL(w2.DecisionsURL), nil); err == nil {
+		c2.CloseNow() //nolint:errcheck
+		t.Fatal("expired decisions ticket accepted")
+	}
+	tickets.SetClock(time.Now)
+	// no ticket at all
+	if c2, _, err := websocket.Dial(ctx, e.wsURL("/ws/v1/bots/"+b.ID+"/decisions"), nil); err == nil {
+		c2.CloseNow() //nolint:errcheck
+		t.Fatal("decision feed without a ticket")
+	}
+
+	var decision map[string]any
+	readFeed(ctx, t, feed, func(m map[string]any) bool {
+		if m["t"] != "decision" {
+			return false
+		}
+		prov, _ := m["provenance"].(map[string]any)
+		if len(prov) == 0 {
+			t.Fatalf("decision without provenance: %v", m)
+		}
+		decision = m
+		return true
+	})
+	if decision["map"] != "demo1" || decision["sf"].(float64) <= 0 {
+		t.Fatalf("decision %v", decision)
+	}
+	// soon the backend's answers come with them: options, probabilities, the choice
+	readFeed(ctx, t, feed, func(m map[string]any) bool {
+		qs, _ := m["questions"].([]any)
+		if m["t"] != "decision" || len(qs) == 0 {
+			return false
+		}
+		decision = m
+		return true
+	})
+	t.Logf("decision: %v", decision)
+	for _, q := range decision["questions"].([]any) {
+		q := q.(map[string]any)
+		opts, _ := q["options"].([]any)
+		if q["id"] == "" || q["chosen"] == "" || len(opts) == 0 {
+			t.Fatalf("question %v", q)
+		}
+		sum := 0.0
+		for _, o := range opts {
+			sum += o.(map[string]any)["p"].(float64)
+		}
+		if sum < 0.98 || sum > 1.02 {
+			t.Errorf("question %v: probabilities sum to %v", q["id"], sum)
+		}
+	}
+
+	var got struct{ Bot api.BotInfo }
+	e.do(alice.c, "GET", "/api/v1/bots/"+b.ID, nil, http.StatusOK, &got)
+	if got.Bot.Status != api.BotRunning || got.Bot.Level == nil || got.Bot.Level.Map != "demo1" || got.Bot.Viewers != 1 || got.Bot.Live == nil {
+		t.Fatalf("running bot %+v", got.Bot)
+	}
+	resp, err := http.Get(e.srv.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsText, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for _, m := range []string{"q2bot_runs_active 1", "q2bot_viewers 1", "q2bot_decisions_total{backend=\"scripted\""} {
+		if !strings.Contains(string(metricsText), m) {
+			t.Errorf("metrics lack %s", m)
+		}
+	}
+
+	// stop it: the feed says bye, the run directory has its artifacts
+	e.do(alice.c, "DELETE", "/api/v1/bots/"+b.ID, nil, http.StatusNoContent, nil)
+	readFeed(ctx, t, feed, func(m map[string]any) bool {
+		if m["t"] != "bye" {
+			return false
+		}
+		if m["status"] != api.BotStopped {
+			t.Fatalf("bye %v", m)
+		}
+		return true
+	})
+	e.do(alice.c, "GET", "/api/v1/bots/"+b.ID, nil, http.StatusOK, &got)
+	if got.Bot.Status != api.BotStopped || got.Bot.EndedAt == nil || len(got.Bot.Summary) == 0 {
+		t.Fatalf("stopped bot %+v", got.Bot)
+	}
+	var sum struct {
+		Schema, Run, Outcome string
+	}
+	if err := json.Unmarshal(got.Bot.Summary, &sum); err != nil || sum.Schema != "q2bot.run/1" || sum.Run != b.ID || sum.Outcome != "aborted" {
+		t.Fatalf("summary %s: %v", got.Bot.Summary, err)
+	}
+	e.do(alice.c, "POST", "/api/v1/bots/"+b.ID+"/watch", nil, http.StatusConflict, nil)
+	kinds := map[string]string{}
+	for _, a := range got.Bot.Artifacts {
+		kinds[a.Kind] = a.Name
+	}
+	if kinds[api.ArtifactRun] != "run.json" || kinds[api.ArtifactDemo] == "" || kinds[api.ArtifactTrace] == "" {
+		t.Fatalf("artifacts %+v", got.Bot.Artifacts)
+	}
+	req, _ := http.NewRequest("GET", e.srv.URL+"/api/v1/bots/"+b.ID+"/artifacts/"+kinds[api.ArtifactDemo], nil)
+	resp, err = alice.c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dm2, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("demo: %s %v", resp.Status, resp.Header)
+	}
+	ds, err := demo.Validate(dm2)
+	if err != nil {
+		t.Fatalf("demo %s: %v", kinds[api.ArtifactDemo], err)
+	}
+	if ds.Map != "maps/demo1.bsp" || ds.Frames < 10 || !ds.Terminated {
+		t.Fatalf("demo stats %+v", ds)
+	}
+	t.Logf("demo %s: %d frames", kinds[api.ArtifactDemo], ds.Frames)
+	// the trace is served as stored, gzip-encoded JSON lines
+	req, _ = http.NewRequest("GET", e.srv.URL+"/api/v1/bots/"+b.ID+"/artifacts/"+kinds[api.ArtifactTrace], nil)
+	resp, err = alice.c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/x-ndjson" ||
+		!strings.Contains(string(tr), `"type":"run_start"`) {
+		t.Fatalf("trace: %s %v %.200s", resp.Status, resp.Header, tr)
+	}
+	// bob still sees nothing of it; nobody reads outside the allowlist
+	e.do(bob.c, "GET", "/api/v1/bots/"+b.ID+"/artifacts/run.json", nil, http.StatusNotFound, nil)
+	e.do(alice.c, "GET", "/api/v1/bots/"+b.ID+"/artifacts/bot.json", nil, http.StatusNotFound, nil)
+	e.do(alice.c, "GET", "/api/v1/bots/"+b.ID+"/artifacts/ep-000/log.txt", nil, http.StatusNotFound, nil)
+	e.do(alice.c, "GET", "/api/v1/bots/"+b.ID+"/artifacts/ep-000/..%2F..%2Fbot.json", nil, http.StatusNotFound, nil)
+	// its game is gone
+	if _, err := e.st.Games.Get(ctx, "bot-"+b.ID); err == nil {
+		t.Error("the bot's game still runs")
+	}
+}
+
+// waitBotStatus polls a bot until its status is want.
+func (e *e2e) waitBotStatus(c *http.Client, id, want string) api.BotInfo {
+	e.t.Helper()
+	var got struct{ Bot api.BotInfo }
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		e.do(c, "GET", "/api/v1/bots/"+id, nil, http.StatusOK, &got)
+		if got.Bot.Status == want {
+			return got.Bot
+		}
+	}
+	e.t.Fatalf("bot %s: status %s, want %s", id, got.Bot.Status, want)
+	return got.Bot
+}
+
+// TestE2EBotShutdown: closing the server stops its bots before their
+// games, so every run ends as stopped with its run directory complete
+// (run.json, a terminated demo).
+func TestE2EBotShutdown(t *testing.T) {
+	e := newE2EBots(t)
+	alice := e.signup("alice")
+	var created struct{ Bot api.BotInfo }
+	e.do(alice.c, "POST", "/api/v1/bots", map[string]any{"backend": "scripted", "maps": []string{"demo1"}}, http.StatusCreated, &created)
+	id := created.Bot.ID
+	e.waitBotStatus(alice.c, id, api.BotRunning)
+	time.Sleep(500 * time.Millisecond) // some frames into the level
+	dir := filepath.Join(e.st.Bots.Dir(), id)
+	e.st.Close()
+
+	var meta struct{ Status, Reason string }
+	b, err := os.ReadFile(filepath.Join(dir, runner.BotFile))
+	if err != nil || json.Unmarshal(b, &meta) != nil || meta.Status != api.BotStopped || meta.Reason != "the server shut down" {
+		t.Fatalf("bot.json %s: %v", b, err)
+	}
+	var sum struct{ Outcome string }
+	b, err = os.ReadFile(filepath.Join(dir, runner.RunFile))
+	if err != nil || json.Unmarshal(b, &sum) != nil || sum.Outcome != "aborted" {
+		t.Fatalf("run.json %s: %v", b, err)
+	}
+	demos, _ := filepath.Glob(filepath.Join(dir, "ep-000", runner.DemoDir, "*.dm2"))
+	if len(demos) == 0 {
+		t.Fatal("no demo")
+	}
+	for _, d := range demos {
+		data, _ := os.ReadFile(d)
+		if st, err := demo.Validate(data); err != nil || !st.Terminated {
+			t.Errorf("%s: %+v %v", d, st, err)
+		}
+	}
+}
+
+// TestE2EDemoBot: the -bot bot is public and owned by the server, so
+// anyone may follow it, and nobody but an administrator stops it.
+func TestE2EDemoBot(t *testing.T) {
+	e := newE2EBots(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b, err := startDemoBot(ctx, e.st.Bots, " demo1, ", runner.BackendScripted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b.Public || b.OwnerID != 0 || b.Name != "demo bot" || len(b.Maps) != 1 {
+		t.Fatalf("demo bot %+v", b)
+	}
+	anon := &http.Client{}
+	var list struct{ Bots []api.BotInfo }
+	e.do(anon, "GET", "/api/v1/bots", nil, http.StatusOK, &list)
+	if len(list.Bots) != 1 || list.Bots[0].ID != b.ID {
+		t.Fatalf("anonymous list %+v", list.Bots)
+	}
+	var w api.BotWatch
+	e.do(anon, "POST", "/api/v1/bots/"+b.ID+"/watch", nil, http.StatusOK, &w)
+	feed, _, err := websocket.Dial(ctx, e.wsURL(w.DecisionsURL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer feed.CloseNow() //nolint:errcheck
+	readFeed(ctx, t, feed, func(m map[string]any) bool { return m["t"] == "hello" })
+	e.do(anon, "DELETE", "/api/v1/bots/"+b.ID, nil, http.StatusUnauthorized, nil)
+	alice := e.signup("alice")
+	e.do(alice.c, "DELETE", "/api/v1/bots/"+b.ID, nil, http.StatusForbidden, nil)
+	if _, err := startDemoBot(ctx, e.st.Bots, "demo2", runner.BackendScripted); err == nil {
+		t.Error("a demo bot not starting on the campaign's first map")
 	}
 }

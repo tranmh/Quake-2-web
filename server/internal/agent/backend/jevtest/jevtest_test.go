@@ -421,3 +421,29 @@ func TestFuncFaults(t *testing.T) {
 		t.Fatalf("fault mix %v", kinds)
 	}
 }
+
+// MaxCalls bounds the kept calls (the newest are kept, numbered in
+// arrival order) while Count still counts every call.
+func TestMaxCalls(t *testing.T) {
+	srv := jevtest.NewServer(jevtest.Options{APIKey: key, MaxCalls: 3})
+	defer srv.Close()
+	for i, st := range states()[:10] {
+		req, _ := decide.NewRequest(uint64(i+1), decide.LaneFast, 0, st, nil, 0)
+		body, _ := decide.RequestBody("jev-1.13.0", req)
+		if resp := post(t, srv.URL()+jevtest.Path, "Bearer "+key, string(body)); resp.StatusCode != http.StatusOK {
+			t.Fatalf("call %d: %d", i, resp.StatusCode)
+		}
+		if calls := srv.Calls(); len(calls) > 6 || calls[len(calls)-1].N != i {
+			t.Fatalf("after call %d: %d kept, last %d", i, len(calls), calls[len(calls)-1].N)
+		}
+	}
+	calls := srv.Calls()
+	if srv.Count() != 10 || len(calls) < 3 || calls[len(calls)-1].N != 9 || calls[len(calls)-3].N != 7 {
+		t.Fatalf("count %d, kept %d", srv.Count(), len(calls))
+	}
+	for i := 1; i < len(calls); i++ {
+		if calls[i].N != calls[i-1].N+1 {
+			t.Fatalf("kept calls out of order: %d after %d", calls[i].N, calls[i-1].N)
+		}
+	}
+}

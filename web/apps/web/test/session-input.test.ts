@@ -57,7 +57,11 @@ async function setup() {
     writeConfig: vi.fn(() => ''),
     context: { cls: { key_dest: 0, state: 0 }, keys: { keybindings: [] } },
   };
-  const s = new GameSession({ canvas: canvas as unknown as HTMLCanvasElement, gameId: 'g', onExit: () => {} });
+  const s = new GameSession({
+    canvas: canvas as unknown as HTMLCanvasElement,
+    source: { kind: 'play', gameId: 'g' },
+    onExit: () => {},
+  });
   const internals = s as unknown as { engine: unknown; installInput(): void };
   internals.engine = engine;
   internals.installInput();

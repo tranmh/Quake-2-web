@@ -96,3 +96,60 @@
   border-left-color: var(--accent);
   filter: brightness(1.25);
 }
+
+/* watch / replay: the viewer has no controls */
+.passive {
+  cursor: default;
+}
+.liveBadge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: rgba(12, 10, 7, 0.74);
+  border: 1px solid var(--border-hi);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+  pointer-events: none;
+}
+.liveDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 6px var(--danger);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+.endedDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+@keyframes live-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .liveDot {
+    animation: none;
+  }
+}
+.ended {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.55);
+}

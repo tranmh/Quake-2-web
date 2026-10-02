@@ -25,7 +25,11 @@ export function GameView({ gameId }: { gameId: string }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     useGameStore.getState().reset();
-    const s = new GameSession({ canvas, gameId, onExit: () => router.push('/servers') });
+    const s = new GameSession({
+      canvas,
+      source: { kind: 'play', gameId },
+      onExit: () => router.push('/servers'),
+    });
     sessionRef.current = s;
     void s.start();
     return () => {
@@ -36,19 +40,32 @@ export function GameView({ gameId }: { gameId: string }) {
 
   return (
     <div className={styles.root}>
-      <canvas ref={canvasRef} className={styles.canvas} tabIndex={0} aria-label="Quake II game view" data-testid="game-canvas" />
+      <canvas
+        ref={canvasRef}
+        className={styles.canvas}
+        tabIndex={0}
+        aria-label="Quake II game view"
+        data-testid="game-canvas"
+      />
       {loaded && !user ? (
         <div className={styles.center}>
           <div className="panel">
             <p>Log in to join this game.</p>
-            <button className="btn primary" onClick={() => router.push(`/login?next=/play/${encodeURIComponent(gameId)}`)}>
+            <button
+              className="btn primary"
+              onClick={() => router.push(`/login?next=/play/${encodeURIComponent(gameId)}`)}
+            >
               Log in
             </button>
           </div>
         </div>
       ) : (
         <>
-          <StatusOverlay onRetry={() => location.reload()} onLeave={() => router.push('/servers')} />
+          <StatusOverlay
+            mode="play"
+            onRetry={() => location.reload()}
+            onLeave={() => router.push('/servers')}
+          />
           <GameOverlay session={sessionRef} />
         </>
       )}

@@ -8,6 +8,7 @@ import styles from './Nav.module.css';
 
 const LINKS = [
   { href: '/servers', label: 'Servers' },
+  { href: '/bots', label: 'Bots' },
   { href: '/saves', label: 'Saves' },
   { href: '/paks', label: 'Paks' },
   { href: '/settings', label: 'Settings' },
@@ -20,7 +21,7 @@ export function Nav() {
   useEffect(() => {
     if (!loaded) void refresh();
   }, [loaded, refresh]);
-  if (path?.startsWith('/play/')) return null; // the game page is full-window
+  if (path?.startsWith('/play/') || path?.startsWith('/watch/')) return null; // the game pages are full-window
   return (
     <header className={styles.nav}>
       <Link href="/" className={styles.brand} aria-label="Quake II Web home">

@@ -1,0 +1,105 @@
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: baseline;
+}
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px 16px;
+  margin: 14px 0 0;
+}
+.fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fact dt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.fact dd {
+  margin: 0;
+  font-family: var(--font-mono);
+}
+.shareBar {
+  display: flex;
+  height: 10px;
+  min-width: 160px;
+  background: #0e0d0a;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.shareBar > span {
+  display: block;
+  height: 100%;
+}
+.sModel {
+  background: var(--ok);
+}
+.sScripted {
+  background: var(--accent);
+}
+.sStale {
+  background: #8f8672;
+}
+.sReflex {
+  background: #4f7fae;
+}
+.sDefault {
+  background: #3d3528;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 8px;
+}
+.legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+.player {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 70vh;
+  background: #000;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.playerCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+.levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.reasons {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--text-dim);
+  font-size: 13px;
+}

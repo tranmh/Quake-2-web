@@ -65,15 +65,13 @@ func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
 		}
 		b.client, b.model = c, c.Model()
 	case BackendMock:
-		faults := DefaultMockFaults()
-		if cfg.MockFaults != nil {
-			faults = *cfg.MockFaults
-		}
+		faults := mockFaults(cfg)
 		b.mock = jevtest.NewServer(jevtest.Options{
-			APIKey: mockKey,
-			Model:  jc.Model,
-			Policy: &jevtest.Noisy{Base: jevtest.NewScripted(scripted.Config{Seed: cfg.Seed}), Seed: cfg.Seed},
-			Faults: faults,
+			APIKey:   mockKey,
+			Model:    jc.Model,
+			Policy:   &jevtest.Noisy{Base: jevtest.NewScripted(scripted.Config{Seed: cfg.Seed}), Seed: cfg.Seed},
+			Faults:   faults,
+			MaxCalls: mockMaxCalls,
 		})
 		jc.BaseURL, jc.APIKey, jc.AllowCustomBase = b.mock.URL(), trace.NewSecret(mockKey), true
 		if cfg.Session == SessionLockstep {
@@ -107,6 +105,28 @@ func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
 		}
 	}
 	return b, nil
+}
+
+// mockMaxCalls bounds the calls the mock server keeps (the runner never
+// reads them; a long realtime mock run would otherwise keep every body).
+const mockMaxCalls = 64
+
+// mockFaults returns the mock server's faults: Config.MockFaults (nil:
+// DefaultMockFaults) and, in an InProc session, the simulated latency as
+// the replies' delay unless the faults set one.
+func mockFaults(cfg *Config) jevtest.Faults {
+	f := DefaultMockFaults()
+	if cfg.MockFaults != nil {
+		f = *cfg.MockFaults
+	}
+	if cfg.Session == SessionInProc && cfg.SimLatency.Set && len(f.Latency) == 0 {
+		if len(cfg.SimLatency.Samples) > 0 {
+			f.Latency = append([]time.Duration(nil), cfg.SimLatency.Samples...)
+		} else if cfg.SimLatency.Fixed > 0 {
+			f.Latency = []time.Duration{cfg.SimLatency.Fixed}
+		}
+	}
+	return f
 }
 
 // mockLockstep keeps the jev client's wall-clock state out of a lockstep

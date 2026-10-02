@@ -5,14 +5,16 @@ import { WebSocketTransport, type DatagramTransport, type TransportFactory } fro
 import { api, errorMessage, type JoinResponse } from '@/lib/api';
 import { resolveWsUrl } from '@/lib/env';
 
-class TicketedTransport implements DatagramTransport {
+/** A WebSocketTransport opened once its ticketed URL resolves (shared with the watch transport). */
+export class TicketedTransport implements DatagramTransport {
   onMessage: ((data: Uint8Array) => void) | null = null;
   onClose: ((reason: string) => void) | null = null;
   private inner: WebSocketTransport | null = null;
   private readonly queue: Uint8Array[] = [];
   private closed = false;
 
-  constructor(url: Promise<string>) {
+  /** `what` names the ticket request in the close reason ("join failed: …"). */
+  constructor(url: Promise<string>, what = 'join') {
     url.then(
       (u) => {
         if (this.closed) return;
@@ -38,7 +40,7 @@ class TicketedTransport implements DatagramTransport {
       (e) => {
         if (this.closed) return;
         this.closed = true;
-        this.onClose?.(`join failed: ${errorMessage(e)}`);
+        this.onClose?.(`${what} failed: ${errorMessage(e)}`);
       },
     );
   }
@@ -57,7 +59,11 @@ class TicketedTransport implements DatagramTransport {
   }
 }
 
-export function createJoinTransportFactory(gameId: string, first: JoinResponse, origin: string): TransportFactory {
+export function createJoinTransportFactory(
+  gameId: string,
+  first: JoinResponse,
+  origin: string,
+): TransportFactory {
   let initial: JoinResponse | null = first;
   return () => {
     const j = initial;

@@ -11,6 +11,7 @@ export type GamePhase =
   | 'loading' // CL_PrepRefresh / precache
   | 'active'
   | 'disconnected'
+  | 'ended' // watch / replay: the bot's run (or the replay) is over
   | 'error';
 
 export type Overlay = null | 'main' | 'options' | 'video' | 'saveload';
@@ -19,6 +20,19 @@ export interface LoadingState {
   mapname?: string;
   stage?: string;
   progress?: number;
+}
+
+/** Replay of a recorded bot run (GameSession source replay). */
+export interface ReplayUiState {
+  /** the episode's level attempts in order (one .dm2 each) */
+  levels: { name: string; map: string; attempt: number }[];
+  /** index into levels (-1 before the first) */
+  current: number;
+  /** timescale */
+  speed: number;
+  paused: boolean;
+  /** the last level finished playing */
+  finished: boolean;
 }
 
 export interface GameUiState {
@@ -38,6 +52,9 @@ export interface GameUiState {
   notice: string | null;
   soundEnabled: boolean;
   downloadedBytes: number;
+  /** watch: the bot's final status once its run ended */
+  runStatus: string | null;
+  replay: ReplayUiState | null;
   set(p: Partial<GameUiState>): void;
   reset(): void;
 }
@@ -55,6 +72,8 @@ const initial = {
   notice: null,
   soundEnabled: false,
   downloadedBytes: 0,
+  runStatus: null,
+  replay: null as ReplayUiState | null,
 };
 
 export const useGameStore = create<GameUiState>((set) => ({
