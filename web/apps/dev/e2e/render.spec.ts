@@ -1,5 +1,7 @@
 // Loads the dev harness at fixed cameras and a frozen refresh time, checks that the renderer produced a
-// non-trivial image without WebGL or console errors, and saves screenshots under test-results/.
+// non-trivial image without WebGL or console errors, and saves screenshots under test-results/. The
+// demo1-nav view draws the agent's nav overlay (?nav=1) from assets/nav/demo1.viz.json (`make nav`), which
+// the vite middleware otherwise produces with `go run ./cmd/q2nav dump`; without either it skips.
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +9,8 @@ import { expect, test } from '@playwright/test';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pak = process.env['Q2_PAK'] ?? resolve(here, '../../../../assets/demo/baseq2/pak0.pak');
+/** Q2_E2E_REQUIRE=1 (CI): a missing pak or WebGL2 fails instead of skipping. */
+const required = process.env['Q2_E2E_REQUIRE'] === '1';
 
 interface Status {
   ready: boolean;
@@ -14,6 +18,14 @@ interface Status {
   errors: string[];
   glErrors: number[];
   drawCalls: number;
+  nav: {
+    route: string;
+    points: number;
+    lines: number;
+    waypoints: number;
+    drawnPoints: number;
+    drawnLines: number;
+  } | null;
 }
 
 const views = [
@@ -24,13 +36,16 @@ const views = [
   // gl_lightmap 1 debug view
   { name: 'demo1-lightmap', query: 'map=demo1&time=5&pos=-200,1400,-80&ang=-15,-90,0&cvar_gl_lightmap=1' },
   { name: 'demo2-start', query: 'map=demo2&time=2' },
+  // nav overlay at the start: nodes, edges, boxes and demo1's route
+  { name: 'demo1-nav', query: 'map=demo1&time=5&nav=1&ang=10,150,0', nav: true },
 ];
 
 test.skip(!!process.env['Q2_NO_BROWSER'], `chromium cannot launch: ${process.env['Q2_NO_BROWSER'] ?? ''}`);
 
 for (const v of views) {
   test(`renders ${v.name}`, async ({ page }, testInfo) => {
-    test.skip(!existsSync(pak), 'demo pak0.pak missing');
+    test.skip(!existsSync(pak) && !required, 'demo pak0.pak missing');
+    expect(existsSync(pak), `demo pak0.pak missing (${pak})`).toBe(true);
     const consoleErrors: string[] = [];
     page.on('console', (m) => {
       if (m.type() === 'error') consoleErrors.push(m.text());
@@ -48,7 +63,19 @@ for (const v of views) {
     );
     const status = await page.evaluate(() => (window as unknown as { __q2: Status }).__q2);
     if (status.errors.some((e) => /WebGL2 is not available|could not create a WebGL2 context/.test(e))) {
-      test.skip(true, 'no WebGL2 in this browser');
+      test.skip(!required, 'no WebGL2 in this browser');
+    }
+    if (v.nav) {
+      const navError = status.errors.find((e) => e.startsWith('nav overlay:'));
+      test.skip(!!navError && !required, `nav dump unavailable: ${navError}`);
+      const n = status.nav;
+      testInfo.annotations.push({ type: 'nav', description: JSON.stringify(n) });
+      expect(n, 'nav overlay loaded').not.toBeNull();
+      expect(n!.route).toBe('demo1');
+      expect(n!.waypoints).toBeGreaterThanOrEqual(5);
+      expect(n!.drawnPoints).toBeGreaterThan(100);
+      expect(n!.drawnLines).toBeGreaterThan(500);
+      expect(n!.drawnLines).toBeLessThanOrEqual(3000);
     }
     expect(status.errors, 'harness errors').toEqual([]);
     expect(status.glErrors, 'WebGL errors').toEqual([]);

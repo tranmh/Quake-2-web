@@ -5,3 +5,8 @@ pnpm-lock.yaml
 **/test/data/**
 **/test-results/**
 **/playwright-report/**
+# build and test outputs of the apps
+**/.next/**
+**/.e2e/**
+apps/web/next-env.d.ts
+apps/web/public/q2-sound-worklet.js

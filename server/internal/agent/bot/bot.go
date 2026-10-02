@@ -236,6 +236,16 @@ type Bot struct {
 	// how many times
 	trappedSince, killAt int64
 	kills                int
+	// wedged: where and since when the bot has stood (wedgeTick), the
+	// frames since then, how many of them its navigator was under way,
+	// the stuck reports it made meanwhile and its last stuck count
+	wedgeAt                            Vec3
+	wedgeSince                         int64
+	wedgeFrames, wedgeNav, wedgeStucks int
+	navStucks                          int
+	// testNav, when set, stands in for the navigator's status (tests):
+	// under way, and its stuck count for the goal
+	testNav func() (bool, int)
 }
 
 // New returns a bot with no level: call Enter once the client is active on
@@ -326,6 +336,7 @@ func (b *Bot) Enter(lv Level) error {
 	b.pickID, b.badItems = "", b.badByKey[lv.Key]
 	b.ticks, b.pending, b.dropped = 0, nil, 0
 	b.trappedSince, b.killAt = 0, 0
+	b.wedgeSince, b.navStucks = 0, 0
 	b.shoot.Reset()
 	return nil
 }
@@ -365,10 +376,12 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 			b.freezeSince = b.now
 		}
 		b.mode = ModeIntermission
+		b.wedgeSince = 0
 		return
 	case s.Dead:
 		b.freezeSince = 0
 		b.mode = ModeDead
+		b.wedgeSince = 0
 		return
 	}
 	b.freezeSince, b.pressed = 0, false
@@ -376,6 +389,7 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 	b.noteRegion(s.Origin)
 	b.reflexTick(bel)
 	b.trapTick(c, bel)
+	b.wedgeTick(c, bel)
 
 	var obj *decide.ObjectiveView
 	if b.exec != nil {
@@ -842,6 +856,80 @@ func (b *Bot) trapTick(c *fakeclient.Client, bel *worldmodel.Belief) {
 	c.StringCmd("kill")
 }
 
+// Wedge recovery (units, ms, share, reports).
+const (
+	// wedgeMove: the bot is wedged while its origin stays within
+	// wedgeMove of a spot for wedgeFor, its navigator under way (a path
+	// to follow, or stuck recovery) on at least wedgeShare of the frames
+	// and reporting itself stuck at least wedgeStuck times meanwhile: it
+	// tries to move, its recovery manoeuvres fail, and it does not move.
+	// (Standing still on purpose, waiting for a mover or holding in a
+	// fight, makes no stuck reports.)
+	wedgeMove  = 24
+	wedgeFor   = 30000
+	wedgeShare = 0.75
+	wedgeStuck = 8
+)
+
+// navTrying reports a navigator trying to move the bot (it has a goal and
+// follows a path to it or recovers from being stuck) and its stuck count
+// for the goal (Status.Stucks).
+func (b *Bot) navTrying() (bool, int) {
+	if b.testNav != nil {
+		return b.testNav()
+	}
+	if b.nav == nil {
+		return false, 0
+	}
+	st := b.nav.Status()
+	if _, has := b.nav.Goal(); !has {
+		return false, st.Stucks
+	}
+	switch st.Follow {
+	case navrt.Following, navrt.Stuck, navrt.OffGraph:
+		return true, st.Stucks
+	}
+	return false, st.Stucks
+}
+
+// wedgeTick gives up a level attempt the bot cannot move on from: it has
+// stood on one spot for wedgeFor while its navigator kept trying to move
+// it, its stuck recovery (jump, strafe, back off, repath) included: say,
+// wedged on a monster below its view. Like a player stuck in a pit
+// (trapTick), the bot types "kill"; the campaign counts the death and
+// loads the level-entry save.
+func (b *Bot) wedgeTick(c *fakeclient.Client, bel *worldmodel.Belief) {
+	o := bel.Self.Origin
+	trying, stucks := b.navTrying()
+	if stucks < b.navStucks {
+		b.navStucks = 0 // a new goal counts from 0
+	}
+	newStucks := stucks - b.navStucks
+	b.navStucks = stucks
+	if b.wedgeSince == 0 || dist3(o, b.wedgeAt) > wedgeMove {
+		b.wedgeAt, b.wedgeSince, b.wedgeFrames, b.wedgeNav, b.wedgeStucks = o, b.now, 0, 0, 0
+		return
+	}
+	b.wedgeFrames++
+	b.wedgeStucks += newStucks
+	if trying {
+		b.wedgeNav++
+	}
+	if b.now-b.wedgeSince < wedgeFor || float64(b.wedgeNav) < wedgeShare*float64(b.wedgeFrames) || b.wedgeStucks < wedgeStuck ||
+		b.killAt > 0 && b.now-b.killAt < trapRetry {
+		return
+	}
+	b.killAt = b.now
+	b.kills++
+	b.fight.noteReflex("wedged_kill")
+	if b.cfg.Logf != nil {
+		b.cfg.Logf("bot: wedged at %v for %.0fs, the navigator under way on %d of %d frames, stuck %d times: kill", o,
+			float64(b.now-b.wedgeSince)/1000, b.wedgeNav, b.wedgeFrames, b.wedgeStucks)
+	}
+	b.wedgeSince = 0
+	c.StringCmd("kill")
+}
+
 // Explore makes the bot wander to spots of the level until the clock
 // passes until (ms), then start the route's current step over (the
 // campaign's no-progress watchdog).
@@ -1095,7 +1183,7 @@ type Stats struct {
 	Explores     int // explore bursts started
 	Pressed      bool
 	Ticks        int // decision ticks on the level attempt
-	TrapKills    int // "kill" commands sent from a pit (trapTick)
+	TrapKills    int // "kill" commands sent from a pit (trapTick) or wedged (wedgeTick)
 }
 
 // Stats returns the counters.

@@ -1,0 +1,207 @@
+# Nightly evaluation of the AI agent (docs/AGENT.md, docs/AGENT-EVAL.md): full-campaign q2bot runs in
+# lockstep with the local backends, their run directories (run.json, traces, .dm2 demos) uploaded as
+# artifacts, then a report job that compares the runs. Never calls the paid Jev API, except the
+# manual-only jev-live job (workflow_dispatch with jev_live, behind the protected jev-live environment).
+name: agent-nightly
+on:
+  schedule:
+    - cron: "23 3 * * *" # 03:23 UTC
+  workflow_dispatch:
+    inputs:
+      jev_live:
+        description: "Also run the live Jev job (paid API; needs approval of the jev-live environment)"
+        type: boolean
+        default: false
+      jev_budget_usd:
+        description: "The live run's spend cap in USD (q2bot run -budget-usd, at most 10)"
+        type: string
+        default: "2"
+      jev_maps:
+        description: "Maps of the live run, e.g. demo1 (empty: the whole campaign)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOAMD64: v1
+  # the settings of every run, as in docs/AGENT-EVAL.md: deaths reload the level-entry save, 25 per level
+  Q2BOT_COMMON: -session lockstep -skill 1 -seed 1 -max-deaths 25 -level-timeout 60m
+
+jobs:
+  campaign:
+    name: campaign (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TYPESAFE_API_KEY: ""
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # expect: pass = exit 0; fail = exit 1 (the run fails, the report checks it is worse than
+          # scripted); measure = exit 0 or 1 (a data point). Anything else (2: a usage error) fails.
+          - { name: scripted, expect: pass, replay: true, args: "-backend scripted -require-complete" }
+          # the jev client against the in-process fake Jev server, 212 ms simulated latency
+          - name: mock-clean
+            expect: pass
+            gate: true
+            args: "-backend mock -mock-policy scripted -sim-latency 212ms -require-complete -min-model-share 0.7"
+          - name: mock-noisy
+            expect: pass
+            gate: true
+            args: "-backend mock -mock-policy noisy -sim-latency 212ms -require-complete -min-model-share 0.7"
+          # ablations: must be measurably worse than scripted
+          - { name: ablate-constant, expect: fail, args: "-backend constant -require-complete" }
+          - { name: ablate-random, expect: fail, args: "-backend random -require-complete" }
+          # SimLatency sweep with the clean mock (mock-clean is the 212 ms point)
+          - { name: latency-100ms, expect: measure, args: "-backend mock -mock-policy scripted -sim-latency 100ms -require-complete" }
+          - { name: latency-400ms, expect: measure, args: "-backend mock -mock-policy scripted -sim-latency 400ms -require-complete" }
+          - { name: latency-500ms, expect: measure, args: "-backend mock -mock-policy scripted -sim-latency 500ms -require-complete" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: server/go.mod, cache-dependency-path: server/go.sum }
+      - uses: actions/cache@v4
+        with:
+          path: assets
+          key: q2demo-${{ hashFiles('tools/demo.sha256') }}
+      - run: make demo
+      - run: make nav
+      - name: build q2bot
+        run: cd server && go build -o "$RUNNER_TEMP/q2bot" ./cmd/q2bot
+      - name: q2bot run
+        env:
+          NAME: ${{ matrix.name }}
+          ARGS: ${{ matrix.args }}
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          set +e -uo pipefail
+          out="$GITHUB_WORKSPACE/runs/$NAME"
+          mkdir -p "$out"
+          # $ARGS and $Q2BOT_COMMON are flag lists: word splitting is intended
+          "$RUNNER_TEMP/q2bot" run $ARGS $Q2BOT_COMMON -out "$out" 2>&1 | tee "$out/q2bot-run.txt"
+          code=${PIPESTATUS[0]}
+          echo "$code" > "$out/exit-code"
+          case "$EXPECT:$code" in
+            pass:0 | fail:1 | measure:0 | measure:1) echo "q2bot run $NAME exited $code (expected: $EXPECT)" ;;
+            *) echo "::error::q2bot run $NAME exited $code, expected $EXPECT"; exit 1 ;;
+          esac
+      - name: q2bot validate
+        env:
+          NAME: ${{ matrix.name }}
+          GATE: ${{ matrix.gate && '-min-model-share 0.7' || '' }}
+        run: |
+          dir=$(ls -d "$GITHUB_WORKSPACE/runs/$NAME"/*/ | head -1)
+          "$RUNNER_TEMP/q2bot" validate "$dir" $GATE
+      - name: q2bot replay -strict (lockstep determinism)
+        if: matrix.replay
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          dir=$(ls -d "$GITHUB_WORKSPACE/runs/$NAME"/*/ | head -1)
+          "$RUNNER_TEMP/q2bot" replay -trace "${dir}ep-000/trace.jsonl.gz" -strict | tee "$GITHUB_WORKSPACE/runs/$NAME/replay.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-${{ matrix.name }}
+          path: runs/${{ matrix.name }}
+          retention-days: 14
+          if-no-files-found: warn
+
+  report:
+    needs: campaign
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: agent-*, path: runs }
+      - run: python3 .github/scripts/agent_nightly_report.py runs --summary "$GITHUB_STEP_SUMMARY"
+
+  # Long agent tests (Q2_AGENT_LONG=1): seed sweeps, the realtime InProc runs, the full-campaign gates,
+  # and a short fuzz of the relay's viewer input.
+  long-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      TYPESAFE_API_KEY: ""
+      Q2_AGENT_LONG: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: server/go.mod, cache-dependency-path: server/go.sum }
+      - uses: actions/cache@v4
+        with:
+          path: assets
+          key: q2demo-${{ hashFiles('tools/demo.sha256') }}
+      - run: make demo
+      - run: make nav
+      - run: cd server && go test -timeout 80m ./internal/agent/... ./internal/spectate/... ./cmd/q2bot ./cmd/q2nav
+      # the gates that skip under -race unless Q2_AGENT_LONG is set
+      - run: cd server && go test -race -timeout 60m -run 'TestCampaignScripted$|TestVisits|TestBuildDeterministic' ./internal/agent/campaign ./internal/agent/nav/navbuild
+      - run: cd server && go test ./internal/spectate -run '^$' -fuzz FuzzRelayViewerPacket -fuzztime 60s -fuzzminimizetime 3s
+
+  # Manual only: a real exchange with the Jev API (jev-probe), then a budget-capped campaign run. The key
+  # is the jev-live environment's secret (protect the environment with required reviewers); it is given
+  # to these two steps only.
+  jev-live:
+    if: github.event_name == 'workflow_dispatch' && inputs.jev_live
+    runs-on: ubuntu-latest
+    environment: jev-live
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: server/go.mod, cache-dependency-path: server/go.sum }
+      - uses: actions/cache@v4
+        with:
+          path: assets
+          key: q2demo-${{ hashFiles('tools/demo.sha256') }}
+      - name: check the inputs
+        env:
+          BUDGET: ${{ inputs.jev_budget_usd }}
+          MAPS: ${{ inputs.jev_maps }}
+        run: |
+          python3 -c 'import os, sys; b = float(os.environ["BUDGET"]); sys.exit(0 if 0 < b <= 10 else 1)' ||
+            { echo "::error::jev_budget_usd must be a number in (0, 10], got '$BUDGET'"; exit 1; }
+          [[ "$MAPS" =~ ^[a-z0-9,]*$ ]] || { echo "::error::jev_maps must look like demo1,demo2"; exit 1; }
+      - run: make demo
+      - run: make nav
+      - name: build q2bot
+        run: cd server && go build -o "$RUNNER_TEMP/q2bot" ./cmd/q2bot
+      - name: q2bot jev-probe
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          test -n "$TYPESAFE_API_KEY" || { echo "::error::the jev-live environment has no TYPESAFE_API_KEY secret"; exit 1; }
+          mkdir -p runs/jev-live
+          "$RUNNER_TEMP/q2bot" jev-probe -lane fast -n 3 -out runs/jev-live/live-probe-fast.json
+          "$RUNNER_TEMP/q2bot" jev-probe -lane slow -n 1 -out runs/jev-live/live-probe-slow.json
+      - name: q2bot run -backend jev (budget-capped)
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+          BUDGET: ${{ inputs.jev_budget_usd }}
+          MAPS: ${{ inputs.jev_maps }}
+        run: |
+          set +e -uo pipefail
+          maps=()
+          [[ -n "$MAPS" ]] && maps=(-maps "$MAPS")
+          "$RUNNER_TEMP/q2bot" run -backend jev -sim-latency 212ms -budget-usd "$BUDGET" -on-exhausted stop \
+            -require-complete -min-model-share 0.7 "${maps[@]}" $Q2BOT_COMMON -out runs/jev-live 2>&1 | tee runs/jev-live/q2bot-run.txt
+          code=${PIPESTATUS[0]}
+          dir=$(ls -d runs/jev-live/*/ | head -1)
+          [[ -n "$dir" ]] && "$RUNNER_TEMP/q2bot" validate "$dir" -min-model-share 0.7 || code=1
+          exit "$code"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-jev-live
+          path: runs/jev-live
+          retention-days: 30
+          if-no-files-found: warn

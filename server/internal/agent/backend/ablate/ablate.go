@@ -6,15 +6,19 @@
 //   - Constant always answers the same option of each question: by default
 //     the first one (hold fire, advance, fight, the first enemy or item,
 //     danger "safe"), or a configured key.
-//   - Random answers a uniformly random option, with uniform
-//     probabilities (a noul: a coin), seeded by the request (its sequence
-//     number and content), so a lockstep run repeats exactly.
+//   - Random answers a uniformly random option (a noul: a coin), with all
+//     the probability on it, seeded by the request (its sequence number
+//     and content), so a lockstep run repeats exactly: a model that is
+//     sure of a random pick.
 //
-// Both report full confidence so the arbiter acts on their answers
-// rather than falling back to the scripted policy. With uniform
-// probabilities the arbiter's hysteresis, which compares the
-// probabilities of the current and the new value, keeps Random's first
-// mode and target until they are lost; the other fields follow its draws.
+// Both report full confidence and one-hot probabilities so the arbiter
+// acts on their answers rather than falling back to the scripted policy.
+// The arbiter accumulates a model's answers (decide.ArbiterConfig.Tau):
+// Random's draws therefore act through their recent majority (when no
+// option holds enough of the accumulated weight the arbiter falls back to
+// the scripted policy, which lowers Random's model share instead). An
+// earlier Random answered with uniform probabilities, which the
+// accumulating arbiter rightly treats as no evidence at all.
 //
 // Responses carry the documented wire format (decide.MarshalResponse), so
 // traces of ablation runs replay like any other.
@@ -111,12 +115,7 @@ func (r *Random) Decide(ctx context.Context, req *decide.Request) (*decide.Respo
 		if n == 0 {
 			continue
 		}
-		key := q.Options[rng.Intn(n)].Key
-		a := decide.OneHot(q, key)
-		for _, o := range q.Options {
-			a.Probabilities[o.Key] = 1 / float64(n)
-		}
-		answers[q.ID] = a
+		answers[q.ID] = decide.OneHot(q, q.Options[rng.Intn(n)].Key)
 	}
 	return respond(RandomName, req, answers)
 }

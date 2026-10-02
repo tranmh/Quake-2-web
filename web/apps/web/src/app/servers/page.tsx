@@ -81,7 +81,10 @@ function ServerBrowser() {
                 </td>
                 <td className="mono muted">{g.pakset}</td>
                 <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  <button className="btn small primary" onClick={() => router.push(`/play/${encodeURIComponent(g.id)}`)}>
+                  <button
+                    className="btn small primary"
+                    onClick={() => router.push(`/play/${encodeURIComponent(g.id)}`)}
+                  >
                     Join
                   </button>{' '}
                   {user && (g.ownerId === user.id || user.isAdmin) && (

@@ -16,9 +16,12 @@ test-results/
 .vscode/
 *.swp
 
-# local server data (blob store default ./data/blobs)
+# local server data (blob store default ./data/blobs; bot runs ./data/bots)
 /data/
 /server/data/
+# q2bot run directories (q2bot run -out runs, the default)
+/runs/
+/server/runs/
 .claude/
 /server/q2server
 /server/q2ingest

@@ -97,7 +97,12 @@ export function CreateGameDialog({
 
   return (
     <div className="backdrop" role="dialog" aria-modal="true" aria-label="Start a game" onClick={onClose}>
-      <form className="panel dialog" onSubmit={submit} onClick={(e) => e.stopPropagation()} style={{ display: 'grid', gap: 14 }}>
+      <form
+        className="panel dialog"
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        style={{ display: 'grid', gap: 14 }}
+      >
         <Q2Pic name="m_banner_start_server" fallback="START SERVER" />
         {defaults?.loadSlot && (
           <p className="muted">
@@ -151,36 +156,66 @@ export function CreateGameDialog({
           {multiplayer && (
             <label className="field">
               Max players
-              <input type="number" min={2} max={64} value={maxPlayers} onChange={(e) => setMaxPlayers(Number(e.target.value))} />
+              <input
+                type="number"
+                min={2}
+                max={64}
+                value={maxPlayers}
+                onChange={(e) => setMaxPlayers(Number(e.target.value))}
+              />
             </label>
           )}
           {deathmatch && (
             <>
               <label className="field">
                 Frag limit
-                <input type="number" min={0} max={999} value={fraglimit} onChange={(e) => setFraglimit(Number(e.target.value))} />
+                <input
+                  type="number"
+                  min={0}
+                  max={999}
+                  value={fraglimit}
+                  onChange={(e) => setFraglimit(Number(e.target.value))}
+                />
               </label>
               <label className="field">
                 Time limit (min)
-                <input type="number" min={0} max={999} value={timelimit} onChange={(e) => setTimelimit(Number(e.target.value))} />
+                <input
+                  type="number"
+                  min={0}
+                  max={999}
+                  value={timelimit}
+                  onChange={(e) => setTimelimit(Number(e.target.value))}
+                />
               </label>
             </>
           )}
           {multiplayer && (
             <label className="field">
               Password
-              <input type="text" value={password} maxLength={64} onChange={(e) => setPassword(e.target.value)} placeholder="none" />
+              <input
+                type="text"
+                value={password}
+                maxLength={64}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="none"
+              />
             </label>
           )}
           <label className="field">
             Server name
-            <input type="text" value={name} maxLength={64} onChange={(e) => setName(e.target.value)} placeholder="(my game)" />
+            <input
+              type="text"
+              value={name}
+              maxLength={64}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="(my game)"
+            />
           </label>
         </div>
         {multiplayer && (
           <label className="check">
-            <input type="checkbox" checked={isPublic} onChange={(e) => setPublic(e.target.checked)} /> List publicly in the server
-            browser
+            <input type="checkbox" checked={isPublic} onChange={(e) => setPublic(e.target.checked)} /> List
+            publicly in the server browser
           </label>
         )}
         {error && (

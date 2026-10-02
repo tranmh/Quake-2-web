@@ -13,6 +13,15 @@ import (
 var fallbackKeys = map[string]string{QTarget: "e2", QFirePolicy: "hold", QMovement: "hold", QMode: "objective",
 	QWeapon: "keep", QPickup: "none", QDanger: "1"}
 
+// latestOnly decides every field from its latest answer alone (no
+// evidence accumulation): the hysteresis tests.
+func latestOnly() (t [NumFields]time.Duration) {
+	for f := range t {
+		t[f] = -1
+	}
+	return t
+}
+
 func newTestArbiter(cfg ArbiterConfig) *Arbiter {
 	if cfg.Fallback == nil {
 		cfg.Fallback = constBackend(fallbackKeys)
@@ -95,7 +104,9 @@ func TestArbiterValidation(t *testing.T) {
 		reason string
 	}{
 		{"unknown option", map[string]Answer{QTarget: choice("e9", 0.9, nil)}, "unknown_option"},
-		{"low confidence", map[string]Answer{QTarget: choice("e1", 0.34, nil)}, "low_confidence"},
+		// a lone answer under the confidence threshold is accepted as
+		// evidence, but too weak to decide alone
+		{"low confidence", map[string]Answer{QTarget: choice("e1", 0.34, nil)}, "weak"},
 		{"missing", map[string]Answer{}, "missing"},
 		{"type mismatch", map[string]Answer{QTarget: {Type: Score, Score: 1}}, "invalid"},
 	} {
@@ -103,7 +114,12 @@ func TestArbiterValidation(t *testing.T) {
 			a := newTestArbiter(ArbiterConfig{})
 			ap := step(t, a, laneReq(t, 1, LaneFast, 1000, b), tc.ans)
 			o := ap.Fields[0]
-			if o.Reason != tc.reason || o.Value != "e2" || o.Source != SourceScripted {
+			switch {
+			case tc.reason == "weak":
+				if o.Reason != "" || o.Value != "e1" || o.Source != SourceModel || a.Stats().Fields[FieldTarget].LowConfidence != 1 {
+					t.Fatalf("outcome %+v", o)
+				}
+			case o.Reason != tc.reason || o.Value != "e2" || o.Source != SourceScripted:
 				t.Fatalf("outcome %+v", o)
 			}
 			in := a.Intent(1000, b)
@@ -130,11 +146,11 @@ func TestArbiterValidation(t *testing.T) {
 	if c.probs["b"] != 1 || c.conf != 1 || c.reason != "" {
 		t.Errorf("one-hot repair and confidence substitute %+v", c)
 	}
-	// noul: |2p-1| < 0.2 is gated
+	// noul: |2p-1| < 0.2 is low (it weighs less)
 	nq := &Question{ID: "n", Type: Noul}
-	for p, want := range map[float64]string{0.55: "low_confidence", 0.41: "low_confidence", 0.65: "", 0.05: "", 1.7: ""} {
-		if c := a.validate(nq, Answer{Type: Noul, Noul: p}, true); c.reason != want {
-			t.Errorf("noul %v: reason %q, want %q", p, c.reason, want)
+	for p, want := range map[float64]bool{0.55: true, 0.41: true, 0.65: false, 0.05: false, 1.7: false} {
+		if c := a.validate(nq, Answer{Type: Noul, Noul: p}, true); c.reason != "" || c.low != want {
+			t.Errorf("noul %v: reason %q low %v, want low %v", p, c.reason, c.low, want)
 		}
 	}
 	// score: clamped, NaN invalid, gated by confidence
@@ -145,7 +161,7 @@ func TestArbiterValidation(t *testing.T) {
 	if c := a.validate(&sq, Answer{Type: Score, Score: math.NaN(), Confidence: 1, HasConfidence: true}, true); c.reason != "invalid" {
 		t.Errorf("NaN score %+v", c)
 	}
-	if c := a.validate(&sq, score(2, 0.2), true); c.reason != "low_confidence" {
+	if c := a.validate(&sq, score(2, 0.2), true); c.reason != "" || !c.low {
 		t.Errorf("unconfident score %+v", c)
 	}
 }
@@ -192,7 +208,7 @@ func TestArbiterTTL(t *testing.T) {
 
 func TestArbiterModeHysteresis(t *testing.T) {
 	b := testBelief()
-	a := newTestArbiter(ArbiterConfig{})
+	a := newTestArbiter(ArbiterConfig{Tau: latestOnly()})
 	seq := uint64(0)
 	slow := func(now int64, mode map[string]float64, danger float64) Intent {
 		t.Helper()
@@ -225,7 +241,7 @@ func TestArbiterModeHysteresis(t *testing.T) {
 		t.Fatalf("retreat at danger 3.6: %s %v", in.Mode, in.Danger)
 	}
 	// but not below
-	a = newTestArbiter(ArbiterConfig{})
+	a = newTestArbiter(ArbiterConfig{Tau: latestOnly()})
 	seq = 0
 	slow(0, map[string]float64{"fight": 0.6, "objective": 0.4}, 1)
 	if in := slow(100, map[string]float64{"fight": 0.45, "retreat": 0.55}, 3.4); in.Mode != ModeFight {
@@ -240,7 +256,7 @@ func TestArbiterTargetHysteresis(t *testing.T) {
 		return a.Intent(now, b)
 	}
 	b := testBelief()
-	a := newTestArbiter(ArbiterConfig{})
+	a := newTestArbiter(ArbiterConfig{Tau: latestOnly()})
 	fast(a, b, 1, 1000, map[string]float64{"e1": 0.6, "e2": 0.4}, "e1")
 	if in := fast(a, b, 2, 1100, map[string]float64{"e1": 0.45, "e2": 0.55}, "e2"); in.Target != "e1" {
 		t.Fatalf("dp 0.1 switched to %s", in.Target)
@@ -251,7 +267,7 @@ func TestArbiterTargetHysteresis(t *testing.T) {
 
 	// the current target died: any other answer switches at once
 	b = testBelief()
-	a = newTestArbiter(ArbiterConfig{})
+	a = newTestArbiter(ArbiterConfig{Tau: latestOnly()})
 	fast(a, b, 1, 1000, map[string]float64{"e1": 0.6, "e2": 0.4}, "e1")
 	b.Track("e1").Life = worldmodel.LifeDead
 	if in := fast(a, b, 2, 1100, map[string]float64{"e1": 0.48, "e2": 0.52}, "e2"); in.Target != "e2" {
@@ -260,7 +276,7 @@ func TestArbiterTargetHysteresis(t *testing.T) {
 
 	// unseen for more than a second
 	b = testBelief()
-	a = newTestArbiter(ArbiterConfig{})
+	a = newTestArbiter(ArbiterConfig{Tau: latestOnly()})
 	fast(a, b, 1, 1000, map[string]float64{"e1": 0.6, "e2": 0.4}, "e1")
 	e1 := b.Track("e1")
 	e1.Visible, e1.LastSeen = false, 1000

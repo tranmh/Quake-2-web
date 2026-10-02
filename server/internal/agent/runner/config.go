@@ -36,6 +36,15 @@ const (
 	BackendRandom   = "random"
 )
 
+// Mock policies (Config.MockPolicy).
+const (
+	MockPolicyNoisy    = "noisy"
+	MockPolicyScripted = "scripted"
+)
+
+// MockPolicies lists the mock policy names.
+func MockPolicies() []string { return []string{MockPolicyNoisy, MockPolicyScripted} }
+
 // Backends lists the backend names.
 func Backends() []string {
 	return []string{BackendScripted, BackendJev, BackendMock, BackendReplay, BackendConstant, BackendRandom}
@@ -243,6 +252,19 @@ type Config struct {
 	// MockFaults injects faults into the mock server (nil:
 	// DefaultMockFaults).
 	MockFaults *jevtest.Faults
+	// MockPolicy is the mock server's answer policy: MockPolicyNoisy ("",
+	// the default) perturbs the scripted policy's answers like a model
+	// that is mostly right; MockPolicyScripted answers with the scripted
+	// policy alone (a clean model). Both read only the lane state the
+	// jev client sends.
+	MockPolicy string
+	// MockNoise, MockSwap and MockLowConfidence tune the noisy policy
+	// (jevtest.Noisy's Noise, SecondBest and LowConfidence): the largest
+	// share of probability mass spread at random (0.3), the chance the top
+	// two options swap (0.1) and the chance of a confidence in
+	// [0.05, 0.3] (0.1). Zero takes the default; a negative value turns
+	// the effect off.
+	MockNoise, MockSwap, MockLowConfidence float64
 	// ReplayTrace is the recorded trace BackendReplay answers from.
 	ReplayTrace string
 
@@ -317,6 +339,18 @@ func (c *Config) check() error {
 	}
 	if c.NewInstance != nil && c.Session != SessionInProc {
 		return fmt.Errorf("%w: NewInstance needs an inproc session", ErrConfig)
+	}
+	switch c.MockPolicy {
+	case "":
+		c.MockPolicy = MockPolicyNoisy
+	case MockPolicyNoisy, MockPolicyScripted:
+	default:
+		return fmt.Errorf("%w: unknown mock policy %q (%s)", ErrConfig, c.MockPolicy, strings.Join(MockPolicies(), "|"))
+	}
+	for _, v := range []float64{c.MockNoise, c.MockSwap, c.MockLowConfidence} {
+		if v > 1 || v != v {
+			return fmt.Errorf("%w: mock noise %v not a share (<= 1; negative: off)", ErrConfig, v)
+		}
 	}
 	if c.Backend == BackendReplay {
 		if c.ReplayTrace == "" {

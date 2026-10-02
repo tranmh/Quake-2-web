@@ -5,8 +5,11 @@ import type { Sound } from 'q2-client';
 
 export const WORKLET_URL = '/q2-sound-worklet.js';
 
-export async function createSound(gestureTarget: EventTarget): Promise<{ sound: Sound | null; enabled: boolean }> {
-  if (typeof AudioContext === 'undefined' || typeof AudioWorkletNode === 'undefined') return { sound: null, enabled: false };
+export async function createSound(
+  gestureTarget: EventTarget,
+): Promise<{ sound: Sound | null; enabled: boolean }> {
+  if (typeof AudioContext === 'undefined' || typeof AudioWorkletNode === 'undefined')
+    return { sound: null, enabled: false };
   try {
     const head = await fetch(WORKLET_URL, { method: 'HEAD' });
     if (!head.ok) return { sound: null, enabled: false };

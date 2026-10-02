@@ -1,11 +1,13 @@
-// Starts the Go server (in-memory repository, demo pak ingested at startup) and `next start`, both
-// detached; PIDs go to .e2e/e2e-pids.json for global-teardown. When something cannot be started
-// the reason is exported as Q2_E2E_SKIP and the tests skip.
+// Starts the Go server (in-memory repository, demo pak ingested at startup, bots enabled for users with
+// the local backends only) and `next start`, both detached; PIDs go to .e2e/e2e-pids.json for
+// global-teardown. When something cannot be started the reason is exported as Q2_E2E_SKIP and the tests
+// skip; with Q2_E2E_REQUIRE=1 (CI) the setup fails instead, so a missing prerequisite cannot pass as green.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
+import globalTeardown from './global-teardown';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(here, '..');
@@ -33,14 +35,32 @@ async function waitHttp(url: string, timeoutMs: number, proc?: ChildProcess): Pr
   return false;
 }
 
-function skip(reason: string): void {
+/** Q2_E2E_REQUIRE=1 turns every self-skip into a failure (CI). */
+const required = process.env['Q2_E2E_REQUIRE'] === '1';
+
+async function skip(reason: string): Promise<void> {
+  if (required) {
+    await globalTeardown(); // stop what was already started: a failed setup gets no teardown
+    throw new Error(`[e2e] Q2_E2E_REQUIRE=1 and the stack is unavailable: ${reason}`);
+  }
   process.env['Q2_E2E_SKIP'] = reason;
   console.warn(`[e2e] skipping: ${reason}`);
 }
 
-function start(cmd: string, args: string[], cwd: string, env: Record<string, string>, log: string): ChildProcess {
+function start(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env: Record<string, string>,
+  log: string,
+): ChildProcess {
   const fd = openSync(resolve(outDir, log), 'w');
-  const p = spawn(cmd, args, { cwd, env: { ...process.env, ...env }, stdio: ['ignore', fd, fd], detached: true });
+  const p = spawn(cmd, args, {
+    cwd,
+    env: { ...process.env, ...env },
+    stdio: ['ignore', fd, fd],
+    detached: true,
+  });
   p.unref();
   return p;
 }
@@ -51,7 +71,9 @@ export default async function globalSetup(): Promise<void> {
   const savePids = () => writeFileSync(resolve(outDir, 'e2e-pids.json'), JSON.stringify(pids));
 
   try {
-    const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+    const b = await chromium.launch({
+      args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+    });
     await b.close();
   } catch (e) {
     return skip(`chromium cannot launch: ${String(e).split('\n')[0]}`);
@@ -59,7 +81,7 @@ export default async function globalSetup(): Promise<void> {
 
   const webUrl = process.env['Q2_E2E_WEB_URL'];
   if (webUrl) {
-    if (!(await waitHttp(webUrl, 10_000))) skip(`${webUrl} is not reachable`);
+    if (!(await waitHttp(webUrl, 10_000))) await skip(`${webUrl} is not reachable`);
     return; // externally managed stack
   }
   if (!existsSync(pak)) return skip(`demo pak missing (${pak}); run tools/fetch-demo-pak.sh`);
@@ -76,14 +98,19 @@ export default async function globalSetup(): Promise<void> {
         if (!existsSync(bin)) return skip('go toolchain not found');
       } else {
         console.log('[e2e] building the Go server…');
-        const build = spawnSync('go', ['build', '-o', bin + '.new', './cmd/q2server'], { cwd: serverDir, stdio: 'inherit' });
+        const build = spawnSync('go', ['build', '-o', bin + '.new', './cmd/q2server'], {
+          cwd: serverDir,
+          stdio: 'inherit',
+        });
         if (build.status === 0) renameSync(bin + '.new', bin);
-        else if (existsSync(bin)) console.warn('[e2e] go build failed: using the previously built server binary');
+        else if (existsSync(bin))
+          console.warn('[e2e] go build failed: using the previously built server binary');
         else return skip('go build ./cmd/q2server failed');
       }
     }
     const blobs = resolve(outDir, 'blobs');
     mkdirSync(blobs, { recursive: true });
+    rmSync(resolve(outDir, 'bot-runs'), { recursive: true, force: true }); // each run lists only its own bots
     const srv = start(
       bin,
       [],
@@ -97,6 +124,11 @@ export default async function globalSetup(): Promise<void> {
         Q2_CORS_ORIGINS: `http://127.0.0.1:${webPort},http://localhost:${webPort}`,
         Q2_LOG_FORMAT: 'text',
         DATABASE_URL: '',
+        // watch.spec.ts: users may start scripted bots; runs go under .e2e; never a paid model call
+        Q2_BOTS_ENABLED: '1',
+        Q2_BOTS_ALLOW_USERS: '1',
+        Q2_BOT_RUNS_DIR: resolve(outDir, 'bot-runs'),
+        TYPESAFE_API_KEY: '',
       },
       'server.log',
     );
@@ -134,5 +166,6 @@ export default async function globalSetup(): Promise<void> {
   );
   pids.push(web.pid!);
   savePids();
-  if (!(await waitHttp(`http://127.0.0.1:${webPort}/`, 60_000, web))) skip('next start did not come up (see .e2e/next.log)');
+  if (!(await waitHttp(`http://127.0.0.1:${webPort}/`, 60_000, web)))
+    await skip('next start did not come up (see .e2e/next.log)');
 }

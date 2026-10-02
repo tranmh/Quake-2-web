@@ -22,10 +22,13 @@ describe('safeNextPath', () => {
     expect(safeNextPath('javascript:alert(1)')).toBe('/servers');
   });
 
-  it.each(['//evil.example/phish', '/\\evil.example/phish', '/\t/evil.example', '/%09/evil.example', '///evil.example'])(
-    'never leaves the origin for %j',
-    (next) => {
-      expect(landsOn(next)).toBe(ORIGIN);
-    },
-  );
+  it.each([
+    '//evil.example/phish',
+    '/\\evil.example/phish',
+    '/\t/evil.example',
+    '/%09/evil.example',
+    '///evil.example',
+  ])('never leaves the origin for %j', (next) => {
+    expect(landsOn(next)).toBe(ORIGIN);
+  });
 });

@@ -91,7 +91,10 @@ function PaksManager() {
       patch(id, { loaded: file.size });
       void reload();
       if (!r.job) {
-        patch(id, { status: 'done', message: r.pak.status === 'ready' ? 'already known — added to your paks' : r.pak.status });
+        patch(id, {
+          status: 'done',
+          message: r.pak.status === 'ready' ? 'already known — added to your paks' : r.pak.status,
+        });
         return;
       }
       patch(id, { status: 'ingesting', jobProgress: 0 });
@@ -126,9 +129,9 @@ function PaksManager() {
       <section className="panel">
         <h2>Upload pak files</h2>
         <p className="muted">
-          Upload <span className="mono">pak0.pak</span>, <span className="mono">pak1.pak</span>, … from your own Quake II
-          installation (<span className="mono">baseq2/</span>). Files are validated, stored privately and only served to
-          accounts that uploaded the same file.
+          Upload <span className="mono">pak0.pak</span>, <span className="mono">pak1.pak</span>, … from your
+          own Quake II installation (<span className="mono">baseq2/</span>). Files are validated, stored
+          privately and only served to accounts that uploaded the same file.
         </p>
         <div
           onDragOver={(e) => {
@@ -167,7 +170,11 @@ function PaksManager() {
             <tbody>
               {uploads.map((u) => {
                 const frac =
-                  u.status === 'uploading' ? u.loaded / Math.max(1, u.size) : u.status === 'ingesting' ? (u.jobProgress ?? 0) : 1;
+                  u.status === 'uploading'
+                    ? u.loaded / Math.max(1, u.size)
+                    : u.status === 'ingesting'
+                      ? (u.jobProgress ?? 0)
+                      : 1;
                 return (
                   <tr key={u.id}>
                     <td className="mono">{u.name}</td>
@@ -178,7 +185,9 @@ function PaksManager() {
                       </div>
                     </td>
                     <td>
-                      <span className={u.status === 'failed' ? 'error' : u.status === 'done' ? 'ok' : 'muted'}>
+                      <span
+                        className={u.status === 'failed' ? 'error' : u.status === 'done' ? 'ok' : 'muted'}
+                      >
                         {u.status}
                         {u.message ? ` — ${u.message}` : ''}
                       </span>
@@ -234,7 +243,12 @@ function PaksManager() {
         </table>
       </section>
 
-      <PaksetEditor paks={paks.filter((p) => p.status === 'ready')} paksets={paksets} userId={user?.id ?? 0} onChange={reload} />
+      <PaksetEditor
+        paks={paks.filter((p) => p.status === 'ready')}
+        paksets={paksets}
+        userId={user?.id ?? 0}
+        onChange={reload}
+      />
     </>
   );
 }

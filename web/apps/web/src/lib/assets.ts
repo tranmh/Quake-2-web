@@ -49,7 +49,8 @@ export function indexKey(path: string): string {
 
 export function assetUrl(sha256: string): string {
   // the hash comes from the server's JSON index: never let it turn into another path or a CSS url() break-out
-  if (!/^[0-9a-f]{64}$/.test(sha256)) throw new ApiError(0, 'asset', `bad asset hash ${JSON.stringify(sha256).slice(0, 80)}`);
+  if (!/^[0-9a-f]{64}$/.test(sha256))
+    throw new ApiError(0, 'asset', `bad asset hash ${JSON.stringify(sha256).slice(0, 80)}`);
   return `/assets/${sha256}`;
 }
 
@@ -134,7 +135,14 @@ export class AssetLoader {
   private readonly lru: LRU;
   private readonly inflight = new Map<string, Promise<Uint8Array>>();
   private cache: Promise<Cache | null> | null = null;
-  readonly stats: AssetLoaderStats = { requests: 0, network: 0, networkBytes: 0, cacheHits: 0, memoryHits: 0, missing: 0 };
+  readonly stats: AssetLoaderStats = {
+    requests: 0,
+    network: 0,
+    networkBytes: 0,
+    cacheHits: 0,
+    memoryHits: 0,
+    missing: 0,
+  };
   /** Called after each network download (for loading progress UI). */
   onDownload: ((path: string, bytes: number) => void) | null = null;
 
@@ -208,7 +216,9 @@ export class AssetLoader {
     this.stats.networkBytes += buf.byteLength;
     this.onDownload?.(label, buf.byteLength);
     if (cache) {
-      const headers = new Headers({ 'Content-Type': res.headers.get('Content-Type') ?? 'application/octet-stream' });
+      const headers = new Headers({
+        'Content-Type': res.headers.get('Content-Type') ?? 'application/octet-stream',
+      });
       cache.put(url, new Response(buf.slice(0), { headers })).catch(() => {});
     }
     return new Uint8Array(buf);

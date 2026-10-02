@@ -45,8 +45,8 @@ function SaveList() {
   return (
     <section className="panel">
       <p className="muted">
-        Saves are stored on the server per account. Save in game from the menu (Esc → Save) or with the console
-        command <span className="mono">save &lt;slot&gt;</span>.
+        Saves are stored on the server per account. Save in game from the menu (Esc → Save) or with the
+        console command <span className="mono">save &lt;slot&gt;</span>.
       </p>
       {error && <p className="error">{error}</p>}
       <table className="table">

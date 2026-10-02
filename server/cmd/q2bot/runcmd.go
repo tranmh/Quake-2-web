@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -59,6 +60,10 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 	epTO := fs.Duration("episode-timeout", 0, "an episode's game-time watchdog (0: 90m)")
 	maxDeaths := fs.Int("max-deaths", 0, "deaths allowed per level (0: 5, -1: none)")
 	replayTrace := fs.String("replay-trace", "", "the recorded trace -backend replay answers from")
+	mockPol := fs.String("mock-policy", runner.MockPolicyNoisy, "-backend mock's answer policy: noisy (the scripted policy's answers perturbed like a model: spread mass, swapped top two, low confidence) or scripted (the scripted policy alone: a clean model); both answer from the lane state the jev client sends")
+	mockNoise := fs.Float64("mock-noise", 0.3, "noisy mock: the largest share of probability mass spread over random options (0: off)")
+	mockSwap := fs.Float64("mock-swap", 0.1, "noisy mock: the chance an answer's top two options swap (0: off)")
+	mockLowConf := fs.Float64("mock-lowconf", 0.1, "noisy mock: the chance an answer comes with a confidence in [0.05, 0.3] (0: off)")
 	verbose := fs.Bool("v", false, "copy the episodes' log lines to stderr")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
@@ -74,6 +79,33 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 		Record: *record, RequireComplete: *reqComplete, MinModelShare: *minShare, MaxStaleRate: *maxStale, NavDir: *navDir,
 		EntryCommands: splitList(*cheats), LevelTimeout: *levelTO, EpisodeTimeout: *epTO, MaxDeaths: *maxDeaths,
 		ReplayTrace: *replayTrace, Verbose: *verbose}
+	// the mock flags reach the config only when given (the runner's
+	// defaults are the flags' defaults); a share of 0 turns its effect off
+	shares := map[string]*float64{"mock-noise": &cfg.MockNoise, "mock-swap": &cfg.MockSwap, "mock-lowconf": &cfg.MockLowConfidence}
+	vals := map[string]float64{"mock-noise": *mockNoise, "mock-swap": *mockSwap, "mock-lowconf": *mockLowConf}
+	var badShare error
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "mock-policy" {
+			cfg.MockPolicy = *mockPol
+		}
+		if p, ok := shares[f.Name]; ok {
+			v := vals[f.Name]
+			switch {
+			case v < 0 || v > 1:
+				badShare = fmt.Errorf("-%s %v not in 0..1", f.Name, v)
+			case v == 0:
+				*p = -1
+			default:
+				*p = v
+			}
+		}
+	})
+	if badShare != nil {
+		return usageErr(badShare)
+	}
+	if *mockPol != runner.MockPolicyNoisy && *mockPol != runner.MockPolicyScripted {
+		return usageErr(fmt.Errorf("unknown -mock-policy %q (%s)", *mockPol, strings.Join(runner.MockPolicies(), "|")))
+	}
 	if *camp != "" {
 		dir := *camp
 		if st, err := os.Stat(dir); err == nil && !st.IsDir() {

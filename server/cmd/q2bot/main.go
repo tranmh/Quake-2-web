@@ -4,6 +4,7 @@
 //	          [-session lockstep|inproc] [-sim-latency 212ms | 80ms,150ms,300ms] [-episodes n] [-seed n] [-out runs]
 //	          [-trace full|digest|every:N] [-record] [-budget-usd x] [-budget-queries n] [-max-qps x] [-on-exhausted fallback|stop]
 //	          [-require-complete] [-min-model-share 0.7] [-json] [-pak pak0.pak] [-nav-dir assets/nav]
+//	          [-mock-policy noisy|scripted] [-mock-noise 0.3] [-mock-swap 0.1] [-mock-lowconf 0.1]
 //	q2bot replay -trace runs/<id>/ep-000/trace.jsonl.gz [-mode actions|responses] [-strict] [-out dir] [-json]
 //	q2bot summarize runs/<id> [-dry-run] [-force] [-json]
 //	q2bot validate runs/<id> [-min-model-share 0.7] [-json]
@@ -54,7 +55,8 @@ func commands() []command {
 	return []command{
 		{"run", "run [-maps a,b | -campaign dir] [-backend b] [-session s] [-sim-latency d] [-episodes n] [-seed n] [-out dir] " +
 			"[-trace m] [-record] [-budget-usd x] [-budget-queries n] [-max-qps x] [-on-exhausted p] [-require-complete] " +
-			"[-min-model-share x] [-json] [-pak file] [-nav-dir dir] (-h for all)", runRun},
+			"[-min-model-share x] [-json] [-pak file] [-nav-dir dir] [-mock-policy noisy|scripted] [-mock-noise x] [-mock-swap x] " +
+			"[-mock-lowconf x] (-h for all)", runRun},
 		{"replay", "replay -trace runs/<id>/ep-NNN/trace.jsonl.gz [-mode actions|responses] [-strict] [-out dir] [-json] [-pak file]", runReplay},
 		{"summarize", "summarize runs/<id> [-dry-run] [-force] [-json]", runSummarize},
 		{"validate", "validate runs/<id> [-min-model-share x] [-max-stale-rate x] [-json]", runValidate},

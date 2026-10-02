@@ -1,5 +1,37 @@
 # Plan: a Jev-driven AI agent that plays Quake 2 single-player (demo1 → … → victory)
 
+## Status (2026-10-02)
+
+Phases 0–8 are implemented. Phase 9 (live Jev) waits for an API key: the client, `jev-probe` and the manual
+`jev-live` nightly job are ready, and only fixture-tested so far. How to run it: [`docs/AGENT.md`](../AGENT.md).
+Design and fairness: [ADR-0006](../adr/0006-ai-agent.md). Measurements: [`docs/AGENT-EVAL.md`](../AGENT-EVAL.md).
+The plan below is kept as written.
+
+| # | Gate | Result |
+|---|---|---|
+| 0 | Deterministic seeded lockstep run; its `.dm2` plays in `sv demomap` and the TS client | **Met.** `demo.TestFixtureDemo1Walker` re-records the committed fixture byte for byte; `demo.TestRoundTripSvDemo` plays a recording through `sv demomap`; `q2-client` `dm2-go.integration.test.ts` plays it and matches the `CL_Record_f` header. |
+| 1 | `q2nav plan` re-derives and validates all 4 visit tables | **Met.** "all 4 visit tables valid; campaign ends at victory.pcx". |
+| 2 | demo1–3 build in under 60 s; sampled edges pass re-simulation and the live server | **Met.** 5–8 s per map. `make nav-verify`: re-simulation 340/340, 322/322, 332/332; live 100/100 bit-exact; posed (conditional and touch) 50/50 per map; every route step covered. |
+| 3 | Walk to 50 random nodes on demo1 (god/notarget) | **Met.** demo1 50/50 (demo2 20/20, demo3 19/20); seed sweep 740/750. |
+| 4 | Full campaign to `victory.pcx` with god/notarget | **Met.** `TestCampaignGod`: victory in 196.9 s of game time; seeds 1–9 all win. |
+| 5 | Scripted bot finishes *without god*; fairness differential green | **Met.** Seed 1: victory with 4 deaths in 1043 s of game time (27 s wall; `-max-deaths 25 -level-timeout 60m`). Seeds 1–11 won 11 of 11 in the phase-5 record. `fairness.TestDifferential`, `worldmodel.TestPerturbationInvariance` and every `TestImports` pass. |
+| 6 | CI mock-Jev demo1 green; nightly noisy-Jev campaign meets the provenance gate; ablations measurably worse | **Partly met.** `TestMockGate` is green. Ablations are worse: constant fails on demo1 and random on demo3, while scripted wins. A clean mock (the scripted policy through the real jev client, 212 ms) wins with a model share of 90/95/90 % (target/mode/fire_policy). The **noisy** mock missed the gate in the evaluation before the arbiter's evidence aggregation: fire_policy 0.678 < 0.7, and the run failed on demo3. The current numbers are in AGENT-EVAL.md; the nightly `mock-noisy` job enforces the gate. |
+| 7 | `TestRelayMatchesBot` and `TestE2EBotWatch` green | **Met.** All 8 relay sub-cases pass under `-race`. |
+| 8 | `watch.spec.ts` green in CI | **Met locally.** `play.spec.ts` and `watch.spec.ts` pass with `Q2_E2E_REQUIRE=1`. The CI `e2e` job and the nightly workflow are in place and have not run on GitHub yet. |
+| 9 | Jev completes the campaign with ≥ 70 % of target/fire_policy/mode from the model, stale ≤ 15 %, 8–10 QPS in combat, cost in `run.json` | **Pending a key.** |
+
+Deviations from the plan as written:
+- The live relay never resyncs a forward that overflows: relay reliable data never shares a datagram with a
+  forward, oversize forwards are split, and only a keyframe that fits no datagram is retried.
+- `.dm2` files end at each level transition (PARITY TODO-IMPROVE).
+- Damage bearing uses the kick residual, corrected by cos(pitch), and is unknown beyond |pitch| 70°.
+- "Vanished while in PVS" is implemented as "its last box is in view and it is not seen".
+- Route facts confirmed on the pak:
+  - demo1's car `*31` drops 158 units, and the exit fires about 2.0 s after `*34` is pressed;
+  - demo2 has a 4th exit, the directional `*39` back to demo3, which is avoided like `*43`;
+  - in demo3, `*44` opens the hatch `*20` after 3.4 s and raises the key pedestal `*19` after 6.4 s;
+  - in demo2b, `*58` wakes an ambush tank 2.5 s after it fires.
+
 ## Context
 
 TypeSafe's post "Introducing System One models and Jev" shows Jev playing Doom.

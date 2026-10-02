@@ -79,7 +79,13 @@ export default function SettingsPage() {
     const text = serializeConfig({ ...cfg, unbindall: true });
     const remote = await saveConfigText(text);
     setDirty(false);
-    setStatus(remote ? 'Saved to your account.' : user ? 'Saved locally (server unavailable).' : 'Saved in this browser (log in to sync).');
+    setStatus(
+      remote
+        ? 'Saved to your account.'
+        : user
+          ? 'Saved locally (server unavailable).'
+          : 'Saved in this browser (log in to sync).',
+    );
   };
 
   return (

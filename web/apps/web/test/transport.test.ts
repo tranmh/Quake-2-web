@@ -13,10 +13,14 @@ describe('createJoinTransportFactory', () => {
   it('closes with a reason when new WebSocket() throws', async () => {
     g['WebSocket'] = class {
       constructor() {
-        throw new DOMException("An insecure WebSocket connection may not be initiated", 'SecurityError');
+        throw new DOMException('An insecure WebSocket connection may not be initiated', 'SecurityError');
       }
     };
-    const t = createJoinTransportFactory('g1', { ticket: 't', wsUrl: 'ws://insecure.example/ws/g1' }, 'https://q2.example')('game-g1');
+    const t = createJoinTransportFactory(
+      'g1',
+      { ticket: 't', wsUrl: 'ws://insecure.example/ws/g1' },
+      'https://q2.example',
+    )('game-g1');
     const reason = await new Promise<string>((resolve, reject) => {
       t.onClose = resolve;
       setTimeout(() => reject(new Error('transport never reported the failure')), 500);

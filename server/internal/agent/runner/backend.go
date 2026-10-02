@@ -69,7 +69,7 @@ func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
 		b.mock = jevtest.NewServer(jevtest.Options{
 			APIKey:   mockKey,
 			Model:    jc.Model,
-			Policy:   &jevtest.Noisy{Base: jevtest.NewScripted(scripted.Config{Seed: cfg.Seed}), Seed: cfg.Seed},
+			Policy:   mockPolicy(cfg),
 			Faults:   faults,
 			MaxCalls: mockMaxCalls,
 		})
@@ -105,6 +105,17 @@ func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
 		}
 	}
 	return b, nil
+}
+
+// mockPolicy is the mock server's answer policy (Config.MockPolicy): the
+// scripted policy on the received lane state, perturbed by the noisy
+// policy unless the clean one is asked for.
+func mockPolicy(cfg *Config) jevtest.Policy {
+	base := jevtest.NewScripted(scripted.Config{Seed: cfg.Seed})
+	if cfg.MockPolicy == MockPolicyScripted {
+		return base
+	}
+	return &jevtest.Noisy{Base: base, Seed: cfg.Seed, Noise: cfg.MockNoise, SecondBest: cfg.MockSwap, LowConfidence: cfg.MockLowConfidence}
 }
 
 // mockMaxCalls bounds the calls the mock server keeps (the runner never

@@ -24,7 +24,9 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
     setError(null);
     try {
       const u =
-        mode === 'login' ? await api.login(email, password) : await api.register(email, password, displayName || email.split('@')[0]!);
+        mode === 'login'
+          ? await api.login(email, password)
+          : await api.register(email, password, displayName || email.split('@')[0]!);
       setUser(u);
       router.push(next);
     } catch (err) {
@@ -40,7 +42,14 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
         <Q2Text text={mode === 'login' ? 'LOG IN' : 'NEW ACCOUNT'} scale={3} alt />
         <label className="field">
           Email
-          <input type="email" name="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input
+            type="email"
+            name="email"
+            autoComplete="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
         </label>
         {mode === 'register' && (
           <label className="field">

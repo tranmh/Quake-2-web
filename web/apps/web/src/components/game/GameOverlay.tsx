@@ -50,7 +50,11 @@ export function GameOverlay({ session }: { session: RefObject<GameSession | null
           <Q2Pic name={overlay === 'video' ? 'm_banner_video' : 'm_banner_options'} fallback="OPTIONS" />
           <SettingsEditor
             backend={s.settingsBackend()}
-            tabs={overlay === 'video' ? ['video', 'controls', 'keys', 'audio', 'player'] : ['controls', 'keys', 'audio', 'video', 'player']}
+            tabs={
+              overlay === 'video'
+                ? ['video', 'controls', 'keys', 'audio', 'player']
+                : ['controls', 'keys', 'audio', 'video', 'player']
+            }
           />
           <div className="row" style={{ marginTop: 16 }}>
             <button className="btn" onClick={() => set({ overlay: 'main' })}>
@@ -110,7 +114,13 @@ function SaveLoad({ session, onBack }: { session: GameSession; onBack: () => voi
             return (
               <tr key={sl} onClick={() => setSlot(sl)} style={{ cursor: 'pointer' }}>
                 <td>
-                  <input type="radio" name="slot" checked={slot === sl} onChange={() => setSlot(sl)} aria-label={sl} />
+                  <input
+                    type="radio"
+                    name="slot"
+                    checked={slot === sl}
+                    onChange={() => setSlot(sl)}
+                    aria-label={sl}
+                  />
                 </td>
                 <td className="mono">{sl}</td>
                 <td>{info ? info.comment || info.mapcmd : <span className="muted">&lt;EMPTY&gt;</span>}</td>

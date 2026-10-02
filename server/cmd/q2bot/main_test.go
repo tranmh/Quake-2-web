@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -107,6 +108,26 @@ func TestRunConfig(t *testing.T) {
 	}
 	if cfg, _, _ := runConfig(e, []string{"-campaign", file}); cfg.RoutesDir != dir {
 		t.Fatalf("campaign dir %q", cfg.RoutesDir)
+	}
+}
+
+// TestRunConfigMock: the mock flags reach the config only when given; a
+// share of 0 turns its effect off (-1 for jevtest), and bad values are
+// usage errors.
+func TestRunConfigMock(t *testing.T) {
+	e := &env{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, getenv: func(string) string { return "" }}
+	cfg, _, err := runConfig(e, []string{"-backend", "mock"})
+	if err != nil || cfg.MockPolicy != "" || cfg.MockNoise != 0 || cfg.MockSwap != 0 || cfg.MockLowConfidence != 0 {
+		t.Fatalf("defaults %+v %v", cfg, err)
+	}
+	cfg, _, err = runConfig(e, []string{"-backend", "mock", "-mock-policy", "scripted", "-mock-noise", "0.5", "-mock-swap", "0", "-mock-lowconf", "0.2"})
+	if err != nil || cfg.MockPolicy != runner.MockPolicyScripted || cfg.MockNoise != 0.5 || cfg.MockSwap != -1 || cfg.MockLowConfidence != 0.2 {
+		t.Fatalf("given %+v %v", cfg, err)
+	}
+	for _, args := range [][]string{{"-mock-policy", "chaos"}, {"-mock-swap", "1.5"}, {"-mock-noise", "-0.1"}} {
+		if _, _, err := runConfig(e, args); !errors.Is(err, errUsage) {
+			t.Errorf("%v: %v", args, err)
+		}
 	}
 }
 

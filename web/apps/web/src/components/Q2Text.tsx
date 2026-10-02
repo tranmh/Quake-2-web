@@ -22,7 +22,10 @@ export function Q2Text({
   const url = picUrl(index, 'conchars');
   if (!url) {
     return (
-      <span className={`${styles.fallback} ${alt ? styles.alt : ''} ${className ?? ''}`} style={{ fontSize: 8 * scale }}>
+      <span
+        className={`${styles.fallback} ${alt ? styles.alt : ''} ${className ?? ''}`}
+        style={{ fontSize: 8 * scale }}
+      >
         {text}
       </span>
     );
@@ -61,7 +64,8 @@ export function Q2Pic({
   const index = useAssetIndex();
   const url = picUrl(index, name);
   const e = index?.files[`pics/${name.toLowerCase()}.pcx`];
-  if (!url || !e?.png) return fallback ? <Q2Text text={fallback} scale={scale} className={className} /> : null;
+  if (!url || !e?.png)
+    return fallback ? <Q2Text text={fallback} scale={scale} className={className} /> : null;
   return (
     <img
       src={url}

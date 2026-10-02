@@ -389,3 +389,30 @@ func TestMockFaultsLatency(t *testing.T) {
 		t.Errorf("run_start mock faults %q", got)
 	}
 }
+
+// The mock policy: noisy by default with jevtest's defaults, tunable, or
+// the clean scripted policy; an unknown policy or a share above 1 is a
+// configuration error.
+func TestMockPolicy(t *testing.T) {
+	c := &Config{FS: nopFS{}, Backend: BackendMock}
+	if err := c.check(); err != nil || c.MockPolicy != MockPolicyNoisy {
+		t.Fatalf("default policy %q, %v", c.MockPolicy, err)
+	}
+	n, ok := mockPolicy(c).(*jevtest.Noisy)
+	if !ok || n.Noise != 0 || n.SecondBest != 0 || n.LowConfidence != 0 {
+		t.Fatalf("default noisy policy %#v", mockPolicy(c))
+	}
+	c.MockNoise, c.MockSwap, c.MockLowConfidence, c.Seed = 0.5, -1, 0.2, 7
+	if n := mockPolicy(c).(*jevtest.Noisy); n.Noise != 0.5 || n.SecondBest != -1 || n.LowConfidence != 0.2 || n.Seed != 7 {
+		t.Fatalf("tuned noisy policy %+v", n)
+	}
+	c.MockPolicy = MockPolicyScripted
+	if _, ok := mockPolicy(c).(*jevtest.Scripted); !ok {
+		t.Fatalf("clean policy %#v", mockPolicy(c))
+	}
+	for _, bad := range []Config{{FS: nopFS{}, MockPolicy: "chaos"}, {FS: nopFS{}, MockSwap: 1.5}} {
+		if err := bad.check(); !errors.Is(err, ErrConfig) {
+			t.Errorf("%+v: %v", bad, err)
+		}
+	}
+}

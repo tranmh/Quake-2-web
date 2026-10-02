@@ -36,8 +36,7 @@ body {
   min-height: 100vh;
   background:
     radial-gradient(ellipse at top, rgba(208, 118, 31, 0.08), transparent 60%),
-    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.012) 0 2px, transparent 2px 4px),
-    var(--bg);
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.012) 0 2px, transparent 2px 4px), var(--bg);
 }
 
 a {

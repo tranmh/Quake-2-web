@@ -10,7 +10,8 @@ export default defineConfig({
   outputDir: 'test-results',
   timeout: 120_000,
   retries: 0,
-  reporter: 'list',
+  // CI also writes playwright-report/ (uploaded when the e2e job fails)
+  reporter: process.env['CI'] ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     viewport: { width: 800, height: 600 },

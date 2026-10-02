@@ -19,7 +19,14 @@ const debug = (page: Page) =>
   page.evaluate(() => {
     const d = (window as unknown as { __q2web?: Debug }).__q2web;
     return d
-      ? { phase: d.phase, connState: d.connState, frames: d.frames, errors: d.errors.slice(), origin: d.origin(), prints: d.prints.join('') }
+      ? {
+          phase: d.phase,
+          connState: d.connState,
+          frames: d.frames,
+          errors: d.errors.slice(),
+          origin: d.origin(),
+          prints: d.prints.join(''),
+        }
       : null;
   });
 
@@ -49,7 +56,9 @@ async function shotStats(page: Page, name: string) {
     const mean = sum / n;
     return { mean, variance: sum2 / n - mean * mean, colors: colors.size };
   }, png.toString('base64'));
-  console.log(`screenshot ${shotPath}: mean ${stats.mean.toFixed(1)} variance ${stats.variance.toFixed(1)} colors ${stats.colors}`);
+  console.log(
+    `screenshot ${shotPath}: mean ${stats.mean.toFixed(1)} variance ${stats.variance.toFixed(1)} colors ${stats.colors}`,
+  );
   return stats;
 }
 
@@ -110,7 +119,9 @@ test('register, start demo1, play', async ({ page }) => {
   d = await debug(page);
   const after = d!.origin;
   const moved = Math.hypot(after[0]! - before[0]!, after[1]! - before[1]!);
-  console.log(`origin ${before.map((v) => v.toFixed(1)).join(',')} -> ${after.map((v) => v.toFixed(1)).join(',')} (moved ${moved.toFixed(1)})`);
+  console.log(
+    `origin ${before.map((v) => v.toFixed(1)).join(',')} -> ${after.map((v) => v.toFixed(1)).join(',')} (moved ${moved.toFixed(1)})`,
+  );
   expect(d!.connState).toBe(4);
   expect(d!.frames).toBeGreaterThan(60);
   expect(moved, 'player moved while +forward was held').toBeGreaterThan(64);

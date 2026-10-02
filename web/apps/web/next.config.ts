@@ -26,7 +26,16 @@ const nextConfig: NextConfig = {
   // workspace root (web/): standalone tracing and Turbopack must see the linked packages
   outputFileTracingRoot: path.join(here, '../..'),
   turbopack: { root: path.join(here, '../..') },
-  transpilePackages: ['q2-client', 'q2-ref', 'q2-render-gl', 'q2-shared', 'q2-sound', 'q2-formats', 'q2-protocol', 'q2-pmove'],
+  transpilePackages: [
+    'q2-client',
+    'q2-ref',
+    'q2-render-gl',
+    'q2-shared',
+    'q2-sound',
+    'q2-formats',
+    'q2-protocol',
+    'q2-pmove',
+  ],
   // The shell must not be framed (clickjacking of Delete / upload / pointer lock); no inline-script CSP
   // because Next.js injects inline bootstrap scripts.
   async headers() {

@@ -364,6 +364,50 @@ func TestTrapKill(t *testing.T) {
 	}
 }
 
+// TestWedgeKill: standing on one spot while the navigator keeps trying to
+// move the bot and its stuck recovery keeps failing, it types "kill"
+// after wedgeFor; standing still on purpose (the navigator idle, or under
+// way without stuck reports: waiting at a mover), moving on, or trying on
+// only half of the frames never does.
+func TestWedgeKill(t *testing.T) {
+	spot := Vec3{1504, 1408, -808}
+	type navFn func(now int64) (bool, int)
+	run := func(nav navFn, at func(now int64) Vec3, until int64) *modeBot {
+		m := newModeBot(t, "demo3", route.Step{Op: route.OpGoto, Pos: &route.Vec{-536, -472, -272}})
+		var now int64
+		m.testNav = func() (bool, int) { return nav(now) }
+		for now = 100; now <= until; now += 100 {
+			m.at(now, selfAt(at(now), 100))
+		}
+		return m
+	}
+	still := func(int64) Vec3 { return spot }
+	// stuck every 2 s; a new goal every 10 s (its count starts over)
+	stuck := func(now int64) (bool, int) { return true, int(now%10000) / 2000 }
+	m := run(stuck, still, wedgeFor)
+	if m.Stats().TrapKills != 0 || m.sent("kill") {
+		t.Fatalf("kill before wedgeFor: %d", m.Stats().TrapKills)
+	}
+	m = run(stuck, still, wedgeFor+300)
+	if m.Stats().TrapKills != 1 || !m.sent("kill") {
+		t.Fatalf("no kill after wedgeFor: %d", m.Stats().TrapKills)
+	}
+	if m := run(func(int64) (bool, int) { return false, 0 }, still, 2*wedgeFor); m.Stats().TrapKills != 0 {
+		t.Fatal("kill while standing still on purpose")
+	}
+	if m := run(func(int64) (bool, int) { return true, 0 }, still, 2*wedgeFor); m.Stats().TrapKills != 0 {
+		t.Fatal("kill while under way without a stuck report")
+	}
+	if m := run(func(now int64) (bool, int) { _, n := stuck(now); return now%200 == 0, n }, still, 2*wedgeFor); m.Stats().TrapKills != 0 {
+		t.Fatal("kill while under way on half of the frames")
+	}
+	// moving 32 units every 10 s: never wedged
+	moving := func(now int64) Vec3 { return Vec3{spot[0] + float32(32*(now/10000)), spot[1], spot[2]} }
+	if m := run(stuck, moving, 2*wedgeFor); m.Stats().TrapKills != 0 {
+		t.Fatal("kill while moving")
+	}
+}
+
 // field returns the named field of the last tick event's Intent.
 func (m *modeBot) field(t *testing.T, name string) trace.Field {
 	t.Helper()

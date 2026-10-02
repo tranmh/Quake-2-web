@@ -169,3 +169,48 @@ Details (normative):
 - Engine differences from a live server (see docs/ORACLE.md): no networking, client pings are 0, userinfo gets
   `\ip\loopback`, `SV_Frame`'s per-frame `rand()` is not called, and the rand stream is reset with `srand(seed)`
   after `SV_InitGame` (so SV_InitGame's `svs.spawncount = rand()` is not part of the stream).
+
+## fixtures/agent (committed; the AI agent, docs/AGENT.md)
+
+These are not produced by the C oracle and are not covered by `fixtures/MANIFEST.sha256`.
+
+### demo1-walker-10s.dm2, demo1-walker-10s.record-header.dm2
+- `demo1-walker-10s.dm2` is the `server/internal/demo` Recorder's output for a seeded lockstep walker on demo1
+  (seed 1, skill 1, 100 server frames): the server messages exactly as the client received them, in the
+  `CL_Record_f`/`CL_WriteDemoMessage` client format, with `Writer.AllBaselines` (see PARITY TODO-IMPROVE).
+- `demo1-walker-10s.record-header.dm2` is what `CL_Record_f` + `CL_Stop_f` write (exactly the C behaviour, no
+  AllBaselines) for a client that played that recording up to its first frame: the reference of the
+  TypeScript header-parity test.
+- Consumers: `server/internal/demo` `TestFixtureDemo1Walker` (re-records both and requires them byte-identical:
+  lockstep recording is deterministic) and `web/packages/q2-client/test/dm2-go.integration.test.ts` (plays the
+  recording with the unchanged client's demo playback, then records right after the first frame and must write
+  the header file byte for byte). Both skip without the demo pak, so CI runs `make demo` first.
+- Regenerate (only when the recorder or the session legitimately changes):
+  `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/demo -run TestFixtureDemo1Walker`.
+
+### routes/ (route tables)
+- `campaign.json` (the campaign: skill, start map, the visits in order, the terminal exit `victory.pcx`) and one
+  hand-written table per visit: `demo1.json`, `demo2a.json`, `demo3.json`, `demo2b.json`. The schema, the step
+  ops and the validation rules are in `fixtures/agent/routes/README.md`.
+- Validated against the demo pak by `cd server && go run ./cmd/q2nav plan -pak ../assets/demo/baseq2/pak0.pak`
+  (prints every exit's logic chains and each table's effects; exit 1 when a table is invalid) and in `go test` by
+  `route.TestCheckedInTablesValid` and `cmd/q2nav` `TestPlanValidatesCheckedInTables`; `q2nav verify` also checks
+  that every step is reachable on the nav graph. There is nothing to regenerate: edit the tables by hand and
+  re-run `q2nav plan`.
+
+## Agent goldens (committed, synthetic; regenerated with Q2_UPDATE_FIXTURES=1)
+
+Hand-made inputs (synthetic beliefs, states and events, not the oracle, not in MANIFEST.sha256); the tests compare
+byte for byte and `Q2_UPDATE_FIXTURES=1` rewrites them:
+
+| Golden | Test | Regenerate |
+|---|---|---|
+| `server/internal/agent/decide/testdata/{fast_state,slow_state,request_fast,request_slow}.golden.json` | lane state projection and request bodies (size caps) | `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide` |
+| `server/internal/agent/backend/jev/testdata/request_fast.golden.json` | the jev client's request body (documented field names) | `Q2_UPDATE_FIXTURES=1 go test ./internal/agent/backend/jev` |
+| `server/internal/agent/trace/testdata/events.golden.jsonl` | trace event encoding (`TestEventJSONGolden`) | `Q2_UPDATE_FIXTURES=1 go test ./internal/agent/trace` |
+| `server/internal/agent/metrics/testdata/run.golden.json` | run.json (`q2bot.run/1`) from a synthetic trace (`TestSummaryGolden`) | `Q2_UPDATE_FIXTURES=1 go test ./internal/agent/metrics` |
+| `server/internal/agent/runner/testdata/decisions.golden.jsonl` | the decision feed translation (`q2bot.decisions/1`) | `go test ./internal/agent/runner -run TestFeedTranslationGolden -update` |
+
+`server/cmd/q2bot/probe_{fast,slow}.json` are the decide goldens' lane states that `q2bot jev-probe` sends; its
+output (`server/internal/agent/backend/jev/testdata/live-probe.json`, key redacted) is reviewed before it is
+committed.

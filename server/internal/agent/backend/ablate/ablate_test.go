@@ -42,7 +42,8 @@ func requests(t *testing.T, seq uint64) []*decide.Request {
 }
 
 // accepted runs the answers through an arbiter: every answered field must
-// be taken as the backend's (no fallback reason).
+// be taken as the backend's (no fallback reason) and, alone, be strong
+// enough evidence to decide its field.
 func accepted(t *testing.T, req *decide.Request, resp *decide.Response) {
 	t.Helper()
 	a := decide.NewArbiter(decide.ArbiterConfig{})
@@ -50,9 +51,13 @@ func accepted(t *testing.T, req *decide.Request, resp *decide.Response) {
 	if ap.Dropped != "" || len(ap.Fields) != len(req.Questions) {
 		t.Fatalf("applied %+v", ap)
 	}
+	in := a.Intent(req.SnapTime, nil)
 	for _, f := range ap.Fields {
 		if f.Reason != "" || f.Source != decide.SourceModel {
 			t.Fatalf("field %s: %+v", f.Field.ID(), f)
+		}
+		if p := in.Provenance.Get(f.Field); p.Source != decide.SourceModel || p.Reason != "" {
+			t.Fatalf("field %s decided by %+v", f.Field.ID(), p)
 		}
 	}
 	// the raw wire response decodes to the same answers (traces replay)
@@ -123,20 +128,20 @@ func TestRandom(t *testing.T) {
 			}
 			for _, q := range req.Questions {
 				a := resp.Answers[q.ID]
+				v := a.Choice
+				if q.Type == decide.Score {
+					v = q.Options[int(a.Score)].Key
+				}
 				sum := 0.0
 				for _, o := range q.Options {
 					p := a.Probabilities[o.Key]
-					if math.Abs(p-1/float64(len(q.Options))) > 1e-12 {
-						t.Fatalf("%s: probabilities %v are not uniform", q.ID, a.Probabilities)
+					if want := map[bool]float64{true: 1}[o.Key == v]; p != want {
+						t.Fatalf("%s: probabilities %v are not one-hot on %s", q.ID, a.Probabilities, v)
 					}
 					sum += p
 				}
 				if math.Abs(sum-1) > 1e-9 || a.Confidence != 1 {
 					t.Fatalf("%s: %+v", q.ID, a)
-				}
-				v := a.Choice
-				if q.Type == decide.Score {
-					v = q.Options[int(a.Score)].Key
 				}
 				if q.Index(v) < 0 {
 					t.Fatalf("%s: answer %q is not an option", q.ID, v)

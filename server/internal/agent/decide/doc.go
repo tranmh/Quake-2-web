@@ -20,6 +20,12 @@
 // once) → Scheduler.Submit → Scheduler.Collect → Arbiter.Apply →
 // Arbiter.Intent.
 //
+// The arbiter does not trust a model's answers one at a time: per field it
+// accumulates them as evidence, each weighted by its confidence and
+// decayed with its age, and decides from the posterior (see
+// ArbiterConfig.Tau); it falls back to the scripted policy only when the
+// evidence is weak or every answer has expired.
+//
 // Fairness: everything here reads only the belief (worldmodel), the bot's
 // own state inside it, and static map knowledge (the collision model for
 // SpaceProbe, a path function over the nav graph). It never sees server

@@ -118,11 +118,45 @@ export function SettingsEditor({
       {tab === 'player' && (
         <div className={styles.fields}>
           <Row label="Name">
-            <input type="text" maxLength={15} value={cv('name')} onChange={(e) => set('name', e.target.value)} />
+            <input
+              type="text"
+              maxLength={15}
+              value={cv('name')}
+              onChange={(e) => set('name', e.target.value)}
+            />
           </Row>
           <Row label="Model / skin">
             <select value={cv('skin')} onChange={(e) => set('skin', e.target.value)}>
-              {['male/grunt', 'male/cipher', 'male/claymore', 'male/flak', 'male/howitzer', 'male/major', 'male/nightops', 'male/pointman', 'male/psycho', 'male/rampage', 'male/razor', 'male/recon', 'male/scout', 'male/sniper', 'male/viper', 'female/athena', 'female/brianna', 'female/cobalt', 'female/ensign', 'female/jezebel', 'female/jungle', 'female/lotus', 'female/stiletto', 'female/venus', 'female/voodoo', 'cyborg/oni911', 'cyborg/ps9000', 'cyborg/tyr574']
+              {[
+                'male/grunt',
+                'male/cipher',
+                'male/claymore',
+                'male/flak',
+                'male/howitzer',
+                'male/major',
+                'male/nightops',
+                'male/pointman',
+                'male/psycho',
+                'male/rampage',
+                'male/razor',
+                'male/recon',
+                'male/scout',
+                'male/sniper',
+                'male/viper',
+                'female/athena',
+                'female/brianna',
+                'female/cobalt',
+                'female/ensign',
+                'female/jezebel',
+                'female/jungle',
+                'female/lotus',
+                'female/stiletto',
+                'female/venus',
+                'female/voodoo',
+                'cyborg/oni911',
+                'cyborg/ps9000',
+                'cyborg/tyr574',
+              ]
                 .concat(cv('skin') ? [cv('skin')] : [])
                 .filter((v, i, a) => a.indexOf(v) === i)
                 .map((s) => (
@@ -152,10 +186,19 @@ export function SettingsEditor({
                   {l}
                 </option>
               ))}
-              {!['2500', '3200', '5000', '10000', '25000'].includes(cv('rate')) && <option value={cv('rate')}>user defined</option>}
+              {!['2500', '3200', '5000', '10000', '25000'].includes(cv('rate')) && (
+                <option value={cv('rate')}>user defined</option>
+              )}
             </select>
           </Row>
-          <Slider label="Field of view" min={60} max={130} step={1} value={num('fov')} onChange={(v) => set('fov', String(v))} />
+          <Slider
+            label="Field of view"
+            min={60}
+            max={130}
+            step={1}
+            value={num('fov')}
+            onChange={(v) => set('fov', String(v))}
+          />
         </div>
       )}
 
@@ -174,10 +217,26 @@ export function SettingsEditor({
             checked={num('m_pitch') < 0}
             onChange={(on) => set('m_pitch', String((on ? -1 : 1) * Math.abs(num('m_pitch') || 0.022)))}
           />
-          <Toggle label="Always run" checked={num('cl_run') !== 0} onChange={(on) => set('cl_run', on ? '1' : '0')} />
-          <Toggle label="Free look" checked={num('freelook') !== 0} onChange={(on) => set('freelook', on ? '1' : '0')} />
-          <Toggle label="Lookspring" checked={num('lookspring') !== 0} onChange={(on) => set('lookspring', on ? '1' : '0')} />
-          <Toggle label="Lookstrafe" checked={num('lookstrafe') !== 0} onChange={(on) => set('lookstrafe', on ? '1' : '0')} />
+          <Toggle
+            label="Always run"
+            checked={num('cl_run') !== 0}
+            onChange={(on) => set('cl_run', on ? '1' : '0')}
+          />
+          <Toggle
+            label="Free look"
+            checked={num('freelook') !== 0}
+            onChange={(on) => set('freelook', on ? '1' : '0')}
+          />
+          <Toggle
+            label="Lookspring"
+            checked={num('lookspring') !== 0}
+            onChange={(on) => set('lookspring', on ? '1' : '0')}
+          />
+          <Toggle
+            label="Lookstrafe"
+            checked={num('lookstrafe') !== 0}
+            onChange={(on) => set('lookstrafe', on ? '1' : '0')}
+          />
           <Row label="Crosshair">
             <select value={cv('crosshair')} onChange={(e) => set('crosshair', e.target.value)}>
               <option value="0">none</option>
@@ -219,10 +278,24 @@ export function SettingsEditor({
             value={num('cl_maxfps')}
             onChange={(v) => set('cl_maxfps', String(v))}
           />
-          <Toggle label="Dynamic lighting" checked={num('gl_dynamic') !== 0} onChange={(on) => set('gl_dynamic', on ? '1' : '0')} />
-          <Toggle label="Shadows" checked={num('gl_shadows') !== 0} onChange={(on) => set('gl_shadows', on ? '1' : '0')} />
-          <Toggle label="Show gun" checked={num('cl_gun') !== 0} onChange={(on) => set('cl_gun', on ? '1' : '0')} />
-          <p className="muted">Texture quality and brightness take effect on the next map load (vid_restart).</p>
+          <Toggle
+            label="Dynamic lighting"
+            checked={num('gl_dynamic') !== 0}
+            onChange={(on) => set('gl_dynamic', on ? '1' : '0')}
+          />
+          <Toggle
+            label="Shadows"
+            checked={num('gl_shadows') !== 0}
+            onChange={(on) => set('gl_shadows', on ? '1' : '0')}
+          />
+          <Toggle
+            label="Show gun"
+            checked={num('cl_gun') !== 0}
+            onChange={(on) => set('cl_gun', on ? '1' : '0')}
+          />
+          <p className="muted">
+            Texture quality and brightness take effect on the next map load (vid_restart).
+          </p>
         </div>
       )}
 
@@ -238,7 +311,10 @@ export function SettingsEditor({
             onChange={(v) => set('s_volume', v.toFixed(2))}
           />
           <Row label="Sound quality">
-            <select value={cv('s_khz') === '22' || cv('s_khz') === '44' ? cv('s_khz') : '11'} onChange={(e) => set('s_khz', e.target.value)}>
+            <select
+              value={cv('s_khz') === '22' || cv('s_khz') === '44' ? cv('s_khz') : '11'}
+              onChange={(e) => set('s_khz', e.target.value)}
+            >
               <option value="11">low (11 kHz)</option>
               <option value="22">high (22 kHz)</option>
               <option value="44">very high (44 kHz)</option>
@@ -285,7 +361,14 @@ function Slider({
   const v = Math.min(max, Math.max(min, value));
   return (
     <Row label={label}>
-      <input type="range" min={min} max={max} step={step} value={v} onChange={(e) => onChange(Number(e.target.value))} />
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={v}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
       <span className="mono muted" style={{ minWidth: 56 }}>
         {display ? display(v) : v}
       </span>
@@ -293,7 +376,15 @@ function Slider({
   );
 }
 
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (on: boolean) => void }) {
+function Toggle({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (on: boolean) => void;
+}) {
   return (
     <Row label={label}>
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
@@ -370,8 +461,8 @@ function KeyBindings({ backend, onChange }: { backend: SettingsBackend; onChange
   return (
     <div>
       <p className="muted">
-        Click a row and press a key, mouse button or wheel. <span className="mono">Esc</span> cancels; the clear button
-        removes a binding. Two keys per action; a third replaces both.
+        Click a row and press a key, mouse button or wheel. <span className="mono">Esc</span> cancels; the
+        clear button removes a binding. Two keys per action; a third replaces both.
       </p>
       <table className="table">
         <tbody>
@@ -393,7 +484,11 @@ function KeyBindings({ backend, onChange }: { backend: SettingsBackend; onChange
                 </td>
                 <td style={{ textAlign: 'right' }}>
                   {keys.length > 0 && (
-                    <button className="btn small" onClick={() => clear(command)} aria-label={`Clear ${label}`}>
+                    <button
+                      className="btn small"
+                      onClick={() => clear(command)}
+                      aria-label={`Clear ${label}`}
+                    >
                       Clear
                     </button>
                   )}

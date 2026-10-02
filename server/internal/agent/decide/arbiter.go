@@ -113,13 +113,19 @@ func defaultValue(f Field) string {
 // FieldProvenance is where one field of an Intent came from.
 type FieldProvenance struct {
 	Source Source
-	// Reason says why the model's answer is not used ("" when it is):
-	// no_answer, not_asked, missing, invalid, unknown_option,
-	// low_confidence, ttl, error, timeout, gone (the target or item is no
-	// longer there) or held (hysteresis kept the previous value).
-	Reason     string
+	// Reason says why the model's accumulated answers do not decide the
+	// field ("" when they do): no_answer, not_asked, missing, invalid,
+	// unknown_option (the latest answer, with no evidence before it), weak
+	// (the evidence is too weak or split, see ArbiterConfig.MinPosterior),
+	// ttl, error, timeout (the newest answer expired, after a failure of
+	// the lane), gone (every option the evidence backs is no longer
+	// there) or held (hysteresis kept the previous value).
+	Reason string
+	// Confidence is the decided value's posterior probability (the
+	// accumulated evidence's), or the fallback's confidence.
 	Confidence float64
-	Seq        uint64 // the request it answered (0: none)
+	// Seq is the request of the newest answer it rests on (0: none).
+	Seq uint64
 }
 
 // Provenance is the provenance of every field of an Intent.
@@ -206,9 +212,31 @@ type ArbiterConfig struct {
 	// SourceScripted when the backend itself is the scripted policy).
 	AnswerSource Source
 
-	// MinConfidence gates choice and score answers (0.35); MinNoulMargin
-	// gates noul answers on |2p-1| (0.2).
-	MinConfidence, MinNoulMargin float64
+	// Evidence accumulation. Each field keeps the model's answers as
+	// evidence: an answer's weight is its confidence (a noul's |2p-1|)
+	// times exp(-age/Tau), the age counted from the snapshot of the
+	// field's newest answer (so the latency itself does not weaken the
+	// evidence: expiry is the TTL's job). The field is decided from the
+	// weighted mixture of the answers' probabilities, over the options
+	// its question has in the lane's latest answered request (an option
+	// gone from that state, a dead target or a taken item, is dropped and
+	// the rest renormalized); a score's value is the weighted mean.
+	//
+	// Tau is the time constant by field (zero: the defaults, 300 ms for
+	// target, fire_policy and movement, 1 s for mode, 500 ms for danger,
+	// 1.5 s for weapon and pickup); a negative Tau decides the field from
+	// its latest answer alone. An arbiter whose AnswerSource is
+	// SourceScripted (the scripted backend, whose answers are exact, not
+	// evidence) decides every field from its latest answer.
+	Tau [NumFields]time.Duration
+	// The accumulated evidence decides only when it is strong enough:
+	// the accumulated weight of the options still there is at least
+	// MinConfidence (0.35; MinNoulMargin, 0.2, for a noul) and, for a
+	// choice, the top option's posterior probability is at least
+	// MinPosterior (0.4). Weaker evidence falls back to the scripted
+	// policy (reason weak): a lone answer under MinConfidence does, while
+	// one among confident answers only counts for less.
+	MinConfidence, MinNoulMargin, MinPosterior float64
 
 	// FastTTL and SlowTTL are the least lifetimes of an answer, counted
 	// from its request's SnapTime (300 ms, 1500 ms); the actual TTL is at
@@ -275,7 +303,9 @@ type Applied struct {
 
 // FieldStats are a field's counters.
 type FieldStats struct {
-	// Answers by validation outcome.
+	// Answers by validation outcome: Accepted (taken as evidence),
+	// Invalid and Missing; LowConfidence counts the accepted answers with
+	// a confidence under MinConfidence (MinNoulMargin), which weigh less.
 	Accepted, LowConfidence, Invalid, Missing int
 	// Comparisons of accepted model answers with the fallback's answer to
 	// the same request, and how many disagreed.
@@ -305,6 +335,7 @@ type ArbiterStats struct {
 // cand is a candidate value for a field.
 type cand struct {
 	ok     bool // a value is present (reason may still gate it)
+	low    bool // its confidence is under the threshold (it weighs less)
 	value  string
 	score  float64
 	probs  map[string]float64
@@ -314,6 +345,26 @@ type cand struct {
 	src    Source
 	reason string
 }
+
+// evidence is one accepted model answer to a field's question.
+type evidence struct {
+	seq  uint64
+	snap int64
+	// w is the answer's weight before decay: its confidence (a noul:
+	// |2p-1|).
+	w float64
+	// probs are its probabilities over its question's options; score a
+	// score's level or a noul's P(true).
+	probs map[string]float64
+	score float64
+}
+
+// maxEvidence bounds the answers a field keeps.
+const maxEvidence = 24
+
+// tauHorizon: answers older than this many time constants (relative to
+// the newest) are dropped (their weight is under 1 % of the newest's).
+const tauHorizon = 5
 
 type current struct {
 	set        bool
@@ -325,8 +376,18 @@ type current struct {
 }
 
 type fieldState struct {
+	// model is the latest answer as validated, fb the fallback's answer
+	// to the latest request.
 	model, fb cand
-	cur       current
+	// ev are the accepted answers, oldest first.
+	ev []evidence
+	// The field's question in the lane's latest answered request (by
+	// Seq): asked, its type and option keys.
+	optsSeq uint64
+	asked   bool
+	qtype   QuestionType
+	opts    []string
+	cur     current
 }
 
 type fbEntry struct {
@@ -336,10 +397,16 @@ type fbEntry struct {
 
 const fbHistory = 32
 
-// Arbiter turns answers into Intents: it validates and gates them, keeps
-// them for their TTL, falls back to the scripted policy, applies
-// hysteresis and records provenance. It is not safe for concurrent use;
-// it depends only on its inputs (deterministic).
+// Arbiter turns answers into Intents: it validates the answers and
+// accumulates each field's as time-decayed, confidence-weighted evidence
+// (ArbiterConfig.Tau), decides the field from the posterior while the
+// newest answer is within its TTL and the evidence is strong enough,
+// falls back to the scripted policy otherwise, applies hysteresis to the
+// posterior and records provenance. A single answer that disagrees with
+// the ones before it moves the posterior instead of the decision; a
+// sustained change flips it within a few answers. It is not safe for
+// concurrent use; it depends only on its inputs, summed in a fixed order
+// (deterministic).
 type Arbiter struct {
 	cfg     ArbiterConfig
 	f       [NumFields]fieldState
@@ -366,6 +433,15 @@ func NewArbiter(cfg ArbiterConfig) *Arbiter {
 	}
 	deff(&cfg.MinConfidence, 0.35)
 	deff(&cfg.MinNoulMargin, 0.2)
+	deff(&cfg.MinPosterior, 0.4)
+	for f := Field(0); f < NumFields; f++ {
+		switch {
+		case cfg.AnswerSource == SourceScripted:
+			cfg.Tau[f] = -1
+		case cfg.Tau[f] == 0:
+			cfg.Tau[f] = defaultTau(f)
+		}
+	}
 	deff(&cfg.ModeDelta, 0.2)
 	deff(&cfg.RetreatDanger, 3.5)
 	deff(&cfg.TargetDelta, 0.15)
@@ -381,6 +457,26 @@ func NewArbiter(cfg ArbiterConfig) *Arbiter {
 	defd(&cfg.SlowHold, 500*time.Millisecond)
 	return &Arbiter{cfg: cfg}
 }
+
+// defaultTau is a field's evidence time constant by default: about the
+// time three answers take at the lane's usual rate (fast lane 10 Hz,
+// slow lane 2 Hz), shorter for mode, which must follow the fights, and
+// for danger, which follows the health.
+func defaultTau(f Field) time.Duration {
+	switch f {
+	case FieldTarget, FieldFirePolicy, FieldMovement:
+		return 300 * time.Millisecond
+	case FieldMode:
+		return time.Second
+	case FieldDanger:
+		return 500 * time.Millisecond
+	}
+	return 1500 * time.Millisecond
+}
+
+// Tau returns a field's evidence time constant (negative: the latest
+// answer alone).
+func (a *Arbiter) Tau(f Field) time.Duration { return a.cfg.Tau[f] }
 
 // TTL returns the current lifetime of a lane's answers.
 func (a *Arbiter) TTL(l Lane) time.Duration {
@@ -454,9 +550,7 @@ func (a *Arbiter) validate(q *Question, ans Answer, present bool) cand {
 		} else {
 			c.conf = p
 		}
-		if c.conf < a.cfg.MinConfidence {
-			c.reason = "low_confidence"
-		}
+		c.low = c.conf < a.cfg.MinConfidence
 	}
 	switch q.Type {
 	case Choice:
@@ -486,9 +580,7 @@ func (a *Arbiter) validate(q *Question, ans Answer, present bool) cand {
 		c.score = p
 		c.probs = map[string]float64{"true": p, "false": 1 - p}
 		c.conf = math.Abs(2*p - 1)
-		if c.conf < a.cfg.MinNoulMargin {
-			c.reason = "low_confidence"
-		}
+		c.low = c.conf < a.cfg.MinNoulMargin
 	default:
 		c.ok, c.reason = false, "invalid"
 	}
@@ -500,12 +592,41 @@ func (a *Arbiter) countValidation(f Field, c *cand) {
 	switch c.reason {
 	case "":
 		fs.Accepted++
-	case "low_confidence":
-		fs.LowConfidence++
+		if c.low {
+			fs.LowConfidence++
+		}
 	case "missing":
 		fs.Missing++
 	default:
 		fs.Invalid++
+	}
+}
+
+// noteOptions records the fields' questions in req when it is the lane's
+// latest answered request: the options the evidence is decided over (the
+// state the newest answer saw; a request still in flight does not drop
+// options its answer may yet back).
+func (a *Arbiter) noteOptions(req *Request) {
+	for _, f := range a.laneFields(req.Lane) {
+		fs := &a.f[f]
+		if req.Seq < fs.optsSeq {
+			continue
+		}
+		fs.optsSeq = req.Seq
+		q := req.Question(f.ID())
+		fs.asked = q != nil
+		fs.opts = fs.opts[:0]
+		if q == nil {
+			continue
+		}
+		fs.qtype = q.Type
+		if q.Type == Noul {
+			fs.opts = append(fs.opts, "true", "false")
+			continue
+		}
+		for _, o := range q.Options {
+			fs.opts = append(fs.opts, o.Key)
+		}
 	}
 }
 
@@ -590,6 +711,7 @@ func (a *Arbiter) Apply(r Result) Applied {
 	}
 	a.lastSeq[req.Lane], a.lastErr[req.Lane] = req.Seq, ""
 	a.stats.Applied++
+	a.noteOptions(req)
 	fb := a.fallbackFor(req.Lane, req.Seq)
 	for _, f := range a.laneFields(req.Lane) {
 		fs := &a.f[f]
@@ -603,6 +725,7 @@ func (a *Arbiter) Apply(r Result) Applied {
 		c.src, c.seq, c.snap = a.cfg.AnswerSource, req.Seq, req.SnapTime
 		fs.model = c
 		a.countValidation(f, &c)
+		a.addEvidence(f, &c)
 		o := FieldOutcome{Field: f, Value: displayValue(f, &c), Source: c.src, Confidence: c.conf, Reason: c.reason}
 		if fb != nil {
 			s := &fb.vals[f]
@@ -626,6 +749,117 @@ func (a *Arbiter) Apply(r Result) Applied {
 		out.Fields = append(out.Fields, o)
 	}
 	return out
+}
+
+// addEvidence keeps an accepted answer as evidence of field f (only the
+// latest one when the field takes no accumulation: then a failed answer
+// leaves none).
+func (a *Arbiter) addEvidence(f Field, c *cand) {
+	fs := &a.f[f]
+	tau := a.cfg.Tau[f]
+	if tau < 0 {
+		fs.ev = fs.ev[:0]
+	}
+	if !c.ok || c.reason != "" {
+		return
+	}
+	ev := append(fs.ev, evidence{seq: c.seq, snap: c.snap, w: c.conf, probs: c.probs, score: c.score})
+	drop := max(0, len(ev)-maxEvidence)
+	for drop < len(ev)-1 && tau > 0 && c.snap-ev[drop].snap > tauHorizon*ms(tau) {
+		drop++
+	}
+	if drop > 0 {
+		ev = append(ev[:0], ev[drop:]...)
+	}
+	fs.ev = ev
+}
+
+// posterior is a field's accumulated evidence at a time.
+type posterior struct {
+	n      int     // answers contributing
+	seq    uint64  // the newest one's request
+	snap   int64   // and its snapshot time
+	mass   float64 // the accumulated weight of the options still there
+	weak   bool    // too little weight, or no clear top option
+	value  string  // the top option (a score: its rounded mean level)
+	pvalue float64 // value's posterior probability
+	score  float64 // a score's mean level, a noul's mean P(true)
+	probs  map[string]float64
+}
+
+// posterior accumulates field f's evidence over the options of its latest
+// question that are still there (b nil: all of them); prefer breaks ties
+// (the current value), else the options' order does.
+func (a *Arbiter) posterior(f Field, b *worldmodel.Belief, prefer string) posterior {
+	fs := &a.f[f]
+	var p posterior
+	if len(fs.ev) == 0 {
+		return p
+	}
+	newest := &fs.ev[len(fs.ev)-1]
+	p.seq, p.snap = newest.seq, newest.snap
+	tau := float64(ms(a.cfg.Tau[f]))
+	opts := make([]string, 0, len(fs.opts))
+	for _, o := range fs.opts {
+		if fs.qtype != Choice || a.usable(f, o, b) {
+			opts = append(opts, o)
+		}
+	}
+	mass := make([]float64, len(opts))
+	var wsum, ssum float64
+	for i := range fs.ev {
+		e := &fs.ev[i]
+		w := e.w
+		if age := float64(newest.snap - e.snap); tau > 0 {
+			if age > tauHorizon*tau {
+				continue
+			}
+			w *= math.Exp(-age / tau)
+		} else if e != newest {
+			continue
+		}
+		p.n++
+		for j, o := range opts {
+			mass[j] += w * e.probs[o]
+		}
+		wsum += w
+		ssum += w * e.score
+	}
+	total := 0.0
+	for _, m := range mass {
+		total += m
+	}
+	p.mass = total
+	if fs.qtype == Score {
+		p.mass = wsum // every level is there: the answers' whole weight
+	}
+	if fs.qtype != Choice && wsum > 0 {
+		p.score = ssum / wsum
+	}
+	if total <= 0 {
+		return p
+	}
+	p.probs = make(map[string]float64, len(opts))
+	best := -1
+	for j, o := range opts {
+		pr := mass[j] / total
+		p.probs[o] = pr
+		if best < 0 || pr > p.probs[opts[best]]+1e-12 || math.Abs(pr-p.probs[opts[best]]) <= 1e-12 && o == prefer {
+			best = j
+		}
+	}
+	p.value, p.pvalue = opts[best], p.probs[opts[best]]
+	if fs.qtype == Score {
+		lv := min(max(int(math.Round(p.score)), 0), len(opts)-1)
+		p.value = levelKey(lv)
+		p.pvalue = p.probs[p.value]
+	}
+	minW := a.cfg.MinConfidence
+	if fs.qtype == Noul {
+		minW = a.cfg.MinNoulMargin
+	}
+	p.weak = p.mass < minW-1e-9 || fs.qtype == Choice && p.pvalue < a.cfg.MinPosterior-1e-9
+	return p
 }
 
 // usable reports whether a target or pickup value still names something
@@ -680,43 +914,50 @@ func defaultCand(f Field) cand {
 }
 
 // candidate is the value a field would take now without hysteresis, and
-// why the model's answer is not it.
-func (a *Arbiter) candidate(f Field, now int64, b *worldmodel.Belief) (cand, string) {
+// why the model's accumulated answers do not decide it; cur is the
+// current value (it wins the posterior's ties).
+func (a *Arbiter) candidate(f Field, now int64, b *worldmodel.Belief, cur string) (cand, string) {
 	fs := &a.f[f]
 	m := &fs.model
 	l := f.Lane()
 	ttl := ms(a.TTL(l))
+	if fs.optsSeq != 0 && !fs.asked {
+		return defaultCand(f), "not_asked"
+	}
+	p := a.posterior(f, b, cur)
 	var reason string
 	switch {
-	case m.seq == 0:
+	case p.n == 0:
 		reason = "no_answer"
-		if e := a.lastErr[l]; e != "" {
+		if m.seq != 0 && m.reason != "" && m.reason != "not_asked" {
+			reason = m.reason
+		} else if e := a.lastErr[l]; e != "" && m.seq == 0 {
 			reason = e
 		}
-	case m.reason != "":
-		reason = m.reason
-	case now-m.snap > ttl:
+	case now-p.snap > ttl:
 		reason = "ttl"
 		if e := a.lastErr[l]; e != "" {
 			reason = e
 		}
-	case !a.usable(f, m.value, b):
+	case p.probs == nil:
 		reason = "gone"
+	case p.weak:
+		reason = "weak"
 	default:
-		return *m, ""
-	}
-	if reason == "not_asked" {
-		return defaultCand(f), reason
+		return p.cand(a.cfg.AnswerSource), ""
 	}
 	if fb := &fs.fb; fb.ok && fb.seq != 0 && now-fb.snap <= ms(a.fallbackTTL(l)) && a.usable(f, fb.value, b) {
 		return *fb, reason
 	}
-	if a.cfg.Fallback == nil && m.seq != 0 && m.reason == "" && now-m.snap <= ttl+ms(a.cfg.MaxStale) && a.usable(f, m.value, b) {
-		c := *m
-		c.src = SourceStale
-		return c, reason
+	if a.cfg.Fallback == nil && p.n > 0 && p.probs != nil && !p.weak && now-p.snap <= ttl+ms(a.cfg.MaxStale) {
+		return p.cand(SourceStale), reason
 	}
 	return defaultCand(f), reason
+}
+
+// cand returns the posterior's decision as a candidate from src.
+func (p *posterior) cand(src Source) cand {
+	return cand{ok: true, value: p.value, score: p.score, probs: p.probs, conf: p.pvalue, seq: p.seq, snap: p.snap, src: src}
 }
 
 // switchAllowed applies the field's hysteresis to a change from cur to c.
@@ -743,9 +984,9 @@ func (a *Arbiter) switchAllowed(f Field, cur *current, c *cand, now int64, b *wo
 
 // resolve decides one field at now.
 func (a *Arbiter) resolve(f Field, now int64, b *worldmodel.Belief, danger float64) (string, float64, FieldProvenance) {
-	c, reason := a.candidate(f, now, b)
 	fs := &a.f[f]
 	cur := &fs.cur
+	c, reason := a.candidate(f, now, b, cur.value)
 	prov := FieldProvenance{Source: c.src, Reason: reason, Confidence: c.conf, Seq: c.seq}
 	if f == FieldDanger {
 		return c.value, c.score, prov
@@ -757,12 +998,22 @@ func (a *Arbiter) resolve(f Field, now int64, b *worldmodel.Belief, danger float
 		*cur = current{set: true, value: c.value, origin: c.src, originSeq: c.seq, originSnap: c.snap, since: cur.since}
 		return c.value, c.score, prov
 	}
-	// held: the previous value stays, with the provenance of its origin
+	// held: the previous value stays, with the provenance of its origin. A
+	// model value is the model's while the answer that set it is within
+	// its TTL, or while the field's accumulated answers (fresh and strong)
+	// still back it with at least MinPosterior (the hysteresis keeps it
+	// over a value the posterior prefers by less than the margin); stale
+	// otherwise (a value held only by its dwell time).
 	src := cur.origin
-	if src == SourceModel && now-cur.originSnap > ms(a.TTL(f.Lane())) {
+	backed := c.src == SourceModel && reason == "" && c.probs[cur.value] >= a.cfg.MinPosterior-1e-9
+	if src == SourceModel && !backed && now-cur.originSnap > ms(a.TTL(f.Lane())) {
 		src = SourceStale
 	}
-	return cur.value, 0, FieldProvenance{Source: src, Reason: "held", Seq: cur.originSeq}
+	conf := 0.0
+	if backed {
+		conf = c.probs[cur.value]
+	}
+	return cur.value, 0, FieldProvenance{Source: src, Reason: "held", Confidence: conf, Seq: cur.originSeq}
 }
 
 // Intent decides every field at now; b is the current belief (for the

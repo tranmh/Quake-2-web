@@ -21,16 +21,16 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
 | `client/block8.h` | 124 | D | x86 asm / software-renderer helpers | - | n/a |
 | `client/cdaudio.h` | 26 | R | optional user OGG tracks keyed by CS_CDTRACK | - | ported |
 | `client/cl_cin.c` | 650 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
-| `client/cl_ents.c` | 1500 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_ents.c` | 1500 | P | TS q2-client / q2-snd-worklet + Go fakeclient (headless: frame / delta entity parsing) | oracle_client | ported |
 | `client/cl_fx.c` | 2298 | P | TS q2-client / q2-snd-worklet | oracle_client | verified |
-| `client/cl_input.c` | 542 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_input.c` | 542 | P | TS q2-client / q2-snd-worklet + Go fakeclient (headless: CL_SendCmd) | oracle_client | ported |
 | `client/cl_inv.c` | 142 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
-| `client/cl_main.c` | 1844 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_main.c` | 1844 | P | TS q2-client / q2-snd-worklet + Go internal/demo (CL_Record_f, CL_WriteDemoMessage, CL_Stop_f) + Go fakeclient (headless: connection handshake) | oracle_client | ported |
 | `client/cl_newfx.c` | 1323 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
-| `client/cl_parse.c` | 806 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_parse.c` | 806 | P | TS q2-client / q2-snd-worklet + Go fakeclient (headless) | oracle_client | ported |
 | `client/cl_pred.c` | 278 | P | TS q2-client / q2-snd-worklet | oracle_client | verified |
 | `client/cl_scrn.c` | 1401 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
-| `client/cl_tent.c` | 1745 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
+| `client/cl_tent.c` | 1745 | P | TS q2-client / q2-snd-worklet + Go fakeclient (headless: CL_ParseTEnt reads) | oracle_client | ported |
 | `client/cl_view.c` | 584 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
 | `client/client.h` | 584 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
 | `client/console.c` | 682 | P | TS q2-client / q2-snd-worklet | oracle_client | ported |
@@ -462,3 +462,31 @@ Every file in the `Quake-2/` oracle with its disposition. **P** ported, **R** re
   decompression capped at 64 MB; dead noclip coop body gets a corpse movetype (C: bad movetype shutdown);
   map/nextmap names cut at the first quote or line break (C allowed console command injection); flood_msgs
   outside 1..11 reads the same neighbouring fields C does.
+- fakeclient (Go, headless client for tests and the AI agent; no PARITY row of its own, see the `client/*.c` rows):
+  opt-in hooks, all off with a zero `Options` (which behaves and sends byte for byte as before; `sv_test.go` and
+  `host/oracle_diff_test.go` unchanged): `Feed` (the post-`Recv` body of readPacket) / `Tick` (checkForResend +
+  sendConnected) / `BeginConnect` for a driver that owns the datagram loop; `Options.Clock` replaces only `curtime`
+  (Sys_Milliseconds); `Options.OnServerMessage` is called at the `CL_WriteDemoMessage` point (after
+  CL_ParseServerMessage, before stuffed commands run) with the payload (`datagram[8:]`) and a `Span` per svc command;
+  `Options.Passive` + `NewPassive`/`FeedPayload` parse demo blocks, recording stufftext without executing it and
+  answering no download (`Feed` refuses datagrams: `ErrPassive`); `Options.MaxHistory` keeps each event history
+  between MaxHistory and 2*MaxHistory entries (amortized), with `Client.Counts` (`HistoryCounts`, including
+  `Inventory`: svc_inventory messages parsed) and `NewSince` returning exact new-event slices; `TempEntEvents` keeps
+  the positions/directions CL_ParseTEnt already reads; `MuzzleFlashes` records the flashes C discards after the
+  effect; `RequestFullFrame` sets `cls.demowaiting` (default off, never used in lockstep determinism runs);
+  `LevelGen` counts svc_serverdata; `MapName`. Memory safety (hostile input only): a negative 16-bit entity number
+  in packetentities raises ERR_DROP (C indexes cl_entities out of bounds).
+- demo (Go, `internal/demo` = `CL_Record_f`/`CL_WriteDemoMessage`/`CL_Stop_f`, PORTING rules apply): opt-in
+  `Writer.AllBaselines` also writes the received baselines that have no model, which CL_Record_f skips
+  (`if (!ent->modelindex) continue`), so sound-only entities such as looping target_speakers replay from their own
+  baseline instead of a null one at the world origin; the default is the C behavior (the TS header-parity test uses
+  it). `Recorder` (the agent's per-level recording, sets AllBaselines) writes one file per level generation and ends
+  each file before the message that leaves the level (svc_disconnect, svc_reconnect, a stuffed `changing` or
+  `reconnect`), so every file plays to its end; a C recording keeps going across level changes.
+- game (Go, port bug fix, not a deviation): `cfmt` translated only a bare C `%i`, so HelpComputer's `"%3i/%3i"`
+  kill counters printed `%!i(int32=  0)`; every `%[flags][width][.prec]i` now formats like `%d` (`%%` untouched),
+  as printf does (TestCfmtIntVerbs, TestHelpComputerKillsField). Found by the agent's help-computer parser.
+- spectate (Go, not a port; its handshake mirrors SV_New_f/SV_Configstrings_f/SV_Baselines_f/SV_Begin_f and the
+  keyframe SV_WriteFrameToClient with deltaframe -1): `writeKeyPlayerstate` also sends PS_WEAPONFRAME when gunframe
+  is 0 but gunoffset/gunangles are nonzero (a delta-coding residue the C `from == NULL` path would drop), so a
+  viewer's keyframe equals the bot's own playerstate.

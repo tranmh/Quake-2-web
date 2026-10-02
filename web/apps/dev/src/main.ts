@@ -8,10 +8,22 @@
 //   time=<sec>             freeze the refresh time (deterministic frames for tests)
 //   test=1                 preserveDrawingBuffer, publish window.__q2 status for Playwright
 //   cvar_<name>=<value>    set a renderer cvar before init (e.g. cvar_gl_lightmap=1)
+//
+// Nav overlay (the agent's nav graph, `make nav` or built on demand by the vite middleware):
+//   nav=1                  draw the nav dump of the map instead of the sample entities: nodes as particles
+//                          coloured by flag, edges as beams coloured by kind (conditional edges red),
+//                          trigger/mover/solid boxes, lasers, and the route (thick white) through its
+//                          steps (the straight legs between them light blue)
+//   route=<table>|none     route table of fixtures/agent/routes (default: the campaign's first visit of
+//                          the map; demo2b for demo2's second visit)
+//   navlayers=a,b          subset of nodes,edges,boxes,route
+//   navradius=<units>      draw only what is this near the camera (default 1024)
+//   navmax=<n>             at most n beams (default 3000; the route always draws)
 import { Pak, parseBsp } from 'q2-formats';
 import { COM_Parse, RF_BEAM, RF_FRAMELERP, RF_GLOW, RF_TRANSLUCENT, atof, parseCursor } from 'q2-shared';
 import {
   MAX_LIGHTSTYLES,
+  MAX_PARTICLES,
   newRefEntity,
   type DLight,
   type LightStyle,
@@ -22,6 +34,31 @@ import {
   type RefImport,
 } from 'q2-ref';
 import { createGLRefresh } from 'q2-render-gl';
+import {
+  LAYERS,
+  buildNavOverlay,
+  cullOverlay,
+  parseNavDump,
+  parseRouteTable,
+  routeForMap,
+  type Layer,
+  type NavOverlay,
+  type OverlayLine,
+  type OverlayPoint,
+  type RouteTable,
+} from './navOverlay';
+
+/** What the nav overlay holds and draws (window.__q2.nav, for Playwright). */
+interface NavStatus {
+  map: string;
+  route: string;
+  points: number;
+  lines: number;
+  waypoints: number;
+  unplaced: string[];
+  drawnPoints: number;
+  drawnLines: number;
+}
 
 interface Q2Status {
   ready: boolean;
@@ -30,6 +67,7 @@ interface Q2Status {
   glErrors: number[];
   log: string[];
   drawCalls: number;
+  nav: NavStatus | null;
 }
 
 declare global {
@@ -38,7 +76,15 @@ declare global {
   }
 }
 
-const status: Q2Status = { ready: false, frames: 0, errors: [], glErrors: [], log: [], drawCalls: 0 };
+const status: Q2Status = {
+  ready: false,
+  frames: 0,
+  errors: [],
+  glErrors: [],
+  log: [],
+  drawCalls: 0,
+  nav: null,
+};
 window.__q2 = status;
 window.addEventListener('error', (e) => status.errors.push(String(e.message)));
 window.addEventListener('unhandledrejection', (e) => status.errors.push(String(e.reason)));
@@ -47,6 +93,9 @@ const params = new URLSearchParams(location.search);
 const mapName = params.get('map') ?? 'demo1';
 const testMode = params.get('test') === '1';
 const fixedTime = params.has('time') ? Number(params.get('time')) : null;
+const navMode = params.get('nav') === '1';
+const navRadius = Number(params.get('navradius') ?? 1024) || 1024;
+const navMax = Math.max(0, Math.trunc(Number(params.get('navmax') ?? 3000)) || 3000);
 
 const canvas = document.getElementById('c') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLDivElement;
@@ -165,6 +214,27 @@ function vec(s: string | undefined, d: [number, number, number] = [0, 0, 0]): [n
   return [a[0] ?? d[0], a[1] ?? d[1], a[2] ?? d[2]];
 }
 
+// ---------------------------------------------------------------- nav overlay
+async function getJSON(url: string): Promise<unknown> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: HTTP ${r.status} ${(await r.text()).slice(0, 300)}`);
+  return r.json() as Promise<unknown>;
+}
+
+async function loadNavOverlay(map: string): Promise<{ overlay: NavOverlay; route: RouteTable | null }> {
+  const dump = parseNavDump(await getJSON(`/nav/${encodeURIComponent(map)}.json`));
+  const which = params.get('route');
+  let route: RouteTable | null = null;
+  if (which && which !== 'none')
+    route = parseRouteTable(await getJSON(`/routes/${encodeURIComponent(which)}.json`));
+  else if (!which) route = await routeForMap(map, (f) => getJSON(`/routes/${encodeURIComponent(f)}`));
+  const layers = params
+    .get('navlayers')
+    ?.split(',')
+    .filter((l): l is Layer => (LAYERS as readonly string[]).includes(l));
+  return { overlay: buildNavOverlay(dump, { route, layers }), route };
+}
+
 // ---------------------------------------------------------------- main
 async function main(): Promise<void> {
   hud.textContent = 'fetching pak0.pak...';
@@ -234,12 +304,15 @@ async function main(): Promise<void> {
       camPos[2]! + up,
     ];
   };
-  const modelNames = [
-    'models/monsters/soldier/tris.md2',
-    'models/monsters/infantry/tris.md2',
-    'models/items/healing/medium/tris.md2',
-    'models/items/armor/body/tris.md2',
-  ];
+  // the nav overlay replaces the sample entities (and their particles, beam and dlight)
+  const modelNames = navMode
+    ? []
+    : [
+        'models/monsters/soldier/tris.md2',
+        'models/monsters/infantry/tris.md2',
+        'models/items/healing/medium/tris.md2',
+        'models/items/armor/body/tris.md2',
+      ];
   const animated: { ent: RefEntity; frames: number }[] = [];
   let k = 0;
   for (const n of modelNames) {
@@ -256,7 +329,7 @@ async function main(): Promise<void> {
     animated.push({ ent, frames: k < 2 ? 40 : 1 });
     k++;
   }
-  const sprite = await re.registerModel('sprites/s_explod.sp2');
+  const sprite = navMode ? null : await re.registerModel('sprites/s_explod.sp2');
   let spriteEnt: RefEntity | null = null;
   if (sprite) {
     spriteEnt = newRefEntity();
@@ -273,7 +346,30 @@ async function main(): Promise<void> {
   beam.frame = 6; // diameter
   beam.skinnum = 0xd0;
   beam.alpha = 0.3;
-  entities.push(beam);
+  if (!navMode) entities.push(beam);
+  const baseEntities = entities.length;
+
+  // nav overlay: loaded once, culled around the camera when it moves, drawn as particles and beams
+  let nav: { overlay: NavOverlay; route: RouteTable | null } | null = null;
+  if (navMode) {
+    hud.textContent = `loading the nav overlay of ${mapName}...`;
+    try {
+      nav = await loadNavOverlay(mapName);
+      const o = nav.overlay;
+      status.nav = {
+        map: o.map,
+        route: nav.route?.name ?? 'none',
+        points: o.points.length,
+        lines: o.lines.length,
+        waypoints: o.waypoints.length,
+        unplaced: o.unplaced,
+        drawnPoints: 0,
+        drawnLines: 0,
+      };
+    } catch (e) {
+      status.errors.push(`nav overlay: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 
   await re.registerPic('backtile');
   // a small 8-bit image for Draw_StretchRaw (cinematic path) with the game palette
@@ -296,7 +392,8 @@ async function main(): Promise<void> {
     intensity: 200,
   };
   const particles: Particle[] = [];
-  for (let i = 0; i < 400; i++) particles.push({ origin: new Float32Array(3), color: 0, alpha: 1 });
+  const numParticles = navMode ? MAX_PARTICLES : 400;
+  for (let i = 0; i < numParticles; i++) particles.push({ origin: new Float32Array(3), color: 0, alpha: 1 });
   const fd: RefDef = {
     x: 0,
     y: 0,
@@ -313,9 +410,9 @@ async function main(): Promise<void> {
     lightstyles,
     num_entities: entities.length,
     entities,
-    num_dlights: 1,
+    num_dlights: navMode ? 0 : 1,
     dlights: [dlight],
-    num_particles: particles.length,
+    num_particles: navMode ? 0 : particles.length,
     particles,
   };
 
@@ -338,6 +435,45 @@ async function main(): Promise<void> {
   let fpsTime = t0;
   let fps = 0;
   const glc = canvas.getContext('webgl2') as WebGL2RenderingContext;
+
+  // nav overlay drawing: re-cull when the camera moved 32 units, then fill the particle list and a pool
+  // of RF_BEAM entities appended after the map's brush entities
+  const beams: RefEntity[] = [];
+  let culledAt: [number, number, number] | null = null;
+  let culled: { points: OverlayPoint[]; lines: OverlayLine[] } = { points: [], lines: [] };
+  const drawNav = (o: NavOverlay): void => {
+    const eye: [number, number, number] = [camPos[0]!, camPos[1]!, camPos[2]!];
+    if (culledAt && Math.hypot(eye[0] - culledAt[0], eye[1] - culledAt[1], eye[2] - culledAt[2]) < 32) return;
+    culledAt = eye;
+    culled = cullOverlay(o, eye, { radius: navRadius, maxPoints: particles.length, maxLines: navMax });
+    culled.points.forEach((p, i) => {
+      const q = particles[i]!;
+      q.origin.set(p.origin);
+      q.color = p.color;
+      q.alpha = 1;
+    });
+    fd.num_particles = culled.points.length;
+    entities.length = baseEntities;
+    culled.lines.forEach((l, i) => {
+      let e = beams[i];
+      if (!e) {
+        e = newRefEntity();
+        e.flags = RF_BEAM | RF_TRANSLUCENT;
+        beams.push(e);
+      }
+      e.origin.set(l.from);
+      e.oldorigin.set(l.to);
+      e.frame = l.width;
+      e.skinnum = l.color;
+      e.alpha = l.layer === 'route' ? 0.9 : 0.6;
+      entities.push(e);
+    });
+    fd.num_entities = entities.length;
+    if (status.nav) {
+      status.nav.drawnPoints = culled.points.length;
+      status.nav.drawnLines = culled.lines.length;
+    }
+  };
 
   const frame = (now: number): void => {
     const dt = Math.min(0.1, (now - last) / 1000);
@@ -386,6 +522,7 @@ async function main(): Promise<void> {
     }
     if (spriteEnt) spriteEnt.frame = Math.floor(ft);
 
+    if (nav) drawNav(nav.overlay);
     // dlight orbiting in front of the camera
     const dp = fwd(96, Math.sin(time * 2) * 64, 0);
     dlight.origin[0] = dp[0];
@@ -394,7 +531,7 @@ async function main(): Promise<void> {
 
     // particle fountain
     const base = fwd(200, 0, -30);
-    for (let i = 0; i < particles.length; i++) {
+    for (let i = 0; i < (navMode ? 0 : particles.length); i++) {
       const p = particles[i]!;
       const pt = (time * 0.7 + i / particles.length) % 1;
       const a = i * 2.39996;
@@ -435,10 +572,20 @@ async function main(): Promise<void> {
       fpsTime = now;
     }
     if (status.frames % 10 === 1 || !testMode) {
+      const n = status.nav;
       hud.textContent =
         `${mapName}  ${fps.toFixed(0)} fps  ${status.drawCalls} draws\n` +
         `pos ${camPos[0]!.toFixed(0)} ${camPos[1]!.toFixed(0)} ${camPos[2]!.toFixed(0)}  ` +
         `ang ${camAng[0]!.toFixed(0)} ${camAng[1]!.toFixed(0)}\n` +
+        (n
+          ? `nav: ${n.drawnPoints}/${n.points} nodes, ${n.drawnLines}/${n.lines} beams within ${navRadius}u; ` +
+            `route ${n.route} (${n.waypoints} waypoints)\n` +
+            `edges: walk grey, crouch steel, jump yellow, drop orange, ladder lime, swim blue, ride white,\n` +
+            `  teleport pink, touch green, conditional red; boxes: trigger yellow, mover orange (other\n` +
+            `  poses pink), button white, laser red; route: thick white, legs light blue\n`
+          : navMode
+            ? `nav: ${status.errors.at(-1) ?? 'loading'}\n`
+            : '') +
         `click: mouse look, WASD/space/c, shift: fast`;
     }
     if (status.frames >= 3) status.ready = true;
