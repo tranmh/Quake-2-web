@@ -12,6 +12,7 @@
       "class": "item_quad",
       "pos": [464, 544, -544],
       "optional": true,
+      "detour": "quad",
       "note": "optional detour (about 5 s) for the quad damage: the bot uses it in its next fight (bot.powerupTick: a picked-up quad is only stored in single player), 30 s of four times the damage"
     },
     {
@@ -19,6 +20,7 @@
       "class": "weapon_chaingun",
       "pos": [1232, -120, -496],
       "optional": true,
+      "detour": "chaingun",
       "note": "optional: the chaingun next to the way to the gunner (no detour); every attempt starts from the arrival save, so it is fetched on each"
     },
     {
@@ -26,6 +28,7 @@
       "class": "ammo_bullets",
       "pos": [1144, -136, -488],
       "optional": true,
+      "detour": "chaingun",
       "note": "optional: bullets next to the chaingun"
     },
     {
@@ -33,6 +36,7 @@
       "class": "ammo_bullets",
       "pos": [1184, -96, -488],
       "optional": true,
+      "detour": "chaingun",
       "note": "optional: bullets next to the chaingun"
     },
     {

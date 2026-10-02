@@ -128,18 +128,25 @@ on the attempt counts, against the wave-7 build.
 
 - A route step may carry `"optional": true`. That is allowed for a goto, press, wait or pickup of an item that
   is not a key.
-  - The executor gives an optional step one attempt. When it fails it skips the step and the optional steps
-    right after it (one detour: the button, the wait for the door, the pickups behind it).
+  - The executor gives an optional step one attempt. When it fails it skips the step and the rest of its
+    detour: the adjacent optional steps with the same `detour` name (the button, the wait for the door, the
+    pickups behind it). A detour that follows with another name is still tried.
   - It skips an optional weapon pickup alone when the bot already holds that weapon.
-  - The last step cannot be optional. The table must validate with its optional steps removed as well, so no
-    required step relies on one. `q2nav plan` passes.
+  - The last step cannot be optional, and only optional steps name a detour, whose steps must be adjacent.
+    The table must validate with its optional steps removed as well, so no required step relies on one, and,
+    with several detours, with any one of them removed, so no detour relies on another. `q2nav plan` passes
+    and marks the optional steps with their detour.
+  - *Fixer change.* In the implementer's build adjacent optional steps were always one detour, so a quad that
+    timed out also skipped the chaingun detour for that attempt. That happened in 2 of the final runs
+    (scripted 0 ms seed 9 and the random ablation). demo3 now names them `quad` and `chaingun`.
 - The demo tables use it:
 
-  | Table | Detour | Cost |
-  |---|---|---|
-  | demo1 | the shotgun and 2 boxes of shells on the lower floor east of the start | about 20 s |
-  | demo2a | button `*36` opens the closet next to the way from the car to the hatch: the machinegun and 2 boxes of bullets | a few seconds |
-  | demo3 | the quad damage, then the chaingun and 2 boxes of bullets next to the way to the ambush gunner | about 5 s |
+  | Table | Detour | What | Cost |
+  |---|---|---|---|
+  | demo1 | `shotgun` | the shotgun and 2 boxes of shells on the lower floor east of the start | about 20 s |
+  | demo2a | `machinegun` | button `*36` opens the closet next to the way from the car to the hatch: the machinegun and 2 boxes of bullets | a few seconds |
+  | demo3 | `quad` | the quad damage | about 5 s |
+  | demo3 | `chaingun` | the chaingun and 2 boxes of bullets next to the way to the ambush gunner | none |
 
 - Arrival at demo3 (first slow-lane state; weapons with ammo):
 
@@ -219,6 +226,12 @@ The 173 demo3 deaths of the final runs (clean seeds 1–50, scripted 212 ms seed
 
 ### Caveats (wave 8)
 
+- **Attempts are clustered by run.** Every demo3 attempt of a run reloads the same arrival save: the same
+  inventory and health. Runs differ a lot (from 1 to 13 attempts), so the attempts of one run are not
+  independent draws. The Fisher p on the attempt counts overstates certainty. The intervals given here are
+  therefore a bootstrap over runs, and the comparisons also give two run-level tests (see
+  [Reproduce (wave 8)](#reproduce-wave-8)). The large effects (before against after) hold at run level; the
+  borderline ones (noisy against clean, the latency gap, the development steps) do not get stronger.
 - **The mock is not Jev.** The clean mock answers with the scripted rules, so its numbers measure the rules
   over the wire at 212 ms, not a model's judgment. The standing-rule question texts are written for a model;
   how a real one reads them is for phase 9 (`jev-probe`, then a live run).

@@ -222,6 +222,17 @@ func TestBrokenTables(t *testing.T) {
 		{"required step relies on an optional one", "demo2a", func(tb *route.Table) {
 			stepOp(tb, route.OpPress, "*48").Optional = true
 		}, []string{"step 7 (wait) (without the optional steps): no earlier step causes doorOpen of #538 func_door_rotating *49 (t5)"}},
+		{"detour on a required step", "demo3", func(tb *route.Table) {
+			stepOp(tb, route.OpKill, "").Detour = "gunner"
+		}, []string{`step 4 (kill): names detour "gunner" but is not optional`}},
+		{"split detour", "demo2a", func(tb *route.Table) {
+			tb.Steps[2].Detour = "door"
+		}, []string{`step 3 (pickup): detour "machinegun" is split: its steps must be adjacent (it starts at step 1)`}},
+		{"detour relies on another", "demo2a", func(tb *route.Table) {
+			for i := 2; i <= 5; i++ {
+				tb.Steps[i].Detour = "closet"
+			}
+		}, []string{`step 2 (wait) (without detour "machinegun"): no earlier step causes doorOpen of #407 func_door *35 (t29)`}},
 		{"directional exit without yaw", "demo3", func(tb *route.Table) {
 			stepOp(tb, route.OpTouch, "*34").Yaw = nil
 		}, []string{"#592 trigger_multiple *34 is directional", "give a yaw or face first"}},

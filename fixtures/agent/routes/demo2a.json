@@ -17,6 +17,7 @@
       "target": {"entity": 408, "model": "*36", "classname": "func_button"},
       "effects": [{"kind": "doorOpen", "target": {"entity": 407, "model": "*35", "targetname": "t29"}}],
       "optional": true,
+      "detour": "machinegun",
       "note": "optional detour for the machinegun: t29 raises the closet door *35 next to the button, beside the way from the car to the hatch"
     },
     {
@@ -24,6 +25,7 @@
       "seconds": 1,
       "effects": [{"kind": "doorOpen", "target": {"model": "*35"}}],
       "optional": true,
+      "detour": "machinegun",
       "note": "optional: until the closet is open (0.7 s)"
     },
     {
@@ -31,6 +33,7 @@
       "class": "weapon_machinegun",
       "pos": [162, 2016, -160],
       "optional": true,
+      "detour": "machinegun",
       "note": "optional: the machinegun in the closet (crossing its trigger_once *33 spawns a light soldier, t30)"
     },
     {
@@ -38,6 +41,7 @@
       "class": "ammo_bullets",
       "pos": [202, 2016, -160],
       "optional": true,
+      "detour": "machinegun",
       "note": "optional: bullets in the closet"
     },
     {
@@ -45,6 +49,7 @@
       "class": "ammo_bullets",
       "pos": [236, 2016, -160],
       "optional": true,
+      "detour": "machinegun",
       "note": "optional: bullets in the closet"
     },
     {

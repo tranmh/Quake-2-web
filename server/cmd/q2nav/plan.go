@@ -236,6 +236,13 @@ func printTable(w io.Writer, t *route.Table, m *mapdata.Map) {
 		if len(effs) > 0 {
 			eff = " => " + strings.Join(effs, ", ")
 		}
+		if s.Optional {
+			eff += " (optional"
+			if s.Detour != "" {
+				eff += ", detour " + s.Detour
+			}
+			eff += ")"
+		}
 		fmt.Fprintf(w, "    %2d %-7s%s%s\n", i, s.Op, target, eff)
 		if m != nil {
 			printStepChain(w, &s, m)

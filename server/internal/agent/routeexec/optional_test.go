@@ -10,8 +10,8 @@ import (
 )
 
 // TestOptionalSteps: an optional step gets one attempt; when it fails it
-// is skipped together with the optional steps right after it (one
-// detour), and the route goes on; an optional pickup of a weapon the bot
+// is skipped together with the optional steps right after it in the same
+// detour, and the route goes on (with the next detour, if one follows); an optional pickup of a weapon the bot
 // already holds is skipped at once, alone (the ammo next to it is still
 // picked up); a required step still retries.
 func TestOptionalSteps(t *testing.T) {
@@ -71,6 +71,35 @@ func TestOptionalSteps(t *testing.T) {
 		h.wantStep(1, StepRunning)
 		if st := h.x.Steps(); st[0].Status != StepSkipped || st[0].Reason != "already owned" {
 			t.Fatalf("steps: %+v", st)
+		}
+	})
+
+	t.Run("NextDetourStays", func(t *testing.T) {
+		// two detours next to each other: a timeout in the first leaves
+		// the second to run
+		for _, fail := range []bool{false, true} {
+			s := steps()
+			s[0].Detour, s[1].Detour = "shotgun", "shells"
+			h := newHarness(t, lv, s)
+			h.tick(1)
+			if fail {
+				h.nav.fail(navrt.CauseWorld, "gave up")
+				h.tick(1)
+			} else {
+				h.nav.fail(navrt.CauseNoPath, "no path")
+				h.tick(MoveTimeout/100 + 10)
+			}
+			h.wantStep(1, StepRunning)
+			if st := h.x.Steps(); st[0].Status != StepSkipped || st[1].Attempts != 1 {
+				t.Fatalf("fail %v: steps: %+v", fail, st)
+			}
+			// the second detour is skipped on its own failure
+			h.nav.fail(navrt.CauseWorld, "gave up")
+			h.tick(1)
+			h.wantStep(2, StepRunning)
+			if st := h.x.Steps(); st[1].Status != StepSkipped || st[1].Reason == "skipped with step 0" {
+				t.Fatalf("fail %v: steps after the second failure: %+v", fail, st)
+			}
 		}
 	})
 

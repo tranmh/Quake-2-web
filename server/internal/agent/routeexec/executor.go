@@ -543,16 +543,19 @@ func (x *Executor) back(why string) {
 	x.begin()
 }
 
-// skip gives up the current optional step and the optional steps right
-// after it (they belong to the same detour: the wait for a closet door,
-// the pickups inside) and starts the next required one; with alone, only
-// the current step (it is not needed: the weapon is owned, the detour
-// goes on). It counts as progress: the route goes on.
+// skip gives up the current optional step and the rest of its detour (the
+// pending optional steps right after it with the same route.Step.Detour:
+// the wait for a closet door, the pickups inside) and starts the next
+// step, which may begin another detour; with alone, only the current step
+// (it is not needed: the weapon is owned, the detour goes on). It counts
+// as progress: the route goes on.
 func (x *Executor) skip(why string, alone bool) {
 	x.nav.ClearGoal()
 	x.issued = false
 	first := x.cur
-	for x.cur < len(x.plans) && x.plans[x.cur].optional() && (x.cur == first || !alone && x.steps[x.cur].Status == StepPending) {
+	detour := x.plans[first].step.Detour
+	for x.cur < len(x.plans) && x.plans[x.cur].optional() && (x.cur == first ||
+		!alone && x.steps[x.cur].Status == StepPending && x.plans[x.cur].step.Detour == detour) {
 		st := &x.steps[x.cur]
 		st.Status, st.Reason = StepSkipped, why
 		if x.cur != first {

@@ -120,9 +120,12 @@ func Resolve(r Ref, m *mapdata.Map) (*mapdata.Entity, error) {
 //   - the last step leads to the table's exit and no step to another exit;
 //   - every avoid entry is an activator of another exit;
 //   - optional steps are gotos, presses, waits or pickups of items other
-//     than keys, the last step is not optional, and the table without its
-//     optional steps passes every check above too (no required step relies
-//     on an optional one).
+//     than keys, the last step is not optional, only optional steps name a
+//     detour and the steps of a named detour are adjacent; the table
+//     without its optional steps passes every check above too (no required
+//     step relies on an optional one), and so does the table without any
+//     one of its detours when it has several (no detour relies on another:
+//     the executor skips each on its own).
 func Validate(t *Table, m *mapdata.Map) error {
 	if p, _ := validateFull(t, m, nil); len(p) > 0 {
 		return &Error{Problems: p}
@@ -137,13 +140,15 @@ func validateFull(t *Table, m *mapdata.Map, earlier map[int]usage) ([]Problem, *
 	v := newValidator(t, m, earlier)
 	v.run()
 	problems := v.problems
-	required, index := stripOptional(t)
 	for i := range t.Steps {
 		s := &t.Steps[i]
+		where := fmt.Sprintf("step %d (%s)", i, s.Op)
 		if !s.Optional {
+			if s.Detour != "" {
+				problems = append(problems, Problem{Table: t.Name, Where: where, Msg: fmt.Sprintf("names detour %q but is not optional", s.Detour)})
+			}
 			continue
 		}
-		where := fmt.Sprintf("step %d (%s)", i, s.Op)
 		switch {
 		case i == len(t.Steps)-1:
 			problems = append(problems, Problem{Table: t.Name, Where: where, Msg: "the last step cannot be optional"})
@@ -153,31 +158,77 @@ func validateFull(t *Table, m *mapdata.Map, earlier map[int]usage) ([]Problem, *
 			problems = append(problems, Problem{Table: t.Name, Where: where, Msg: "a key pickup cannot be optional"})
 		}
 	}
-	if required != nil && len(problems) == 0 {
-		w := newValidator(required, m, earlier)
+	groups := detours(t)
+	seen := map[string]int{}
+	for _, d := range groups {
+		name := t.Steps[d[0]].Detour
+		if first, ok := seen[name]; ok && name != "" {
+			problems = append(problems, Problem{Table: t.Name, Where: fmt.Sprintf("step %d (%s)", d[0], t.Steps[d[0]].Op),
+				Msg: fmt.Sprintf("detour %q is split: its steps must be adjacent (it starts at step %d)", name, first)})
+		}
+		if _, ok := seen[name]; !ok {
+			seen[name] = d[0]
+		}
+	}
+	if len(groups) == 0 || len(problems) > 0 {
+		return problems, v
+	}
+	// the table without its optional steps, then (with several detours)
+	// without each detour on its own
+	check := func(drop func(i int) bool, suffix string) {
+		c, index := strip(t, drop)
+		w := newValidator(c, m, earlier)
 		w.index = index
 		w.run()
 		for _, p := range w.problems {
-			p.Where += " (without the optional steps)"
+			p.Where += suffix
 			problems = append(problems, p)
+		}
+	}
+	check(func(i int) bool { return t.Steps[i].Optional }, " (without the optional steps)")
+	if len(groups) > 1 {
+		for _, d := range groups {
+			check(func(i int) bool { return i >= d[0] && i < d[1] }, " (without "+detourName(t, d)+")")
 		}
 	}
 	return problems, v
 }
 
-// stripOptional returns t without its optional steps and the index in t
-// of each step left (nil, nil when t has none).
-func stripOptional(t *Table) (*Table, []int) {
+// detours returns the detours of t as [first, end) step ranges: the runs of
+// adjacent optional steps with the same Detour name.
+func detours(t *Table) [][2]int {
+	var out [][2]int
+	for i := 0; i < len(t.Steps); i++ {
+		if !t.Steps[i].Optional {
+			continue
+		}
+		j := i + 1
+		for j < len(t.Steps) && t.Steps[j].Optional && t.Steps[j].Detour == t.Steps[i].Detour {
+			j++
+		}
+		out = append(out, [2]int{i, j})
+		i = j - 1
+	}
+	return out
+}
+
+func detourName(t *Table, d [2]int) string {
+	if n := t.Steps[d[0]].Detour; n != "" {
+		return fmt.Sprintf("detour %q", n)
+	}
+	return fmt.Sprintf("the detour at steps %d-%d", d[0], d[1]-1)
+}
+
+// strip returns t without the steps drop selects and the index in t of
+// each step left.
+func strip(t *Table, drop func(i int) bool) (*Table, []int) {
 	var steps []Step
 	var index []int
 	for i := range t.Steps {
-		if !t.Steps[i].Optional {
+		if !drop(i) {
 			steps = append(steps, t.Steps[i])
 			index = append(index, i)
 		}
-	}
-	if len(steps) == len(t.Steps) {
-		return nil, nil
 	}
 	c := *t
 	c.Steps = steps

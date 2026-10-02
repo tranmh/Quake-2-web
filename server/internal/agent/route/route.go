@@ -152,11 +152,17 @@ type Step struct {
 	// Optional marks an opportunistic step: a detour for a weapon, ammo or
 	// armor the route does not need (a goto, press, wait or pickup of an
 	// item that is not a key). The executor makes one attempt and skips it
-	// (with the optional steps right after it) when that fails, instead of
-	// retrying and stalling. The table must validate without its optional
-	// steps too, so no required step relies on them.
-	Optional bool   `json:"optional,omitempty"`
-	Note     string `json:"note,omitempty"`
+	// (with the rest of its detour) when that fails, instead of retrying
+	// and stalling. The table must validate without its optional steps
+	// too, so no required step relies on them.
+	Optional bool `json:"optional,omitempty"`
+	// Detour names the detour an optional step belongs to: adjacent
+	// optional steps with the same name ("" included) are one detour, which
+	// the executor skips as a whole when one of its steps fails. Two
+	// detours next to each other need different names; each must stand
+	// alone (the table validates without it).
+	Detour string `json:"detour,omitempty"`
+	Note   string `json:"note,omitempty"`
 }
 
 // Avoid is an activator the agent must not set off.

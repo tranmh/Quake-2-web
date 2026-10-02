@@ -112,10 +112,12 @@ type Tick struct {
 	// too), reposition (backed off after standing still in a fight), scan
 	// (a hit without a bearing and no target: the bot turns to the nearest
 	// awake monster it knows of out of view, else behind it and to the
-	// sides), disengage (the fight budget ran out), trapped_kill (typed "kill" in
-	// a pit), wedged_kill (typed "kill" wedged: on one spot for 120 s
-	// while the navigator kept recovering, or for 60 s off the nav graph),
-	// stalled_kill (typed "kill" after 250 s without progress).
+	// sides), quad (typed "use Quad Damage" for a picked-up quad in a fight
+	// with an awake monster in view), disengage (the fight budget ran
+	// out), trapped_kill (typed "kill" in a pit), wedged_kill (typed
+	// "kill" wedged: on one spot for 120 s while the navigator kept
+	// recovering, or for 60 s off the nav graph), stalled_kill (typed
+	// "kill" after 250 s without progress).
 	Reflexes []string `json:"reflexes,omitempty"`
 	// Requests are the requests built this tick, by Req (submitted or
 	// dropped at the in-flight cap).
