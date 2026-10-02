@@ -15,7 +15,8 @@
 // hub, and every live viewer is resynchronised from the mirrored state once
 // the feed flows again.
 //
-// The Mirror keeps, per level generation (fakeclient.Client.LevelGen), a
+// The Mirror keeps, per level generation (each svc_serverdata the bot
+// parsed, counted across bot clients when a Stream outlives one), a
 // LevelSnapshot (the svc_serverdata fields, the configstrings and the
 // baselines the bot received) and the bot's latest valid frame (FrameSnapshot:
 // serverframe, areabits, playerstate and the frame's entity states). It reads

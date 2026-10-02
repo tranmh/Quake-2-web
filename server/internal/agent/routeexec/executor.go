@@ -70,6 +70,21 @@ const (
 	// StalledAfter is how long without progress makes the objective
 	// "stalled" for the decision layer (ms).
 	StalledAfter = 15000
+	// ExitGrace is how long the bot stays at the goal of a step that
+	// claims the level's exit, waiting for the level change, before the
+	// attempt counts as failed (the exit did not fire) (ms).
+	ExitGrace = 3000
+)
+
+// Directional triggers (Touch_Multi fires only for a player whose facing,
+// as of the last server frame, is within 90 degrees of its movedir).
+const (
+	// directionalTol is the facing error a directional touch accepts
+	// (degrees).
+	directionalTol = 60
+	// faceSettle is how long the facing must have held before the touch
+	// counts (ms): one server frame, so that the server saw it.
+	faceSettle = 100
 )
 
 // Status is the state of a step.
@@ -181,8 +196,13 @@ type Executor struct {
 	killSeen   int64
 	// lookGoalAt is when a confirm set a goal to see its effects from
 	lookGoalAt int64
-	world      *navsim.World
-	classes    *perception.ClassTable
+	// facedAt is since when the bot faces along the movedir of the
+	// directional trigger it touches (0: it does not); exitAt is since when
+	// an exit step's goal is reached (0: not yet).
+	facedAt int64
+	exitAt  int64
+	world   *navsim.World
+	classes *perception.ClassTable
 	// claims are the effects the steps done so far claim, for the
 	// planner to assume when it finds no path without them; nopathAt is
 	// since when the current attempt has no path, assumed whether it
@@ -363,6 +383,7 @@ func (x *Executor) begin() {
 	x.extended = false
 	x.bestRemain = math.MaxFloat32
 	x.killGoalAt, x.killSeen, x.lookGoalAt = 0, 0, 0
+	x.facedAt, x.exitAt = 0, 0
 	x.nopathAt, x.assumed = 0, false
 	x.deadline = x.now + x.timeout(&x.plans[x.cur])
 	x.logf("step %d %s: attempt %d", x.cur, st.Desc, st.Attempts)
@@ -600,12 +621,21 @@ func (x *Executor) assumeClaims() {
 	}
 }
 
+// runMove runs a movement step. It is done when moveDone says so, except
+// that a directional touch also needs the facing the trigger accepts (held
+// for faceSettle while the bot is in it), and a step that claims the
+// level's exit is never done here: the level change ends it, and when
+// none came ExitGrace after its goal was reached the attempt fails.
 func (x *Executor) runMove(p *plan) Directive {
 	d := Directive{}
 	if p.hasPoint {
 		d.Look, d.HasLook = p.point, true
 	}
-	if done, why := x.moveDone(p); done {
+	done, why := x.moveDone(p)
+	if done && p.directional && !x.facing(p) {
+		done = false
+	}
+	if done && !p.exit {
 		x.complete(why)
 		return d
 	}
@@ -620,13 +650,48 @@ func (x *Executor) runMove(p *plan) Directive {
 	if p.directional && p.trigger != nil && x.belief != nil {
 		// a directional trigger fires only for a player facing along its
 		// movedir (the navigator faces it on the edges that enter it;
-		// this covers a goal node already inside)
+		// this covers a goal node already inside, and the bot standing in
+		// it facing elsewhere)
 		lo, hi := add(p.trigger.Min, Vec3{-96, -96, -96}), add(p.trigger.Max, Vec3{96, 96, 96})
 		if boxTouch(x.belief.Self.Origin, x.belief.Self.Ducked, lo, hi) {
 			d.FaceYaw, d.MustFace = p.yaw, true
 		}
 	}
+	if !done {
+		x.exitAt = 0
+		return d
+	}
+	// an exit reached: hold there until the level changes
+	if x.exitAt == 0 {
+		x.exitAt = x.now
+		x.logf("step %d %s: %s: waiting for the level change", x.cur, x.steps[x.cur].Desc, why)
+	}
+	if x.now-x.exitAt >= ExitGrace {
+		x.fail(fmt.Sprintf("the exit did not fire within %.0fs of reaching it (%s)", float64(ExitGrace)/1000, why))
+		return Directive{Hold: true}
+	}
 	return d
+}
+
+// facing reports whether a directional touch has the facing its trigger
+// needs: the bot's view yaw within directionalTol of the movedir for
+// faceSettle while its box is in the trigger. A bot no longer in it (it
+// passed through, a drop or a ride) cannot be helped by turning now: that
+// counts as facing (the navigator faced the trigger on the way in).
+func (x *Executor) facing(p *plan) bool {
+	b := x.belief
+	if p.trigger == nil || b == nil || !boxTouch(b.Self.Origin, b.Self.Ducked, p.trigger.Min, p.trigger.Max) {
+		x.facedAt = 0
+		return true
+	}
+	if math.Abs(float64(angleDelta(b.Self.ViewAngles[1], p.yaw))) >= directionalTol {
+		x.facedAt = 0
+		return false
+	}
+	if x.facedAt == 0 {
+		x.facedAt = x.now
+	}
+	return x.now-x.facedAt >= faceSettle
 }
 
 // moveDone reports whether a movement step is done.

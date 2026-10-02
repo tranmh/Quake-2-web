@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"quake2web/server/internal/agent/mapdata"
 	"quake2web/server/internal/agent/nav"
 	"quake2web/server/internal/agent/nav/navbuild"
+	"quake2web/server/internal/agent/route"
 )
 
 // Library loads and keeps the static knowledge of the campaign's maps: the
@@ -96,6 +98,36 @@ func (l *Library) Level(ctx context.Context, name string) (*mapdata.Map, *nav.Gr
 		e.g = g
 	}
 	return md, e.g, nil
+}
+
+// Preload loads the map data and the nav graph of every map named,
+// building the graphs the cache lacks (it stops at the first error). A
+// level entry on a cold cache builds its graph inline, which a realtime
+// session's client does not survive well (it sends nothing meanwhile), so
+// a runner should preload a campaign's maps (CampaignMaps) before it starts
+// such a session; Run does it when it starts the session itself. Unlike an
+// entry, a preload cannot check the map data against the server's map
+// checksum: a ReadFile serving other data than the server's caches graphs
+// no level will match (wasted, not wrong: the cache is keyed by checksum).
+func (l *Library) Preload(ctx context.Context, maps ...string) error {
+	for _, m := range maps {
+		if _, _, err := l.Level(ctx, m); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CampaignMaps returns the maps of campaign c's route tables, each once,
+// in campaign order.
+func CampaignMaps(c *route.Campaign) []string {
+	var out []string
+	for _, t := range c.Tables {
+		if !slices.Contains(out, t.Map) {
+			out = append(out, t.Map)
+		}
+	}
+	return out
 }
 
 func (l *Library) entry(name string) *libEntry {

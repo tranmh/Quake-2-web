@@ -43,12 +43,29 @@ func watch(t testing.TB, h *Hub, qport int, wrap func(qnet.Conn) qnet.Conn) *liv
 	if wrap != nil {
 		srv = wrap(srv)
 	}
+	lv := watchConn(t, cli, qport)
 	go func() {
 		_ = h.ServeConn(context.Background(), srv, "test")
-		_ = srv.Close() // the caller closes the connection, like the handler
+		// The caller closes the connection, like the handler. A MemPipe
+		// reports ErrClosed as soon as it is closed, even with datagrams
+		// still queued (a WebSocket delivers them before its close frame),
+		// so the final svc_disconnects are left to the viewer to read
+		// first: close once it stopped, or after a while (a viewer the hub
+		// dropped without a word, e.g. as too slow, notices then).
+		t := time.NewTimer(viewerLinger)
+		defer t.Stop()
+		select {
+		case <-lv.done:
+		case <-t.C:
+		}
+		_ = srv.Close()
 	}()
-	return watchConn(t, cli, qport)
+	return lv
 }
+
+// viewerLinger is how long watch keeps the hub side of a pipe open after
+// ServeConn returned, for the viewer to read what is queued.
+const viewerLinger = 5 * time.Second
 
 func watchConn(t testing.TB, conn qnet.Conn, qport int) *liveViewer {
 	t.Helper()
@@ -251,7 +268,7 @@ func TestHubWatch(t *testing.T) {
 	if st.Viewers != 0 || st.Leaves[LeaveClosed] != 1 || st.Resyncs[ResyncJoin] != 1 || st.DatagramsIn == 0 || st.DatagramsOut < 100 {
 		t.Fatalf("stats %+v", st)
 	}
-	if err := h.ServeConn(context.Background(), nil, "late"); !errors.Is(err, ErrFull) && !errors.Is(err, ErrClosed) {
+	if err := h.ServeConn(context.Background(), nil, "late"); !errors.Is(err, ErrClosed) {
 		t.Fatalf("ServeConn after Close: %v", err)
 	}
 }
@@ -493,5 +510,10 @@ func TestHandler(t *testing.T) {
 	h.Close()
 	if !eventually(2*time.Second, func() bool { return errors.Is(lv.error(), fakeclient.ErrDisconnected) }) {
 		t.Fatalf("viewer after Close: %v", lv.error())
+	}
+	// a closed hub the lookup still returns (the run just ended): no
+	// point in retrying
+	if got := get("/ws/v1/bots/b1/watch?ticket=other"); got != http.StatusGone {
+		t.Errorf("closed hub: %d", got)
 	}
 }

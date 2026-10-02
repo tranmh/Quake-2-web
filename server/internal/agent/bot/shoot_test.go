@@ -56,35 +56,67 @@ func TestShooterChoose(t *testing.T) {
 	}
 }
 
+// TestShooterSwitch calls Switch every frame (100 ms), the way the bot
+// loop does.
 func TestShooterSwitch(t *testing.T) {
 	var s Shooter
 	b := belief("Blaster", 0, map[string]int{"Shotgun": 1, "Shells": 10})
-	if cmd := s.Switch(1000, b, decide.WeaponShotgun); cmd != "use Shotgun" {
-		t.Fatalf("switch: %q", cmd)
+	var sends []int64
+	refusedAt := int64(-1)
+	// the view weapon never changes: resent after useDebounce, refused
+	// useVerify after the first "use" (not after the last one)
+	for now := int64(1000); now <= 1000+useVerify+refuseFor-100; now += 100 {
+		if cmd := s.Switch(now, b, decide.WeaponShotgun); cmd != "" {
+			if cmd != "use Shotgun" {
+				t.Fatalf("at %d: %q", now, cmd)
+			}
+			if refusedAt >= 0 {
+				t.Fatalf("at %d: sent %q while refused (since %d)", now, cmd, refusedAt)
+			}
+			sends = append(sends, now)
+		}
+		if refusedAt < 0 && s.Refused(now, decide.WeaponShotgun) {
+			refusedAt = now
+		}
 	}
-	if cmd := s.Switch(1100, b, decide.WeaponShotgun); cmd != "" {
-		t.Fatalf("not debounced: %q", cmd)
+	if len(sends) != 2 || sends[0] != 1000 || sends[1] != 1000+useDebounce {
+		t.Fatalf("use commands at %v, want at 1000 and %d", sends, 1000+useDebounce)
 	}
-	if cmd := s.Switch(1000+useDebounce, b, decide.WeaponShotgun); cmd != "use Shotgun" {
-		t.Fatalf("second try: %q", cmd)
+	if refusedAt != 1000+useVerify {
+		t.Fatalf("refused at %d, want %d (useVerify after the first use)", refusedAt, 1000+useVerify)
 	}
-	// the view weapon never changed: unavailable for a while
-	if cmd := s.Switch(1000+useVerify+useDebounce, b, decide.WeaponShotgun); cmd != "" {
-		t.Fatalf("after %d ms unverified: %q", useVerify, cmd)
-	}
-	if k := s.Choose(1000+useVerify+useDebounce, b, 300, decide.WeaponShotgun); k != decide.WeaponBlaster {
+	if k := s.Choose(refusedAt+refuseFor-100, b, 300, decide.WeaponShotgun); k != decide.WeaponBlaster {
 		t.Errorf("refused weapon chosen: %s", k)
 	}
-	if k := s.Choose(1000+useVerify+useDebounce+refuseFor+1, b, 300, decide.WeaponShotgun); k != decide.WeaponShotgun {
+	// the refusal expires: chosen and tried again
+	end := refusedAt + refuseFor
+	if k := s.Choose(end, b, 300, decide.WeaponShotgun); k != decide.WeaponShotgun {
 		t.Errorf("refusal did not expire: %s", k)
 	}
-	// verified: nothing more to send
-	b.Self.Weapon = "Shotgun"
-	if cmd := s.Switch(50000, b, decide.WeaponShotgun); cmd != "" {
-		t.Errorf("switch to the weapon in hand: %q", cmd)
+	if cmd := s.Switch(end, b, decide.WeaponShotgun); cmd != "use Shotgun" {
+		t.Fatalf("after the refusal: %q", cmd)
 	}
-	if s.Switches() != 2 {
-		t.Errorf("%d switches sent", s.Switches())
+	// it comes up: nothing more to send, and a later switch to it is a
+	// new one (judged from its own first use)
+	b.Self.Weapon = "Shotgun"
+	for now := end + 100; now < end+useVerify+useDebounce; now += 100 {
+		if cmd := s.Switch(now, b, decide.WeaponShotgun); cmd != "" {
+			t.Fatalf("switch to the weapon in hand: %q", cmd)
+		}
+	}
+	if s.Refused(end+useVerify+useDebounce, decide.WeaponShotgun) {
+		t.Error("a verified switch was refused")
+	}
+	b.Self.Weapon = "Blaster"
+	later := end + 60000
+	if cmd := s.Switch(later, b, decide.WeaponShotgun); cmd != "use Shotgun" {
+		t.Fatalf("a new switch: %q", cmd)
+	}
+	if cmd := s.Switch(later+useVerify-100, b, decide.WeaponShotgun); cmd != "use Shotgun" || s.Refused(later+useVerify-100, decide.WeaponShotgun) {
+		t.Errorf("a new switch, resent before its own useVerify: %q, refused %v", cmd, s.Refused(later+useVerify-100, decide.WeaponShotgun))
+	}
+	if s.Switches() != 5 {
+		t.Errorf("%d switches sent, want 5", s.Switches())
 	}
 }
 

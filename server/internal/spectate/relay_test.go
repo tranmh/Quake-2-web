@@ -180,6 +180,79 @@ func TestViewerInputIgnored(t *testing.T) {
 	if len(rv.c.StuffTexts) != stuffed { // "new" etc. while spawned are ignored
 		t.Fatalf("stufftexts %q", rv.c.StuffTexts)
 	}
+	// a spawned viewer repeating "begin" (up to MAX_STRINGCMDS-1 a packet)
+	// gets no keyframes for it: only lastframe -1 asks for one, rate-limited
+	out := rg.m.Snapshot().DatagramsOut
+	for i := 0; i < 2; i++ {
+		for j := 0; j < maxStringCmds; j++ {
+			rv.c.StringCmd("begin 42")
+		}
+		rg.botFrame(nil)
+	}
+	if st := rg.m.Snapshot(); st.Resyncs[ResyncJoin] != 1 || len(st.Resyncs) != 1 || st.DatagramsOut-out > 6 {
+		t.Fatalf("repeated begin: stats %+v (%d datagrams)", st, st.DatagramsOut-out)
+	}
+	if rv.err != nil || rv.v.removed || rv.c.State != fakeclient.CaActive {
+		t.Fatalf("viewer dropped: %v", rv.err)
+	}
+	rv.requireMatch(t)
+}
+
+// TestStreamOutlivesBotClient: a Stream kept across the bot's sessions is
+// fed by a new client whose LevelGen starts over at 1. Its serverdata is a
+// new generation all the same: the mirror takes the new client's level
+// whole (no stale servercount or baselines) and viewers are sent through
+// changing/reconnect and a fresh handshake.
+func TestStreamOutlivesBotClient(t *testing.T) {
+	rg := newRig(t, 0)
+	rg.startLevel(newSynth(42, "one", 8), 3)
+	rv := rg.addViewer(64)
+	rg.botFrame(nil)
+	if g := rg.bot.LevelGen(); g != 1 {
+		t.Fatalf("first client at gen %d", g)
+	}
+	// the next episode: a new client on the same stream, at gen 1 again,
+	// on the same map name with fewer baselines and another servercount
+	rg.bot = fakeclient.NewPassive(fakeclient.Options{OnServerMessage: rg.stream.OnServerMessage})
+	rg.startLevel(newSynth(77, "one", 3), 4)
+	if g := rg.bot.LevelGen(); g != 1 {
+		t.Fatalf("second client at gen %d", g)
+	}
+	l := rg.stream.Level()
+	if l.Gen != 2 || l.ServerCount != 77 || !l.Ready {
+		t.Fatalf("level after the client change: %+v", l)
+	}
+	if *l.cs != rg.bot.ConfigStrings {
+		t.Fatal("configstrings differ from the new client's")
+	}
+	for i := range rg.bot.Entities {
+		if b, ok := l.Baseline(i); ok != rg.bot.Entities[i].HasBaseline || b != rg.bot.Entities[i].Baseline {
+			t.Fatalf("baseline %d is not the new client's (present %v)", i, ok)
+		}
+	}
+	if f := rg.stream.Frame(); f == nil || f.Gen != 2 || f.ServerFrame != rg.srv.frame {
+		t.Fatalf("frame %+v", f)
+	}
+	if rv.err != nil || rv.c.State != fakeclient.CaActive || rv.c.ServerData.ServerCount != 77 ||
+		rv.c.NumBaselines != rg.bot.NumBaselines || rv.c.ConfigStrings != rg.bot.ConfigStrings {
+		t.Fatalf("viewer state %d sc %d baselines %d/%d err %v", rv.c.State, rv.c.ServerData.ServerCount,
+			rv.c.NumBaselines, rg.bot.NumBaselines, rv.err)
+	}
+	var changing, reconnect int
+	for _, s := range rv.c.StuffTexts {
+		changing += strings.Count(s, "changing")
+		reconnect += strings.Count(s, "reconnect")
+	}
+	if changing != 1 || reconnect != 1 {
+		t.Fatalf("changing %d reconnect %d: %q", changing, reconnect, rv.c.StuffTexts)
+	}
+	for i := 0; i < 10; i++ {
+		rg.botFrame(nil)
+	}
+	rv.requireMatch(t)
+	if _, ok := rv.frames[frameKey{77, rg.srv.frame}]; !ok {
+		t.Fatal("viewer lacks the new client's latest frame")
+	}
 }
 
 func TestViewerBadCommandDrops(t *testing.T) {

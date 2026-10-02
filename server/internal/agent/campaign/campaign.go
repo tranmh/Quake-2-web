@@ -15,8 +15,16 @@
 // "nextserver <spawncount>"; a picture (PlayerNum -1, ".pcx") ends the
 // campaign: victory.
 //
+// Every arrival through an exit is checked against the exit the left
+// level's route claims: the level (or picture, or cinematic) it names and,
+// for a game level, its spawnpoint (the info_player_start the bot's first
+// frame is at, by the map data). Any other arrival is an unplanned exit:
+// the episode ends with ErrUnplannedExit (the next route table would be
+// played from the wrong place).
+//
 // Watchdogs bound a level (LevelTimeout) and the episode (EpisodeTimeout)
-// in game time, the deaths on one level (MaxDeaths), and progress: after
+// in game time, the deaths on one level (MaxDeaths), the time without a
+// frame on the entered level (FrameTimeout), and progress: after
 // ExploreAfter without route progress the bot explores for a while, after
 // FailAfter the level fails as stalled.
 //
@@ -31,11 +39,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"quake2web/server/internal/agent/bot"
+	"quake2web/server/internal/agent/mapdata"
 	"quake2web/server/internal/agent/metrics"
 	"quake2web/server/internal/agent/nav/navrt"
 	"quake2web/server/internal/agent/route"
@@ -62,6 +73,9 @@ const (
 	DefaultExploreAfter   = 120 * time.Second
 	DefaultFailAfter      = 300 * time.Second
 	DefaultExploreFor     = 30 * time.Second
+	// DefaultFrameTimeout bounds the game time the entered level may go
+	// without a frame for the bot (a stalled or dropped client).
+	DefaultFrameTimeout = 10 * time.Second
 	// DefaultDeathWait is how long the bot lies dead before the reload
 	// (the plan's 1-2 s).
 	DefaultDeathWait = 1500 * time.Millisecond
@@ -112,6 +126,7 @@ type Config struct {
 	ExploreFor   time.Duration
 	FailAfter    time.Duration
 	DeathWait    time.Duration
+	FrameTimeout time.Duration
 
 	// Visits counts earlier visits per map for an episode that starts
 	// mid-campaign (a test starting on the second visit of demo2 passes
@@ -157,6 +172,9 @@ func (c *Config) defaults() {
 	if c.DeathWait <= 0 {
 		c.DeathWait = DefaultDeathWait
 	}
+	if c.FrameTimeout <= 0 {
+		c.FrameTimeout = DefaultFrameTimeout
+	}
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -194,7 +212,8 @@ type LevelResult struct {
 	WallMs  int64
 	Deaths  int
 	// Steps is the route's step count, StepsDone how many were done when
-	// the level ended (of the last attempt).
+	// the level ended (of the last attempt; all of them on its exit: the
+	// level change completes the exit step).
 	Steps, StepsDone int
 }
 
@@ -217,11 +236,17 @@ type EpisodeResult struct {
 }
 
 // ErrNoRoute is wrapped by the episode's error when a level has no route
-// table for its visit (an unplanned exit was taken).
+// table for its visit.
 var ErrNoRoute = errors.New("campaign: no route for the level")
 
-// Run plays one episode on the started session s (it is started when its
-// client is nil) and returns its result. The error is non-nil when the
+// ErrUnplannedExit is wrapped by the episode's error when the bot left a
+// level other than through the exit its route claims: it arrived on
+// another level, picture or cinematic, or at another spawnpoint.
+var ErrUnplannedExit = errors.New("campaign: unplanned exit")
+
+// Run plays one episode on the started session s (when its client is nil,
+// Run preloads the campaign's maps into the library and then starts it)
+// and returns its result. The error is non-nil when the
 // episode could not be played (session failures, missing data, an
 // unplanned level); an episode that ran but failed (a watchdog) reports it
 // in the result with a nil error. ctx cancellation aborts the episode.
@@ -266,6 +291,10 @@ type runner struct {
 	// leaving is the level left through an exit, ended once the next
 	// level is known
 	leaving *levelState
+	// expect is where the next arrival must be: the exit the left level's
+	// route claims, or what follows the cinematic it led to (nil: no
+	// claim, the episode's first level)
+	expect *mapdata.LevelString
 }
 
 type levelState struct {
@@ -283,21 +312,29 @@ type levelState struct {
 	stallSeen   bool
 	stucks      int
 	combatMs    int64
-	lastFrameAt int64
+	lastFrameAt int64 // the last frame folded (0: none since the entry)
+	frameAt     int64 // the entry or the last frame folded (the frame watchdog)
 	leftAt      int64
 	stepsDone   int
 	// truth is the game's level counters at the last frame (METRICS
 	// ONLY: they go to level_end, never to the bot)
 	truth session.Truth
 	// damageAt is the time of the last damage event traced; fought the
-	// tracks the bot fought (true once traced as killed)
+	// tracks the bot fought, in the order it first fought them (the kill
+	// events of one frame come out in that order)
 	damageAt int64
-	fought   map[string]bool
+	fought   []foughtTrack
 	// entry cheats: when they were sent, the prints seen since, the
 	// toggles sent again
 	enteredAt    int64
 	prints       uint64
 	cheatRetries int
+}
+
+// foughtTrack is a track the bot fought on a level.
+type foughtTrack struct {
+	id   string
+	dead bool // traced as killed
 }
 
 // cheatReply returns the word the reply to a toggling cheat starts with
@@ -352,16 +389,21 @@ func newRunner(ctx context.Context, s session.Session, cfg Config) (*runner, err
 		}
 		camp = c
 	}
-	if s.Client() == nil {
-		if err := s.Start(ctx); err != nil {
-			return nil, err
-		}
-	}
 	lib := cfg.Library
 	if lib == nil {
 		lib = NewLibrary(LibraryConfig{ReadFile: s.ReadFile, Skill: camp.Skill, Logf: cfg.Logf})
 	} else if lib.Skill() != camp.Skill {
 		return nil, fmt.Errorf("campaign: library resolves skill %d, campaign %s is for skill %d", lib.Skill(), camp.Name, camp.Skill)
+	}
+	if s.Client() == nil {
+		// no level entry may wait for a graph build once the client is
+		// connected (Library.Preload)
+		if err := lib.Preload(ctx, CampaignMaps(camp)...); err != nil {
+			return nil, err
+		}
+		if err := s.Start(ctx); err != nil {
+			return nil, err
+		}
 	}
 	bus := cfg.Bus
 	if bus == nil {
@@ -462,7 +504,29 @@ func (r *runner) run(ctx context.Context) (EpisodeResult, error) {
 				return res, err
 			}
 		}
+		if r.lv != nil {
+			if done, res, err := r.watchLevel(); done {
+				return res, err
+			}
+		}
 	}
+}
+
+// watchLevel runs the level watchdogs that hold whether frames come or
+// not (after every step on an entered level): the level's game time and
+// the time without a frame for the bot.
+func (r *runner) watchLevel() (bool, EpisodeResult, error) {
+	lv := r.lv
+	now := r.s.GameTimeMs()
+	switch {
+	case now-lv.startGMs > r.cfg.LevelTimeout.Milliseconds():
+		res, err := r.fail(trace.OutcomeTimeout, fmt.Sprintf("level watchdog: %s of game time", r.cfg.LevelTimeout))
+		return true, res, err
+	case now-lv.frameAt > r.cfg.FrameTimeout.Milliseconds():
+		res, err := r.fail(trace.OutcomeError, fmt.Sprintf("frame watchdog: no frame on %s for %s of game time", lv.name, r.cfg.FrameTimeout))
+		return true, res, err
+	}
+	return false, EpisodeResult{}, nil
 }
 
 // arrive handles a new svc_serverdata: the end of the level being played
@@ -470,8 +534,22 @@ func (r *runner) run(ctx context.Context) (EpisodeResult, error) {
 func (r *runner) arrive(c *fakeclient.Client) (bool, EpisodeResult, error) {
 	r.gen = c.LevelGen()
 	sd := c.ServerData
+	if r.lv != nil {
+		// left through an exit: the level ends once the next one is named
+		r.leaving, r.lv = r.lv, nil
+		r.leaving.leftAt = r.s.GameTimeMs()
+		want := mapdata.ParseLevelString(r.leaving.table.Exit.Map)
+		r.expect = &want
+	}
 	if sd.PlayerNum == -1 && strings.HasSuffix(strings.ToLower(sd.LevelName), ".pcx") {
 		name := sd.LevelName
+		if err := r.checkArrival(name, nil); err != nil {
+			res, err := r.unplanned(err)
+			return true, res, err
+		}
+		if lv := r.leaving; lv != nil {
+			lv.stepsDone = len(lv.table.Steps)
+		}
 		outcome, levelOutcome, reason := OutcomeCompleted, trace.OutcomeVictory, "victory: "+name
 		if t := r.camp.Terminal.Exit; t != "" && !strings.EqualFold(t, name) {
 			outcome, levelOutcome, reason = OutcomeFailed, trace.OutcomeExit, fmt.Sprintf("ended on picture %s, not the terminal %s", name, t)
@@ -480,13 +558,8 @@ func (r *runner) arrive(c *fakeclient.Client) (bool, EpisodeResult, error) {
 		res.Victory = outcome == OutcomeCompleted
 		return true, res, err
 	}
-	if r.lv != nil {
-		// left through an exit: the level ends once the next one is named
-		r.leaving, r.lv = r.lv, nil
-		r.leaving.leftAt = r.s.GameTimeMs()
-	}
 	if sd.PlayerNum == -1 {
-		if done, res, err := r.left(sd.LevelName); done {
+		if done, res, err := r.left(sd.LevelName, nil); done {
 			return true, res, err
 		}
 		// a cinematic (or a demo): the client asks for the next server
@@ -506,7 +579,7 @@ func (r *runner) arrive(c *fakeclient.Client) (bool, EpisodeResult, error) {
 func (r *runner) begin(ctx context.Context, c *fakeclient.Client) (bool, EpisodeResult, error) {
 	r.pending = false
 	name := c.MapName()
-	if done, res, err := r.left(name); done {
+	if done, res, err := r.left(name, c); done {
 		return true, res, err
 	}
 	visit := r.visits[name]
@@ -527,20 +600,102 @@ func (r *runner) begin(ctx context.Context, c *fakeclient.Client) (bool, Episode
 	return false, EpisodeResult{}, nil
 }
 
-// left ends the level the bot left through an exit, now that the next
-// level (to) is known, and the episode when StopAfter levels are done.
-func (r *runner) left(to string) (bool, EpisodeResult, error) {
+// left checks an arrival on to (c: the client active on a game level, nil
+// for a cinematic) against the exit claimed, ends the level the bot left
+// through it (if any), and the episode when StopAfter levels are done or
+// the exit was unplanned.
+func (r *runner) left(to string, c *fakeclient.Client) (bool, EpisodeResult, error) {
+	if err := r.checkArrival(to, c); err != nil {
+		res, err := r.unplanned(err)
+		return true, res, err
+	}
 	lv := r.leaving
 	if lv == nil {
 		return false, EpisodeResult{}, nil
 	}
 	r.leaving = nil
+	if n := len(lv.table.Steps); lv.stepsDone < n-1 {
+		// the right exit, early: the claimed destination is what the next
+		// route needs (a ride's last frames into the exit trigger may not
+		// have been seen)
+		r.logf("campaign: %s left at step %d of %d", lv.name, lv.stepsDone, n)
+	}
+	lv.stepsDone = len(lv.table.Steps) // the level change did the exit step
 	r.endLevel(lv, trace.OutcomeExit, "to "+to, lv.leftAt)
 	if r.exits++; r.cfg.StopAfter > 0 && r.exits >= r.cfg.StopAfter {
 		res, err := r.finish(OutcomeCompleted, "", fmt.Sprintf("stopped after %d levels, on to %s", r.exits, to), nil)
 		return true, res, err
 	}
 	return false, EpisodeResult{}, nil
+}
+
+// spawnSlack is how far (units) from its info_player_start the bot's
+// first frame on a level may be (it spawns 10 units up: SelectSpawnPoint
+// and PutClientInServer, then it drops).
+const spawnSlack = 64
+
+// checkArrival checks an arrival on level to against the claimed exit
+// (r.expect), and then claims what follows a cinematic: the level must be
+// the one the exit names and, for a game level (c, active on it), the bot
+// must be at the spawnpoint the exit names (the info_player_start
+// SelectSpawnPoint picks, by the map data), not nearer another one. It
+// returns an error wrapping ErrUnplannedExit (or the map data's).
+func (r *runner) checkArrival(to string, c *fakeclient.Client) error {
+	want := r.expect
+	r.expect = nil
+	if want == nil {
+		return nil
+	}
+	if !strings.EqualFold(to, want.Map) {
+		return fmt.Errorf("%w: arrived on %s, the route exits to %s", ErrUnplannedExit, to, want.Raw)
+	}
+	if c == nil {
+		if want.Next != "" {
+			next := mapdata.ParseLevelString(want.Next)
+			r.expect = &next
+		}
+		return nil
+	}
+	md, err := r.lib.Map(to)
+	if err != nil {
+		return err
+	}
+	if why := wrongSpawn(md, want.Spawnpoint, c.Origin()); why != "" {
+		return fmt.Errorf("%w: %s, the route exits to %s", ErrUnplannedExit, why, want.Raw)
+	}
+	return nil
+}
+
+// wrongSpawn says why origin o (the first frame on map md) is not the
+// spawnpoint sp: farther than spawnSlack from it and nearer another
+// info_player_start ("" when it is there, or md cannot tell).
+func wrongSpawn(md *mapdata.Map, sp string, o Vec3) string {
+	want, ok := md.SpawnPoint(sp)
+	if !ok {
+		return ""
+	}
+	dw := dist3(o, want.Origin)
+	if dw <= spawnSlack {
+		return ""
+	}
+	for i := range md.Spawns {
+		s := &md.Spawns[i]
+		if s.Entity != want.Entity && dist3(o, s.Origin) < dw {
+			return fmt.Sprintf("arrived at %v, at spawnpoint %q (#%d), %.0f units from %q (#%d)", o, s.Targetname, s.Entity, dw, want.Targetname, want.Entity)
+		}
+	}
+	return ""
+}
+
+// unplanned ends the episode on an unplanned exit: the level left (if
+// any) ends with an error.
+func (r *runner) unplanned(err error) (EpisodeResult, error) {
+	if lv := r.leaving; lv != nil {
+		r.leaving = nil
+		r.endLevel(lv, trace.OutcomeError, fmt.Sprintf("%v (at step %d of %d)", err, lv.stepsDone, len(lv.table.Steps)), lv.leftAt)
+	}
+	r.logf("campaign: %v", err)
+	return r.finish(OutcomeFailed, trace.OutcomeError, err.Error(), err)
 }
 
 // waitCinematic repeats the nextserver answer of a cinematic that does not
@@ -581,6 +736,7 @@ func (r *runner) enter(ctx context.Context, c *fakeclient.Client, reload bool) e
 	now := r.s.GameTimeMs()
 	lv.enteredAt = now
 	lv.entered, lv.deadAt = true, 0
+	lv.lastFrameAt, lv.frameAt = 0, now
 	lv.damageAt, lv.fought = now, nil
 	lv.progressAt, lv.exploreAt, lv.stallSeen, lv.stucks = now, 0, false, 0
 	if !reload {
@@ -598,7 +754,7 @@ func (r *runner) checkLevel(ctx context.Context) (bool, EpisodeResult, error) {
 	if lv.lastFrameAt > 0 && (bel.Self.InCombat || r.bot.Target() != "") {
 		lv.combatMs += now - lv.lastFrameAt
 	}
-	lv.lastFrameAt = now
+	lv.lastFrameAt, lv.frameAt = now, now
 	r.fixCheats(r.s.Client(), now)
 	r.traceFight(lv, bel, now)
 	if t, err := r.s.Truth(); err == nil {
@@ -628,10 +784,6 @@ func (r *runner) checkLevel(ctx context.Context) (bool, EpisodeResult, error) {
 		return r.reload(ctx)
 	}
 
-	if now-lv.startGMs > r.cfg.LevelTimeout.Milliseconds() {
-		res, err := r.fail(trace.OutcomeTimeout, fmt.Sprintf("level watchdog: %s of game time", r.cfg.LevelTimeout))
-		return true, res, err
-	}
 	if x := r.bot.Route(); x != nil {
 		if p := x.LastProgress(); p > lv.progressAt {
 			lv.progressAt = p
@@ -686,21 +838,17 @@ func (r *runner) traceFight(lv *levelState, bel *worldmodel.Belief, now int64) {
 	if n := len(bel.Damage); n > 0 {
 		lv.damageAt = max(lv.damageAt, bel.Damage[n-1].At)
 	}
-	if id := r.bot.Target(); id != "" {
-		if lv.fought == nil {
-			lv.fought = map[string]bool{}
-		}
-		if _, ok := lv.fought[id]; !ok {
-			lv.fought[id] = false
-		}
+	if id := r.bot.Target(); id != "" && !slices.ContainsFunc(lv.fought, func(f foughtTrack) bool { return f.id == id }) {
+		lv.fought = append(lv.fought, foughtTrack{id: id})
 	}
-	for id, dead := range lv.fought {
-		if dead {
+	for i := range lv.fought {
+		f := &lv.fought[i]
+		if f.dead {
 			continue
 		}
-		if t := bel.Track(id); t != nil && t.Life != worldmodel.LifeAlive && t.Life != worldmodel.LifeDying {
-			lv.fought[id] = true
-			r.publish(trace.TypeKill, trace.Kill{Target: id, Class: t.Class, Weapon: bel.Self.Weapon})
+		if t := bel.Track(f.id); t != nil && t.Life != worldmodel.LifeAlive && t.Life != worldmodel.LifeDying {
+			f.dead = true
+			r.publish(trace.TypeKill, trace.Kill{Target: f.id, Class: t.Class, Weapon: bel.Self.Weapon})
 		}
 	}
 }
@@ -831,4 +979,12 @@ func (r *runner) finish(outcome, levelOutcome, reason string, err error) (Episod
 		}
 	}
 	return res, err
+}
+
+// Vec3 is the game's vec3_t.
+type Vec3 = mapdata.Vec3
+
+func dist3(a, b Vec3) float32 {
+	dx, dy, dz := float64(a[0]-b[0]), float64(a[1]-b[1]), float64(a[2]-b[2])
+	return float32(math.Sqrt(dx*dx + dy*dy + dz*dz))
 }

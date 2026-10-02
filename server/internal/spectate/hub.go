@@ -205,22 +205,23 @@ func (h *Hub) run(r *relay) {
 	}
 }
 
-// reserve takes a viewer slot of the hub and the global limit.
-func (h *Hub) reserve() bool {
+// reserve takes a viewer slot of the hub and the global limit: ErrClosed
+// once the hub is closing, ErrFull when either has no room.
+func (h *Hub) reserve() error {
 	select {
 	case <-h.closing:
-		return false
+		return ErrClosed
 	default:
 	}
 	if n := h.slots.Add(1); h.cfg.MaxViewers > 0 && n > int64(h.cfg.MaxViewers) {
 		h.slots.Add(-1)
-		return false
+		return ErrFull
 	}
 	if !h.cfg.Global.acquire() {
 		h.slots.Add(-1)
-		return false
+		return ErrFull
 	}
-	return true
+	return nil
 }
 
 func (h *Hub) release() {
@@ -230,14 +231,14 @@ func (h *Hub) release() {
 
 // ServeConn serves one viewer on a datagram connection until it leaves,
 // the hub drops it or closes, the connection fails or ctx ends. base names
-// the remote host (logs and the netchan address). It returns ErrFull when
-// the hub or the global limit has no room and ErrClosed when the hub is
-// closed; nil when the viewer disconnected or the hub removed it. The
-// caller closes conn afterwards (the final svc_disconnect is flushed
-// first).
+// the remote host (logs and the netchan address). It returns ErrClosed when
+// the hub is closed (before or while the viewer joins) and ErrFull when the
+// hub or the global limit has no room; nil when the viewer disconnected or
+// the hub removed it (also by closing). The caller closes conn afterwards
+// (the final svc_disconnect is flushed first).
 func (h *Hub) ServeConn(ctx context.Context, conn qnet.Conn, base string) error {
-	if !h.reserve() {
-		return ErrFull
+	if err := h.reserve(); err != nil {
+		return err
 	}
 	defer h.release()
 	return h.serve(ctx, conn, base)

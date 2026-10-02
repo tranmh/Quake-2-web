@@ -523,11 +523,17 @@ func (r *relay) baselines(v *viewer) {
 }
 
 // begin puts the viewer in the game: it gets the configstrings that changed
-// during its handshake and a keyframe of the bot's latest frame.
+// during its handshake and a keyframe of the bot's latest frame. A begin
+// from a viewer already spawned on the level is ignored (the server would
+// run ClientBegin again; a viewer has nothing to respawn, and a keyframe per
+// begin would bypass the clientResync limit of lastframe -1).
 // C: server/sv_user.c:238 SV_Begin_f
 func (r *relay) begin(v *viewer) {
 	if !r.sameLevel(v) {
 		r.newViewer(v)
+		return
+	}
+	if v.state == vsSpawned {
 		return
 	}
 	if !r.level.Game() {

@@ -24,6 +24,8 @@ func TestExecutorDemo1(t *testing.T) {
 	t.Run("TouchPressShootPickup", func(t *testing.T) { testTouchPressShootPickup(t, lv) })
 	t.Run("RideCarriedIntoNextTrigger", func(t *testing.T) { testRideCarriedIntoNextTrigger(t, lv) })
 	t.Run("Face", func(t *testing.T) { testFace(t, lv) })
+	t.Run("DirectionalTouchNeedsFacing", func(t *testing.T) { testDirectionalTouchNeedsFacing(t, lv) })
+	t.Run("ExitWaitsForTheLevelChange", func(t *testing.T) { testExitWaitsForTheLevelChange(t, lv) })
 	t.Run("ObjectiveView", func(t *testing.T) { testObjectiveView(t, lv) })
 }
 
@@ -164,6 +166,67 @@ func testTouchPressShootPickup(t *testing.T, lv level) {
 	h.b.Effects = append(h.b.Effects, worldmodel.Effect{Kind: worldmodel.EffectItemTaken, Lump: shard, At: h.now})
 	if d := h.tick(1); !d.Done {
 		t.Fatalf("pickup not done: %+v", h.x.Current())
+	}
+}
+
+// testDirectionalTouchNeedsFacing: a directional trigger reached while the
+// bot faces away from its movedir did not fire (Touch_Multi): the step
+// holds the facing until the server saw it for a frame.
+func testDirectionalTouchNeedsFacing(t *testing.T, lv level) {
+	h := newHarness(t, lv, []route.Step{
+		{Op: route.OpTouch, Target: ref(286)}, // trigger_once *18, angle 270
+		{Op: route.OpGoto, Pos: vec(128, -320, 24)},
+	})
+	box := lv.md.Trigger(286).Box
+	h.b.Self.Origin = Vec3{(box.Min[0] + box.Max[0]) / 2, (box.Min[1] + box.Max[1]) / 2, box.Min[2] + 24}
+	h.b.Self.ViewAngles = Vec3{0, 90, 0}
+	h.tick(1)
+	h.nav.arrive()
+	for i := 0; i < 20; i++ {
+		d := h.tick(1)
+		if !d.MustFace || math.Abs(float64(angleDelta(d.FaceYaw, 270))) > 0.01 {
+			t.Fatalf("frame %d in the trigger facing away: %+v", i, d)
+		}
+	}
+	h.wantStep(0, StepRunning)
+	// turned: the server must see the facing for a frame before it counts
+	h.b.Self.ViewAngles = Vec3{0, 265, 0}
+	h.tick(1)
+	h.wantStep(0, StepRunning)
+	h.tick(1)
+	h.wantStep(1, StepRunning)
+	if r := h.x.Steps()[0].Reason; r != "arrived" {
+		t.Errorf("touch done: %q", r)
+	}
+}
+
+// testExitWaitsForTheLevelChange: the step that claims the exit is not
+// done when its goal is reached (the level change ends the level); when
+// no level change comes within ExitGrace the attempt fails and the next
+// one sets the goal again.
+func testExitWaitsForTheLevelChange(t *testing.T, lv level) {
+	h := newHarness(t, lv, []route.Step{{Op: route.OpTouch, Target: modelRef("*27"),
+		Effects: []route.Effect{{Kind: route.EffExit, Target: route.Ref{Entity: ref(418).Entity}}}}})
+	box := lv.md.Trigger(lv.md.ByModel("*27").Index).Box
+	h.b.Self.Origin = Vec3{(box.Min[0] + box.Max[0]) / 2, (box.Min[1] + box.Max[1]) / 2, box.Min[2] + 24}
+	h.tick(1)
+	n := len(h.nav.goals)
+	h.nav.arrive()
+	d := h.tick(ExitGrace/100 - 1)
+	if h.x.Done() || d.Done || d.Hold {
+		t.Fatalf("an exit reached is done or holds before the level change: %+v, %+v", d, h.x.Current())
+	}
+	h.wantStep(0, StepRunning)
+	if st := h.x.Current(); st.Attempts != 1 {
+		t.Fatalf("attempt %d while waiting", st.Attempts)
+	}
+	h.tick(2)
+	if st := h.x.Current(); st.Attempts != 2 || !strings.Contains(st.Reason, "did not fire") {
+		t.Fatalf("after %d ms without a level change: %+v", ExitGrace, st)
+	}
+	h.tick(RetryPause/100 + 1)
+	if len(h.nav.goals) != n+1 || h.nav.last().Kind != navrt.GoalTouch {
+		t.Fatalf("the exit was not attempted again: %d goals", len(h.nav.goals)-n)
 	}
 }
 

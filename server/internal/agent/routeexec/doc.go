@@ -7,6 +7,12 @@
 // (worldmodel.Belief: mover poses, lasers, tracks, items, the inventory)
 // and static map knowledge (mapdata, the nav graph).
 //
+// A step is done when the belief or the navigator shows it: a directional
+// touch only once the bot also faces along the trigger's movedir (held for
+// a server frame), and the step that claims the level's exit never: the
+// level change ends it, and when none comes within ExitGrace of reaching
+// its goal the attempt fails and the exit is tried again.
+//
 // An Executor owns the navigator while the bot pursues the objective: it
 // sets the step's goal and the route's avoid set (the table's avoid list
 // plus every other exit's activators), retries a step whose navigation

@@ -142,7 +142,7 @@ func TestLevelDemo1God(t *testing.T) {
 	if lr.Map != "demo1" || lr.Outcome != trace.OutcomeExit || !strings.Contains(lr.Reason, "demo2") {
 		t.Fatalf("demo1 ended %s (%s)", lr.Outcome, lr.Reason)
 	}
-	if lr.StepsDone < lr.Steps-1 {
+	if lr.StepsDone != lr.Steps {
 		t.Errorf("left demo1 with %d of %d steps done", lr.StepsDone, lr.Steps)
 	}
 	if n := countEvents(events, trace.TypeLevelStart); n != 1 {

@@ -50,6 +50,9 @@ type plan struct {
 	// seconds is a wait's duration (ms).
 	seconds int64
 	effects []effect
+	// exit: the step claims the level's exit (its last step); reaching its
+	// goal does not finish it, the level change does.
+	exit bool
 }
 
 // effect is a claimed effect resolved to what the belief can show.
@@ -182,6 +185,7 @@ func resolveStep(s *route.Step, md *mapdata.Map, g *nav.Graph) (plan, error) {
 			return p, fmt.Errorf("effect %d: %w", k, err)
 		}
 		p.effects = append(p.effects, f)
+		p.exit = p.exit || f.kind == route.EffExit
 	}
 	if (s.Op == route.OpConfirm || s.Op == route.OpWait) && len(p.effects) > 0 {
 		var ds []string

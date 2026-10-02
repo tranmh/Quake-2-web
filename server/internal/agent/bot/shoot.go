@@ -21,10 +21,13 @@ type Shooter struct {
 	yaw, pitch float32
 	aimed      bool // yaw/pitch hold the last commanded aim
 
-	want     decide.WeaponKey // the weapon asked for
-	useAt    int64            // when "use" was last sent (sent: ever)
+	// useAt is when "use" was last sent (sent: ever), useFor the weapon
+	// being switched to and useFirst when its first "use" went out (the
+	// switch is judged from then, whatever the resends).
+	useAt    int64
 	sent     bool
-	useFor   decide.WeaponKey // the weapon it was sent for
+	useFor   decide.WeaponKey
+	useFirst int64
 	refused  map[decide.WeaponKey]int64
 	switches int
 }
@@ -106,12 +109,7 @@ func usable(b *worldmodel.Belief, k decide.WeaponKey) bool {
 // can use it, else the best usable one; the current weapon is kept unless
 // another scores clearly better.
 func (s *Shooter) Choose(now int64, b *worldmodel.Belief, d float32, pref decide.WeaponKey) decide.WeaponKey {
-	ok := func(k decide.WeaponKey) bool {
-		if until, bad := s.refused[k]; bad && now < until {
-			return false
-		}
-		return usable(b, k)
-	}
+	ok := func(k decide.WeaponKey) bool { return !s.Refused(now, k) && usable(b, k) }
 	if pref != decide.WeaponKeep && pref.Known() && ok(pref) {
 		return pref
 	}
@@ -129,16 +127,19 @@ func (s *Shooter) Choose(now int64, b *worldmodel.Belief, d float32, pref decide
 }
 
 // Switch returns the "use <pickup>" command to send now for weapon k ("" if
-// none): when the view weapon is another one, at most every useDebounce;
-// a switch that did not show in the view weapon within useVerify makes k
-// unavailable for a while.
+// none): when the view weapon is another one, at most every useDebounce
+// (call it every frame). A switch that did not show in the view weapon
+// within useVerify of its first "use" makes k unavailable (Choose skips
+// it, Switch sends nothing for it) for refuseFor.
 func (s *Shooter) Switch(now int64, b *worldmodel.Belief, k decide.WeaponKey) string {
-	s.want = k
 	if k == "" || b.Self.Weapon == k.Pickup() {
 		s.useFor = ""
 		return ""
 	}
-	if s.useFor == k && now-s.useAt >= useVerify {
+	if until, bad := s.refused[k]; bad && now < until {
+		return ""
+	}
+	if s.useFor == k && now-s.useFirst >= useVerify {
 		if s.refused == nil {
 			s.refused = map[decide.WeaponKey]int64{}
 		}
@@ -150,11 +151,18 @@ func (s *Shooter) Switch(now int64, b *worldmodel.Belief, k decide.WeaponKey) st
 		return ""
 	}
 	if s.useFor != k {
-		s.useFor = k
+		s.useFor, s.useFirst = k, now
 	}
 	s.useAt, s.sent = now, true
 	s.switches++
 	return "use " + k.Pickup()
+}
+
+// Refused reports whether weapon k is unavailable at now because a switch
+// to it did not take.
+func (s *Shooter) Refused(now int64, k decide.WeaponKey) bool {
+	until, bad := s.refused[k]
+	return bad && now < until
 }
 
 // Switches returns how many "use" commands were sent.

@@ -34,9 +34,11 @@ type HandlerConfig struct {
 }
 
 // NewHandler returns the WebSocket endpoint a viewer watches a bot through
-// (one binary message per datagram, ADR-0001): it looks the bot's hub up,
-// takes a viewer slot (503 when full), redeems the ticket (403), upgrades
-// the connection and serves the viewer on the hub until it leaves.
+// (one binary message per datagram, ADR-0001): it looks the bot's hub up
+// (404 for an unknown bot), requires a ticket (403), takes a viewer slot
+// (503 when full, 410 when the hub is already closed), redeems the ticket
+// (403), upgrades the connection and serves the viewer on the hub until it
+// leaves.
 func NewHandler(cfg HandlerConfig) http.Handler {
 	return &handler{cfg: cfg}
 }
@@ -65,7 +67,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ticket required", http.StatusForbidden)
 		return
 	}
-	if !hub.reserve() {
+	switch err := hub.reserve(); err {
+	case nil:
+	case ErrClosed: // the bot's run ended after the lookup
+		http.Error(w, "bot no longer watchable", http.StatusGone)
+		return
+	default:
 		http.Error(w, "too many viewers", http.StatusServiceUnavailable)
 		return
 	}

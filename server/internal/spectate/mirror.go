@@ -14,7 +14,9 @@ import (
 // baselines the bot holds. A LevelSnapshot is immutable; the Mirror makes a
 // new one (sharing the unchanged arrays) whenever something changes.
 type LevelSnapshot struct {
-	// Gen is the bot client's level generation (fakeclient LevelGen).
+	// Gen is the level generation: 1, 2, ... per Stream, one for each
+	// svc_serverdata the bot parsed. It counts across bot clients (a
+	// Stream may outlive one), so it is not the client's LevelGen.
 	Gen int
 
 	// The svc_serverdata fields as the bot received them (the protocol is
@@ -103,11 +105,21 @@ type Message struct {
 // the client parsed a message (fakeclient OnServerMessage) and reads the
 // client's parsed state: a new generation is copied once in full, later
 // configstring and baseline changes are located by the message's spans.
+//
+// A new generation starts with each svc_serverdata the client parsed (its
+// LevelGen changed) and with the first serverdata of another client: a
+// Mirror may outlive the bot client feeding it (a runner may keep a hub
+// across sessions), and each client counts LevelGen from 1 again.
+//
 // A Mirror is not safe for concurrent use (Stream serializes it); the
 // snapshots it returns are.
 type Mirror struct {
 	level *LevelSnapshot
 	frame *FrameSnapshot
+
+	client    *fakeclient.Client // the client the level was mirrored from
+	clientGen int                // its LevelGen then
+	gen       int                // the Mirror's own generation count
 }
 
 // Level returns the current level snapshot (nil before any serverdata).
@@ -127,20 +139,22 @@ func (mr *Mirror) Update(c *fakeclient.Client, payload []byte, spans []fakeclien
 		}
 	}
 
-	gen := c.LevelGen()
-	switch lvl := mr.level; {
-	case gen == 0:
-		// no serverdata yet: nothing to mirror
-	case lvl == nil || lvl.Gen != gen:
-		mr.level = levelFromClient(c)
+	switch cg := c.LevelGen(); {
+	case cg == 0:
+		// no serverdata from this client yet: nothing to mirror (a new
+		// client's messages before it never carry a valid frame)
+	case c != mr.client || cg != mr.clientGen:
+		mr.client, mr.clientGen = c, cg
+		mr.gen++
+		mr.level = levelFromClient(c, mr.gen)
 		mr.frame = nil
 	default:
-		mr.level = lvl.apply(c, payload, spans)
+		mr.level = mr.level.apply(c, payload, spans)
 	}
 
-	if m.FrameSpan >= 0 && mr.level != nil && c.Frame.Valid {
+	if m.FrameSpan >= 0 && mr.level != nil && c == mr.client && c.Frame.Valid {
 		m.FrameValid = true
-		mr.frame = frameFromClient(c, gen)
+		mr.frame = frameFromClient(c, mr.gen)
 	}
 	if l := mr.level; l != nil && !l.Ready && (!l.Game() || m.FrameValid) {
 		cp := *l
@@ -151,10 +165,10 @@ func (mr *Mirror) Update(c *fakeclient.Client, payload []byte, spans []fakeclien
 	return m
 }
 
-// levelFromClient copies the client's whole level state (a new generation).
-func levelFromClient(c *fakeclient.Client) *LevelSnapshot {
+// levelFromClient copies the client's whole level state as generation gen.
+func levelFromClient(c *fakeclient.Client, gen int) *LevelSnapshot {
 	l := &LevelSnapshot{
-		Gen:         c.LevelGen(),
+		Gen:         gen,
 		ServerCount: c.ServerData.ServerCount,
 		AttractLoop: c.ServerData.AttractLoop,
 		GameDir:     c.ServerData.GameDir,
