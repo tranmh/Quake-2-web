@@ -55,6 +55,10 @@ type BlockerBelief struct {
 	// Seen is the clock (ms) of the last admitted observation, Since when
 	// Status or Pose last changed.
 	Seen, Since int64
+	// Assumed: the belief is an inference, not an observation: an
+	// assumption (Assume; Seen is when it was made) or an auto door the
+	// bot holds open by standing in its trigger.
+	Assumed bool
 }
 
 // Timing assumptions about movers.
@@ -102,12 +106,26 @@ type MapState struct {
 	info []blockerInfo
 	bel  []BlockerBelief
 	rev  []uint32
+	// assumedAt is when Assume last set a blocker's belief (noAssume:
+	// never): observations made before then no longer count.
+	assumedAt []int64
+	// inside is since when the bot's box touches an auto door's trigger
+	// (noAssume: not), held when the bot last held it open.
+	inside, held []int64
 }
+
+// noAssume marks "never" in MapState's assumption clocks.
+const noAssume = math.MinInt64
 
 // NewMapState returns the map state of graph g (resolved for a skill) and
 // its map data md, as the level spawns.
 func NewMapState(g *nav.Graph, md *mapdata.Map) *MapState {
-	m := &MapState{g: g, info: make([]blockerInfo, len(g.Blockers)), bel: make([]BlockerBelief, len(g.Blockers)), rev: make([]uint32, len(g.Blockers))}
+	n := len(g.Blockers)
+	m := &MapState{g: g, info: make([]blockerInfo, n), bel: make([]BlockerBelief, n), rev: make([]uint32, n),
+		assumedAt: make([]int64, n), inside: make([]int64, n), held: make([]int64, n)}
+	for i := 0; i < n; i++ {
+		m.assumedAt[i], m.inside[i], m.held[i] = noAssume, noAssume, noAssume
+	}
 	for i := range g.Blockers {
 		bl := &g.Blockers[i]
 		in := &m.info[i]
@@ -184,7 +202,9 @@ func (m *MapState) Travel(b int32) float32 { return m.info[b].travel }
 func (m *MapState) Sweep(b int32) (lo, hi Vec3) { return m.info[b].sweep[0], m.info[b].sweep[1] }
 
 // Update folds the world model's belief in (now is the belief's clock, ms)
-// and returns the blockers whose status or pose changed.
+// and returns the blockers whose status or pose changed. Observations
+// older than an assumption (Assume) are ignored, and an auto door counts
+// as open while the bot stands in its trigger (see holdOpen).
 func (m *MapState) Update(b *worldmodel.Belief, now int64) []int32 {
 	var changed []int32
 	for i := range m.g.Blockers {
@@ -192,8 +212,8 @@ func (m *MapState) Update(b *worldmodel.Belief, now int64) []int32 {
 		nb := m.bel[i]
 		switch {
 		case bl.Kind == nav.BlockLaser:
-			if l := b.Laser(int(bl.Entity)); l != nil && l.State != worldmodel.LaserUnknown {
-				nb.Seen = l.LastUpdate
+			if l := b.Laser(int(bl.Entity)); l != nil && l.State != worldmodel.LaserUnknown && l.LastUpdate > m.assumedAt[i] {
+				nb.Seen, nb.Assumed = l.LastUpdate, false
 				if l.State == worldmodel.LaserOn {
 					nb.Status, nb.Pose = BlockerAt, 0
 				} else {
@@ -201,12 +221,8 @@ func (m *MapState) Update(b *worldmodel.Belief, now int64) []int32 {
 				}
 			}
 		case bl.Model != "":
-			mv := b.Mover(bl.Model)
-			if mv == nil {
-				break
-			}
-			if !nb.Observed || mv.LastUpdate != nb.Seen {
-				nb.Observed, nb.Origin, nb.Angles, nb.Seen = true, mv.Origin, mv.Angles, mv.LastUpdate
+			if mv := b.Mover(bl.Model); mv != nil && (!nb.Observed || mv.LastUpdate != nb.Seen) && mv.LastUpdate > m.assumedAt[i] {
+				nb.Observed, nb.Origin, nb.Angles, nb.Seen, nb.Assumed = true, mv.Origin, mv.Angles, mv.LastUpdate, false
 				k, d := nearestPose(bl, mv.Origin, mv.Angles)
 				if d <= poseTolerance {
 					nb.Status, nb.Pose = BlockerAt, k
@@ -214,6 +230,7 @@ func (m *MapState) Update(b *worldmodel.Belief, now int64) []int32 {
 					nb.Status, nb.Pose = BlockerMoving, k
 				}
 			}
+			m.holdOpen(int32(i), &nb, b, now)
 			m.expire(int32(i), &nb, now)
 		}
 		if nb.Status != m.bel[i].Status || nb.Pose != m.bel[i].Pose {
@@ -232,7 +249,7 @@ func (m *MapState) Update(b *worldmodel.Belief, now int64) []int32 {
 // seen moving longer ago than its travel time.
 func (m *MapState) expire(b int32, nb *BlockerBelief, now int64) {
 	bl, in := &m.g.Blockers[b], &m.info[b]
-	age := now - nb.Seen
+	age := now - max(nb.Seen, m.held[b])
 	switch {
 	case nb.Status == BlockerMoving && age > int64(in.travel*1000)+returnSlack:
 	case nb.Status == BlockerAt && nb.Pose != int(bl.Spawn) && (in.returns || bl.Kind == nav.BlockPlat) &&
