@@ -61,6 +61,9 @@ type Me struct {
 	HitFromBearing *int `json:"hit_from_bearing,omitempty"`
 	// Weapons are the owned weapons with ammo (slow lane).
 	Weapons []string `json:"weapons,omitempty"`
+	// Empty are the owned weapons without ammo (slow lane; present only
+	// when there are some): their ammo is worth a detour.
+	Empty []string `json:"empty,omitempty"`
 }
 
 // Enemy is a believed hostile monster.
@@ -134,6 +137,10 @@ type ObjectiveView struct {
 	NextWaypointBearing float32
 	// Stalled: no progress towards it for a while.
 	Stalled bool
+	// Exit: the steps left lead straight out of the level (no kill,
+	// pickup or confirmation left before the exit): what the bot carries
+	// now is what it starts the next level with.
+	Exit bool
 }
 
 // Objective is the encoded ObjectiveView.
@@ -144,6 +151,7 @@ type Objective struct {
 	Path    int    `json:"path"`
 	Next    int    `json:"next"`
 	Stalled bool   `json:"stalled"`
+	Exit    bool   `json:"exit,omitempty"` // present only when true
 }
 
 // LevelInfo is the level's progress (slow lane): kills and secrets from
@@ -559,9 +567,12 @@ func (p *Projector) Extend(st *State, b *worldmodel.Belief, cx Context) {
 	v := viewOf(b)
 	st.Mode = string(cx.Mode)
 	own := ownedWeapons(b)
-	st.Me.Weapons = nil
+	st.Me.Weapons, st.Me.Empty = nil, nil
 	for _, k := range own {
 		st.Me.Weapons = append(st.Me.Weapons, string(k))
+	}
+	for _, k := range ownedEmpty(b) {
+		st.Me.Empty = append(st.Me.Empty, string(k))
 	}
 	st.Items = p.items(b, &v, own)
 	if o := cx.Objective; o != nil {
@@ -570,7 +581,7 @@ func (p *Projector) Extend(st *State, b *worldmodel.Belief, cx Context) {
 			path = int(math.Round(float64(o.PathDist)))
 		}
 		st.Objective = &Objective{Kind: o.Kind, Desc: truncate(o.Desc, maxDesc), Bearing: roundAngle(angleDiff(float64(o.Bearing), 0)),
-			Path: path, Next: roundAngle(angleDiff(float64(o.NextWaypointBearing), 0)), Stalled: o.Stalled}
+			Path: path, Next: roundAngle(angleDiff(float64(o.NextWaypointBearing), 0)), Stalled: o.Stalled, Exit: o.Exit}
 	}
 	lv := &LevelInfo{Map: b.Map, DeathsHere: len(b.Memory.DeathSpots)}
 	if b.HelpKnown {

@@ -2,11 +2,37 @@
 // frame into the world model (fair perception only), asks its Policy for
 // an Intent with the route's objective, runs the route executor (package
 // routeexec) or the mode the policy chose, and turns the navigator's
-// movement plus the shoot executor's aim and trigger into the session's
-// usercmds (four 25 ms commands per server frame). It also sends the side
-// commands the world model asks for (the inventory and the help computer,
-// at most one pair every 2 s and never in a fight) and leaves an
-// intermission by pressing a button after 5.5 s of PM_FREEZE.
+// movement, the combat layer's own movement and reflexes and the aim and
+// fire gate into the session's usercmds (four 25 ms commands per server
+// frame). It also sends the side commands the world model asks for (the
+// inventory and the help computer, at most one pair every 2 s and never
+// in a fight) and leaves an intermission by pressing a button after 5.5 s
+// of PM_FREEZE.
+//
+// The modes:
+//
+//   - objective: the route executor's current step (a route kill step
+//     makes its monster the target once seen: the bot fights it);
+//   - fight: engage the intent's target (or the route's kill): aim and fire
+//     with the fire gate, and move relative to it as the intent says
+//     (advance and retreat through the navigator, strafes and holds by the
+//     controller where the way is safe: floor, avoided entities, hazards);
+//   - retreat: back off from the main threat, to a health item when one is
+//     known nearby, else to a spot it cannot see, else along the trail;
+//   - pickup: the navigator to the intent's item, then back to the route;
+//   - explore: frontier regions of the nav graph (the campaign's watchdog,
+//     or the intent without a route).
+//
+// Reflexes always win, every command: the fire gate (control.FireGate),
+// the dodge of an incoming projectile, the escape from a grenade.
+//
+// A Policy that is a *decide.Pipeline (NewBrain) gets the level's static
+// probes at every entry (SetProbes: the space around the bot, path
+// distances over the nav graph). With Config.OnDecision set the bot emits
+// one trace decision event per decision tick (lane tick, see
+// trace.LaneTick): the fast lane state's digest, the Intent with the
+// provenance of every field, what the bot executed and the usercmds sent
+// since the previous tick.
 //
 // A Bot serves one session. Call Enter at every level entry (including a
 // reload of the entry save) with the level's static data, Observe after
@@ -29,6 +55,7 @@ import (
 	"quake2web/server/internal/agent/perception"
 	"quake2web/server/internal/agent/route"
 	"quake2web/server/internal/agent/routeexec"
+	"quake2web/server/internal/agent/trace"
 	"quake2web/server/internal/agent/worldmodel"
 	"quake2web/server/internal/fakeclient"
 	"quake2web/server/internal/q2const"
@@ -47,6 +74,8 @@ const (
 	IntermissionPress = 5500
 	// exploreLeg bounds one explore leg before another spot is picked.
 	exploreLeg = 20000
+	// maxPendingCmds bounds the usercmds kept for the next tick event.
+	maxPendingCmds = 64
 )
 
 // Config configures a Bot. The zero value works (no animations, the
@@ -61,7 +90,8 @@ type Config struct {
 	Classes *perception.ClassTable
 	// Anims shares an animation cache between bots (nil: own cache).
 	Anims *perception.AnimCache
-	// Policy decides the intent each frame (nil: ObjectivePolicy).
+	// Policy decides the intent each frame (nil: ObjectivePolicy). A
+	// *decide.Pipeline (NewBrain) is the decision layer.
 	Policy Policy
 	// Nav configures each level's navigator; the route executor sets its
 	// avoid set, and OnBlocked is chained after the level memory's record.
@@ -72,6 +102,20 @@ type Config struct {
 	Seed int64
 	// Logf, when set, receives the route executor's step events.
 	Logf func(format string, args ...any)
+
+	// OnDecision, when set, receives the bot's decision trace events: one
+	// lane tick event per decision tick, preceded (TraceRequests) by the
+	// lane fast and slow events of the requests the Policy collected that
+	// tick. The event is the caller's to keep.
+	OnDecision func(d *trace.Decision)
+	// TraceRequests also emits the request events of a Policy that reports
+	// them (decide.Pipeline). Leave it off when the pipeline's OnRecord
+	// publishes them already: a request must be traced once.
+	TraceRequests bool
+	// TraceState puts the full fast lane state into every tick event and
+	// the state and questions into the request events (default: digests
+	// only).
+	TraceState bool
 }
 
 // Level is a level the bot enters: the visit key (a reload keeps it),
@@ -94,6 +138,7 @@ const (
 	ModeObjective    Mode = "objective"
 	ModeFight        Mode = "fight"
 	ModePickup       Mode = "pickup"
+	ModeRetreat      Mode = "retreat"
 	ModeExplore      Mode = "explore"
 	ModeDead         Mode = "dead"
 	ModeIntermission Mode = "intermission"
@@ -102,12 +147,13 @@ const (
 
 // Bot is the per-tick loop (see the package documentation).
 type Bot struct {
-	cfg    Config
-	world  *worldmodel.World
-	reader *perception.Reader
-	policy Policy
-	shoot  Shooter
-	rng    *rand.Rand
+	cfg     Config
+	classes *perception.ClassTable
+	world   *worldmodel.World
+	reader  *perception.Reader
+	policy  Policy
+	shoot   Shooter
+	rng     *rand.Rand
 
 	lv      Level
 	entered bool
@@ -127,23 +173,60 @@ type Bot struct {
 	firePolicy decide.FirePolicy
 	fire       bool // this command's trigger
 	fired      int  // commands with the trigger held
+	cmdSub     int  // commands built since the last frame folded
+
+	// overrides of the intent this tick, for the trace: why the target,
+	// the fire policy and the weapon acted on are not the intent's (""
+	// when they are)
+	targetBy, fireBy, weaponBy string
+	weaponTo                   decide.WeaponKey // the weapon a reflex chose
+	// routeKill is the track of the route's kill step once the executor
+	// named it
+	routeKill string
+	fight     fight
+	// search: the bot looks towards searchYaw until searchUntil (a hit it
+	// did not see coming, at searchAt)
+	searchAt, searchUntil int64
+	searchYaw             float32
 
 	freezeSince int64
 	pressed     bool
 	sideAt      int64
 	sideSent    int
+	switchCmd   string // the "use" sent this tick
 
 	exploreUntil int64
 	exploreAt    int64
 	explores     int
+	regions      map[int32]bool // nav regions visited on the level
+
+	// the pickup under way (its progress) and the spots given up on (kept
+	// per level visit across reloads: static learning)
+	pickID   string
+	pickBest float32
+	pickAt   int64
+	badItems []badSpot
+	badByKey map[worldmodel.LevelKey][]badSpot
+
+	ticks   int // decision ticks on the level attempt
+	pending []trace.UserCmd
+
+	// trapped: since when the bot stands where the route's objective is
+	// out of reach for good (a pit: trapTick), when it last sent "kill",
+	// how many times
+	trappedSince, killAt int64
+	kills                int
 }
 
 // New returns a bot with no level: call Enter once the client is active on
 // one.
 func New(cfg Config) *Bot {
-	b := &Bot{cfg: cfg, reader: perception.NewReader(), policy: cfg.Policy, mode: ModeNone, sideAt: -SideInterval}
+	b := &Bot{cfg: cfg, classes: cfg.Classes, reader: perception.NewReader(), policy: cfg.Policy, mode: ModeNone, sideAt: -SideInterval}
 	if b.policy == nil {
 		b.policy = ObjectivePolicy{}
+	}
+	if b.classes == nil {
+		b.classes = perception.NewClassTable()
 	}
 	b.world = worldmodel.New(worldmodel.Config{ReadFile: cfg.ReadFile, Perception: cfg.Perception, Classes: cfg.Classes, Anims: cfg.Anims})
 	b.rng = rand.New(rand.NewSource(cfg.Seed))
@@ -156,12 +239,19 @@ var ErrNoGraph = errors.New("bot: a level needs its map data and nav graph")
 // Enter starts a level: the world model resets to it (a key entered before
 // restores its level memory), and the bot gets a new navigator, driver and
 // route executor. Frames of other level generations are ignored from now
-// on.
+// on. A Policy that takes level probes (decide.Pipeline) gets the level's.
 func (b *Bot) Enter(lv Level) error {
 	if lv.Map == nil || lv.Graph == nil {
 		return ErrNoGraph
 	}
+	if b.badByKey == nil {
+		b.badByKey = map[worldmodel.LevelKey][]badSpot{}
+	}
+	if b.entered {
+		b.badByKey[b.lv.Key] = b.badItems
+	}
 	b.world.Reset(worldmodel.Level{Key: lv.Key, Map: lv.Map})
+	b.seedItems(lv.Map)
 	ncfg := b.cfg.Nav
 	user := ncfg.OnBlocked
 	ncfg.OnBlocked = func(edge int, key string, until int64) {
@@ -186,19 +276,34 @@ func (b *Bot) Enter(lv Level) error {
 			return err
 		}
 	}
+	if p, ok := b.policy.(levelProber); ok {
+		var space decide.SpaceProbe
+		if lv.Map.CM != nil {
+			space = decide.NewTraceSpace(lv.Map.CM, 256)
+		}
+		p.SetProbes(space, b.itemPath)
+	}
 	b.lv, b.entered = lv, true
 	b.nav, b.exec = n, x
 	b.drv = navrt.NewDriver(n)
 	b.drv.Aim = b.aim
+	b.drv.Move = b.move
 	b.started = false
 	b.frames = 0
 	b.intent = decide.Intent{}
 	b.dir = routeexec.Directive{}
 	b.mode = ModeObjective
 	b.navMine = false
-	b.target, b.fire = "", false
+	b.target, b.fire, b.cmdSub = "", false, 0
+	b.targetBy, b.fireBy, b.routeKill = "", "", ""
+	b.fight.reset()
+	b.searchAt, b.searchUntil = 0, 0
 	b.freezeSince, b.pressed = 0, false
 	b.exploreUntil, b.exploreAt = 0, 0
+	b.regions = map[int32]bool{}
+	b.pickID, b.badItems = "", b.badByKey[lv.Key]
+	b.ticks, b.pending = 0, nil
+	b.trappedSince, b.killAt = 0, 0
 	b.shoot.Reset()
 	return nil
 }
@@ -215,6 +320,7 @@ func (b *Bot) Observe(c *fakeclient.Client, now int64) bool {
 	b.world.Update(in, now)
 	b.now = now
 	b.frames++
+	b.cmdSub = 0
 	bel := b.world.Belief()
 	if !b.started && b.exec != nil {
 		b.exec.Start(now)
@@ -229,7 +335,7 @@ func (b *Bot) Observe(c *fakeclient.Client, now int64) bool {
 // navigation goal, the fight target and weapon, and the side commands.
 func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 	s := &bel.Self
-	b.target = ""
+	b.target, b.switchCmd = "", ""
 	switch {
 	case s.PmType == q2const.PM_FREEZE:
 		if b.freezeSince == 0 {
@@ -243,6 +349,10 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 		return
 	}
 	b.freezeSince, b.pressed = 0, false
+	b.trailUpdate(s.Origin)
+	b.noteRegion(s.Origin)
+	b.reflexTick(bel)
+	b.trapTick(c, bel)
 
 	var obj *decide.ObjectiveView
 	if b.exec != nil {
@@ -250,13 +360,23 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 	}
 	b.intent = b.policy.Tick(b.now, bel, obj)
 	b.firePolicy = b.intent.FirePolicy
+	b.targetBy, b.fireBy = "", ""
 
 	mode := ModeObjective
+	var foe, threat *worldmodel.Track
+	rk := b.routeKillTrack(bel)
 	switch {
+	case b.intent.Mode == decide.ModeRetreat && b.threatOrNil(bel, &threat):
+		mode = ModeRetreat
+	case b.intent.Mode == decide.ModeFight && b.liveTrack(bel, b.intent.Target) != nil && !b.disengaged(b.intent.Target):
+		mode, foe = ModeFight, b.liveTrack(bel, b.intent.Target)
+	case rk != nil:
+		mode, foe = ModeFight, rk
+		if rk.ID != b.intent.Target {
+			b.targetBy = "route_kill"
+		}
 	case b.exploreUntil > 0:
 		mode = ModeExplore
-	case b.intent.Mode == decide.ModeFight && b.liveTrack(bel, b.intent.Target) != nil:
-		mode = ModeFight
 	case b.intent.Mode == decide.ModePickup && b.pickupItem(bel, b.intent.Pickup) != nil:
 		mode = ModePickup
 	case b.intent.Mode == decide.ModeExplore && b.exec == nil:
@@ -265,7 +385,11 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 	if mode != ModeObjective && b.exec != nil {
 		b.exec.Yield()
 	}
+	if mode != ModeFight && mode != ModeRetreat && b.fight.goal != goalNone {
+		b.fight.goal = goalNone
+	}
 	b.dir = routeexec.Directive{Hold: true}
+	b.mode = mode
 	switch mode {
 	case ModeObjective:
 		if b.navMine {
@@ -277,41 +401,137 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 		}
 		b.dir = b.exec.Update(b.now, bel)
 		if b.dir.Done {
-			mode = ModeDone
+			b.mode = ModeDone
 		}
 		if k := b.dir.Kill; k != nil && k.Track != "" {
+			// the route's kill: fight it from here on once seen (the
+			// executor brought the bot to a firing position)
+			b.routeKill = k.Track
 			b.target = k.Track
-			if b.firePolicy == decide.FireHold || b.firePolicy == "" {
-				b.firePolicy = decide.FireWhenAligned
-			}
+			b.targetBy = "route_kill"
 		}
 	case ModeFight:
-		// phase 4 has no fight movement: the bot stands and fights (the
-		// decision layer's movement field is wave 5's)
-		b.target = b.intent.Target
-		b.takeNav()
-		b.nav.ClearGoal()
+		b.target = foe.ID
+		b.fightTick(bel, foe)
+		b.fightClock(foe.ID)
+	case ModeRetreat:
+		b.retreatTick(bel, threat)
 	case ModePickup:
 		b.pickup(bel)
 	case ModeExplore:
 		b.exploreTick(bel)
 	}
-	b.mode = mode
-
-	// weapons: in a fight the best one for the range, else the one the
-	// policy asks for
-	want := b.intent.Weapon
-	if tr := bel.Track(b.target); tr != nil {
-		want = b.shoot.Choose(b.now, bel, dist3(s.Eye, tr.Pos), b.intent.Weapon)
-	} else if want != decide.WeaponKeep && !usable(bel, want) {
-		want = decide.WeaponKeep
+	if b.target != "" && b.targetBy == "route_kill" && (b.firePolicy == decide.FireHold || b.firePolicy == "") {
+		b.firePolicy, b.fireBy = decide.FireWhenAligned, "route_kill"
 	}
-	if want != decide.WeaponKeep {
-		if cmd := b.shoot.Switch(b.now, bel, want); cmd != "" {
-			c.StringCmd(cmd)
+	if b.target == "" && b.mode != ModeFight && b.firePolicy != decide.FireHold && b.firePolicy != "" {
+		// on the move (the route, a pickup, a retreat): shoot back at the
+		// intent's target while it is in view with a line of fire
+		if t := b.liveTrack(bel, b.intent.Target); t != nil && t.Visible && t.Shootable {
+			b.target = t.ID
 		}
 	}
+	b.searchTick(bel)
+
+	b.weaponTick(c, bel)
 	b.sideCommands(c, bel)
+	b.traceTick(bel)
+}
+
+// weaponTick switches to the weapon the intent asks for (the decision
+// layer chooses weapons), unless a reflex overrides it: the weapon in hand
+// is dry, or a splash weapon would fire at a target too close (the best
+// usable weapon for the range then, Shooter.Choose). Without any decision
+// about the weapon (no answer, or a policy that does not choose one) the
+// bot fights with the best weapon for the range.
+func (b *Bot) weaponTick(c *fakeclient.Client, bel *worldmodel.Belief) {
+	s := &bel.Self
+	cur := decide.WeaponFromPickup(s.Weapon)
+	want := b.intent.Weapon
+	tr := b.liveTrack(bel, b.target)
+	d := float32(-1)
+	if tr != nil {
+		d = dist3(s.Eye, tr.Pos)
+	}
+	splashClose := func(k decide.WeaponKey) bool {
+		w, _ := control.WeaponByPickup(k.Pickup())
+		return tr != nil && w.HasSplash() && d < 1.5*control.SplashSafe
+	}
+	b.weaponBy = ""
+	switch {
+	case cur != "" && !usable(bel, cur):
+		want, b.weaponBy = b.shoot.Choose(b.now, bel, max(d, 0), decide.WeaponKeep), "dry"
+	case splashClose(cur):
+		want, b.weaponBy = b.shoot.Choose(b.now, bel, d, decide.WeaponKeep), "splash"
+	case want != decide.WeaponKeep && (!usable(bel, want) || splashClose(want)):
+		want = decide.WeaponKeep
+	case want == decide.WeaponKeep && tr != nil && b.intent.Provenance.Weapon.Source == decide.SourceDefault:
+		want = b.shoot.Choose(b.now, bel, d, decide.WeaponKeep)
+	}
+	if b.weaponBy != "" {
+		b.weaponTo = want
+	}
+	if want == decide.WeaponKeep || want == cur {
+		return
+	}
+	if cmd := b.shoot.Switch(b.now, bel, want); cmd != "" {
+		c.StringCmd(cmd)
+		b.switchCmd = cmd
+	}
+}
+
+// fightClock times the fight with track id: past fightBudget the bot
+// disengages from it (disengaged) for disengageFor.
+func (b *Bot) fightClock(id string) {
+	f := &b.fight
+	if f.foe != id || b.now-f.foeLast > 3000 {
+		f.foe, f.foeSince = id, b.now
+	}
+	f.foeLast = b.now
+	if b.now-f.foeSince > fightBudget {
+		f.offFoe, f.offUntil = id, b.now+disengageFor
+		f.foe = ""
+		f.noteReflex("disengage")
+	}
+}
+
+// disengaged reports a target the bot gave up fighting for now.
+func (b *Bot) disengaged(id string) bool {
+	return id != "" && id == b.fight.offFoe && b.now < b.fight.offUntil
+}
+
+// threatOrNil sets *t to the main threat and reports whether there is one.
+func (b *Bot) threatOrNil(bel *worldmodel.Belief, t **worldmodel.Track) bool {
+	*t = b.threat(bel)
+	return *t != nil
+}
+
+// routeKillTrack returns the route kill step's monster while it is the
+// step's (the executor named it) and alive, seen within routeKillMemory
+// and within the executor's firing range; nil otherwise (the executor
+// moves the bot to a firing position).
+func (b *Bot) routeKillTrack(bel *worldmodel.Belief) *worldmodel.Track {
+	if b.routeKill == "" {
+		return nil
+	}
+	if b.exec == nil || b.exec.Done() || b.exec.Current().Op != route.OpKill {
+		b.routeKill = ""
+		return nil
+	}
+	t := b.liveTrack(bel, b.routeKill)
+	if t == nil {
+		b.routeKill = ""
+		return nil
+	}
+	fireRange := b.cfg.Route.FireRange
+	if fireRange <= 0 {
+		fireRange = routeexec.DefaultFireRange
+	}
+	seen := t.Visible || t.LastSeen > 0 && bel.Time-t.LastSeen <= routeKillMemory
+	if !seen || dist3(bel.Self.Eye, t.Pos) > fireRange*1.25 {
+		return nil
+	}
+	return t
 }
 
 // takeNav makes the navigator the bot's (the route executor sets its goal
@@ -333,22 +553,85 @@ func (b *Bot) liveTrack(bel *worldmodel.Belief, id string) *worldmodel.Track {
 	return nil
 }
 
+// pickupItem returns the item id names when it is there to pick up: alive
+// and not given up on (pickupWatch).
 func (b *Bot) pickupItem(bel *worldmodel.Belief, id string) *worldmodel.Item {
 	if id == "" {
 		return nil
 	}
 	for i := range bel.Items {
 		if it := &bel.Items[i]; it.ID == id && it.Life == worldmodel.LifeAlive {
+			if b.badItem(it.Pos) {
+				return nil
+			}
 			return it
 		}
 	}
 	return nil
 }
 
-// pickup heads for the item the policy chose.
+// Pickup watchdog (ms, units).
+const (
+	// pickupStall is how long a pickup may go without getting pickupGain
+	// closer to the item.
+	pickupStall = 4000
+	pickupGain  = 24
+	// pickupStay is how long the bot may stand at the item (within
+	// pickupReach) without taking it (it does not need it, or it lies out
+	// of reach).
+	pickupStay  = 1500
+	pickupReach = 40
+	// badItemFor is how long an item given up on stays out of the
+	// decision layer's lists and the pickups.
+	badItemFor = 60000
+)
+
+// badSpot is an item spot the bot gave up on, until when.
+type badSpot struct {
+	pos   Vec3
+	until int64
+}
+
+// badItem reports an item spot given up on (until its time is over).
+func (b *Bot) badItem(p Vec3) bool {
+	for _, s := range b.badItems {
+		if b.now < s.until && dist3(s.pos, p) < 8 {
+			return true
+		}
+	}
+	return false
+}
+
+// itemPath is the decision layer's PathFunc: the navigator's path
+// distance; none to an item spot given up on, or one the bot could not
+// come back from (down a one-way drop: navrt.Navigator.CanReturn), so the
+// policy does not choose it.
+func (b *Bot) itemPath(from, to Vec3) (float32, bool) {
+	if b.badItem(to) || !b.nav.CanReturn(from, to) {
+		return 0, false
+	}
+	return b.nav.PathDistance(from, to)
+}
+
+// pickup heads for the item the policy chose, and gives up on it (for
+// badItemFor) when the bot gets no closer, cannot get there, or stands at
+// it without taking it.
 func (b *Bot) pickup(bel *worldmodel.Belief) {
 	it := b.pickupItem(bel, b.intent.Pickup)
 	if it == nil {
+		return
+	}
+	d := dist3(bel.Self.Origin, it.Pos)
+	if it.ID != b.pickID {
+		b.pickID, b.pickBest, b.pickAt = it.ID, d, b.now
+	}
+	if d < b.pickBest-pickupGain {
+		b.pickBest, b.pickAt = d, b.now
+	}
+	if b.now-b.pickAt > pickupStall || d < pickupReach && b.now-b.pickAt > pickupStay || b.navFailed() && b.now-b.pickAt > 500 {
+		b.badItems = append(b.badItems, badSpot{pos: it.Pos, until: b.now + badItemFor})
+		b.pickID = ""
+		b.nav.ClearGoal()
 		return
 	}
 	goal := navrt.PointGoal(it.Pos, 16)
@@ -364,10 +647,16 @@ func (b *Bot) pickup(bel *worldmodel.Belief) {
 }
 
 // sideCommands sends the inventory or help refresh the world model asks
-// for: one pair at most every SideInterval, never in a fight or while the
-// bot is busy with an aim-sensitive step.
+// for: one pair at most every SideInterval, never in a fight (except the
+// first inventory of a level).
 func (b *Bot) sideCommands(c *fakeclient.Client, bel *worldmodel.Belief) {
-	if bel.Self.InCombat || b.target != "" || b.now-b.sideAt < SideInterval {
+	if b.now-b.sideAt < SideInterval {
+		return
+	}
+	// the inventory is learned again at every level entry: without it the
+	// bot does not know its weapons, so the first one goes out even in a
+	// fight
+	if (bel.Self.InCombat || b.target != "") && bel.Inventory.Known {
 		return
 	}
 	switch {
@@ -386,6 +675,58 @@ func (b *Bot) sideCommands(c *fakeclient.Client, bel *worldmodel.Belief) {
 	b.sideSent++
 }
 
+// Trap recovery (ms, node share).
+const (
+	// trapShare: the bot is in a pit when the nav graph's nodes its spot
+	// reaches (any edge, conditions ignored) are fewer than one in
+	// trapShare of the level's and the route's objective is not among
+	// them.
+	trapShare = 20
+	// trapFor is how long the bot stays in a pit before it gives up the
+	// attempt ("kill", which the campaign answers like any death: the
+	// level-entry save is loaded); trapRetry spaces the commands (the
+	// game refuses a kill within 5 s of a spawn).
+	trapFor   = 12000
+	trapRetry = 6000
+)
+
+// trapTick gives up a level attempt the bot cannot finish from where it
+// stands: down a one-way drop into a pit (a knockback off a ledge, a
+// missed jump) with the route's objective out of reach. A player stuck
+// there types "kill" or loads the last save; the bot types "kill", and
+// the death and reload are counted as any other.
+func (b *Bot) trapTick(c *fakeclient.Client, bel *worldmodel.Belief) {
+	if b.exec == nil || b.exec.Done() {
+		b.trappedSince = 0
+		return
+	}
+	o := bel.Self.Origin
+	reach, total := b.nav.ReachSize(o)
+	trapped := reach*trapShare < total
+	if trapped {
+		if p, ok := b.exec.Target(); ok && b.nav.CanReturn(p, o) {
+			trapped = false // the objective is down here too
+		}
+	}
+	if !trapped {
+		b.trappedSince = 0
+		return
+	}
+	if b.trappedSince == 0 {
+		b.trappedSince = b.now
+	}
+	if b.now-b.trappedSince < trapFor || b.now-b.killAt < trapRetry && b.killAt > 0 {
+		return
+	}
+	b.killAt = b.now
+	b.kills++
+	b.fight.noteReflex("trapped_kill")
+	if b.cfg.Logf != nil {
+		b.cfg.Logf("bot: trapped at %v (%d of %d nav nodes reachable) for %.0fs: kill", o, reach, total, float64(b.now-b.trappedSince)/1000)
+	}
+	c.StringCmd("kill")
+}
+
 // Explore makes the bot wander to spots of the level until the clock
 // passes until (ms), then start the route's current step over (the
 // campaign's no-progress watchdog).
@@ -397,8 +738,21 @@ func (b *Bot) Explore(until int64) {
 	b.explores++
 }
 
-// exploreTick picks a spot 256 to 1024 units away and walks there,
-// another one when it arrives, fails or takes too long.
+// noteRegion marks the nav region the bot stands in as visited.
+func (b *Bot) noteRegion(o Vec3) {
+	if b.lv.Graph == nil {
+		return
+	}
+	if id := b.lv.Graph.Localize(o, 64); id != nav.NoNode {
+		b.regions[b.lv.Graph.Nodes[id].Region] = true
+	}
+}
+
+// exploreTick walks to the frontier: the nearest plain node, 256 to 1500
+// units away, of a nav region the bot has not stood in; once there is none
+// near, a random spot 256 to 1024 units away. Another spot is picked when
+// the bot arrives, fails or takes too long. At the end of an explore burst
+// the route's step starts over.
 func (b *Bot) exploreTick(bel *worldmodel.Belief) {
 	if b.exploreUntil > 0 && b.now >= b.exploreUntil {
 		b.exploreUntil = 0
@@ -416,25 +770,40 @@ func (b *Bot) exploreTick(bel *worldmodel.Belief) {
 		return
 	}
 	g := b.lv.Graph
-	cands := g.Nearby(bel.Self.Origin, 1024)
+	o := bel.Self.Origin
+	var frontier nav.NodeID = nav.NoNode
 	var pick []nav.NodeID
-	for _, c := range cands {
+	for _, c := range g.Nearby(o, 1500) {
 		nd := &g.Nodes[c.Node]
 		if nd.Flags&(nav.NodeCrouch|nav.NodeLadder|nav.NodeWater|nav.NodeMover) != 0 {
 			continue
 		}
-		if dist3(nd.Origin, bel.Self.Origin) >= 256 {
+		d := dist3(nd.Origin, o)
+		if d < 256 || !b.nav.CanReturn(o, nd.Origin) {
+			continue
+		}
+		if frontier == nav.NoNode && !b.regions[nd.Region] {
+			frontier = c.Node
+		}
+		if d <= 1024 {
 			pick = append(pick, c.Node)
 		}
 	}
 	b.takeNav()
 	b.exploreAt = b.now
-	if len(pick) == 0 {
-		b.nav.ClearGoal()
-		return
+	target := frontier
+	if target == nav.NoNode {
+		if len(pick) == 0 {
+			b.nav.ClearGoal()
+			return
+		}
+		target = pick[b.rng.Intn(len(pick))]
 	}
-	if err := b.nav.SetGoal(navrt.NodeGoal(pick[b.rng.Intn(len(pick))]), b.now); err != nil {
+	if err := b.nav.SetGoal(navrt.NodeGoal(target), b.now); err != nil {
 		b.nav.ClearGoal()
+		if target == frontier {
+			b.regions[g.Nodes[target].Region] = true // unreachable: not a frontier
+		}
 	}
 }
 
@@ -444,26 +813,44 @@ func (b *Bot) Cmd(c *fakeclient.Client, msec int) shared.UserCmd {
 	if !b.entered || b.drv == nil || c.LevelGen() != b.lv.Gen {
 		return idleCmd(ps, msec)
 	}
+	seq, ack := c.Netchan.OutgoingSequence, c.Netchan.IncomingAcknowledged
+	var u shared.UserCmd
 	switch ps.PMove.PmType {
 	case q2const.PM_FREEZE:
-		u := idleCmd(ps, msec)
+		u = idleCmd(ps, msec)
 		if b.freezeSince > 0 && b.now-b.freezeSince >= IntermissionPress {
 			u.Buttons |= q2const.BUTTON_ANY
 			b.pressed = true
 		}
-		return u
 	case q2const.PM_DEAD, q2const.PM_GIB:
-		return idleCmd(ps, msec)
+		u = idleCmd(ps, msec)
+	default:
+		b.fire = false
+		u = b.drv.Cmd(c, msec)
+		if b.fire {
+			u.Buttons |= q2const.BUTTON_ATTACK
+		}
+		if u.Buttons&q2const.BUTTON_ATTACK != 0 {
+			b.fired++
+			b.shoot.NoteFire(b.cmdNow())
+		}
+		b.cmdSub++
 	}
-	b.fire = false
-	u := b.drv.Cmd(c, msec)
-	if b.fire {
-		u.Buttons |= q2const.BUTTON_ATTACK
-	}
-	if u.Buttons&q2const.BUTTON_ATTACK != 0 {
-		b.fired++
-	}
+	b.recordCmd(u, seq, ack, c.Frame.ServerFrame)
 	return u
+}
+
+// recordCmd keeps a sent command for the next tick event.
+func (b *Bot) recordCmd(u shared.UserCmd, seq, ack int, frame int32) {
+	if b.cfg.OnDecision == nil {
+		return
+	}
+	if len(b.pending) == maxPendingCmds {
+		copy(b.pending, b.pending[1:])
+		b.pending = b.pending[:len(b.pending)-1]
+	}
+	b.pending = append(b.pending, trace.UserCmd{Msec: u.Msec, Buttons: u.Buttons, Angles: u.Angles, Forward: u.ForwardMove,
+		Side: u.SideMove, Up: u.UpMove, Impulse: u.Impulse, Seq: seq, Ack: ack, Frame: frame})
 }
 
 // idleCmd holds still with the current view.
@@ -473,27 +860,30 @@ func idleCmd(ps *shared.PlayerState, msec int) shared.UserCmd {
 }
 
 // aim is the driver's Aim: where each command looks. A view the movement
-// depends on (MustFace) wins; then the fight target (slewed, with the
-// trigger once aligned); then a facing the route step needs; then a point
-// it wants watched while the bot stands; else the path heading.
+// depends on (MustFace) wins; then a facing the route step needs; then
+// the target (slewed, led, with the fire gate deciding the trigger); then
+// a hit the bot did not see coming; then a point the step wants watched
+// while the bot stands; else the path heading.
 func (b *Bot) aim(in control.MoveIntent, st *navsim.State) (float32, float32) {
 	if in.MustFace {
 		b.shoot.SetView(in.FaceYaw, in.FacePitch)
 		return in.FaceYaw, in.FacePitch
 	}
 	eye := Vec3{st.Origin()[0], st.Origin()[1], st.Origin()[2] + st.ViewHeight}
-	view := b.world.Belief().Self.ViewAngles
-	if tr := b.liveTrack(b.world.Belief(), b.target); tr != nil {
-		k := decide.WeaponFromPickup(b.world.Belief().Self.Weapon)
-		p, r := aimFor(eye, tr, k)
-		fire := b.firePolicy != decide.FireHold && tr.Visible && tr.Shootable
-		y, pt, ok := b.shoot.Aim(eye, view[q2const.YAW], view[q2const.PITCH], AimTarget{Point: p, Radius: r, Fire: fire}, navrt.CmdMsec)
-		b.fire = ok
-		return y, pt
-	}
+	bel := b.world.Belief()
+	view := bel.Self.ViewAngles
 	if b.dir.MustFace {
+		// the route step needs the view (a directional trigger)
 		b.shoot.SetView(b.dir.FaceYaw, 0)
 		return b.dir.FaceYaw, 0
+	}
+	if tr := b.liveTrack(bel, b.target); tr != nil {
+		return b.aimAt(eye, view, tr, fireModeOf(b.firePolicy))
+	}
+	if b.cmdNow() < b.searchUntil {
+		sy, cy := sincos(b.searchYaw)
+		p := Vec3{eye[0] + cy*256, eye[1] + sy*256, eye[2]}
+		return b.shoot.Turn(eye, view[q2const.YAW], view[q2const.PITCH], p, navrt.CmdMsec)
 	}
 	if b.dir.HasLook && b.standing() {
 		y, p, _ := b.shoot.Aim(eye, view[q2const.YAW], view[q2const.PITCH], AimTarget{Point: b.dir.Look}, navrt.CmdMsec)
@@ -540,6 +930,15 @@ func (b *Bot) Mode() Mode { return b.mode }
 // Target returns the track fought in the last frame ("" if none).
 func (b *Bot) Target() string { return b.target }
 
+// Movement returns the movement the combat layer executes relative to the
+// target in the last frame (hold outside a fight).
+func (b *Bot) Movement() control.Move {
+	if b.mode != ModeFight {
+		return control.MoveHold
+	}
+	return b.fight.move
+}
+
 // Stats counts what the bot did.
 type Stats struct {
 	Frames       int // frames folded on the current level
@@ -548,11 +947,14 @@ type Stats struct {
 	Switches     int // "use" commands sent
 	Explores     int // explore bursts started
 	Pressed      bool
+	Ticks        int // decision ticks on the level attempt
+	TrapKills    int // "kill" commands sent from a pit (trapTick)
 }
 
 // Stats returns the counters.
 func (b *Bot) Stats() Stats {
-	return Stats{Frames: b.frames, FireCmds: b.fired, SideCommands: b.sideSent, Switches: b.shoot.Switches(), Explores: b.explores, Pressed: b.pressed}
+	return Stats{Frames: b.frames, FireCmds: b.fired, SideCommands: b.sideSent, Switches: b.shoot.Switches(), Explores: b.explores,
+		Pressed: b.pressed, Ticks: b.ticks, TrapKills: b.kills}
 }
 
 // Describe returns a diagnostic dump: the step, the bot's position and
@@ -572,6 +974,8 @@ func (b *Bot) Describe() string {
 	}
 	out += fmt.Sprintf("self origin %v vel %v view %v health %d armor %d weapon %q ammo %d pm %d ground %v dead %v\n",
 		s.Origin, s.Velocity, s.ViewAngles, s.Health, s.Armor, s.Weapon, s.Ammo, s.PmType, s.OnGround, s.Dead)
+	out += fmt.Sprintf("intent %s target %q fire %s move %s weapon %q pickup %q danger %.2f\n", b.intent.Mode, b.intent.Target,
+		b.intent.FirePolicy, b.intent.Movement, b.intent.Weapon, b.intent.Pickup, b.intent.Danger)
 	if b.nav != nil {
 		st := b.nav.Status()
 		g, has := b.nav.Goal()

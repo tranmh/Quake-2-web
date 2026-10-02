@@ -36,15 +36,48 @@ func TestModeRules(t *testing.T) {
 	}{
 		{"nothing: explore", func(s *decide.State) {}, decide.ModeExplore},
 		{"an objective", func(s *decide.State) { s.Objective = &decide.Objective{Kind: "press"} }, decide.ModeObjective},
-		{"a visible awake enemy within 1200", func(s *decide.State) {
+		{"a visible awake enemy within 600", func(s *decide.State) {
 			s.Objective = &decide.Objective{Kind: "press"}
-			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 1100, "med", "alert")}
+			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 550, "med", "alert")}
 		}, decide.ModeFight},
-		{"an idle enemy does not start a fight", func(s *decide.State) {
+		{"an alert enemy farther off is shot on the move", func(s *decide.State) {
+			s.Objective = &decide.Objective{Kind: "press"}
+			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 800, "med", "alert")}
+		}, decide.ModeObjective},
+		{"an attacker about level within 850", func(s *decide.State) {
+			s.Objective = &decide.Objective{Kind: "press"}
+			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 800, "med", "attacking")}
+		}, decide.ModeFight},
+		{"an attacker on a ledge far above", func(s *decide.State) {
+			s.Objective = &decide.Objective{Kind: "press"}
+			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 800, "med", "attacking")}
+			s.Enemies[0].Elev = 25
+		}, decide.ModeObjective},
+		{"an idle enemy in the line of fire: strike first", func(s *decide.State) {
 			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 400, "low", "idle")}
+		}, decide.ModeFight},
+		{"an idle enemy without a line of fire does not start a fight", func(s *decide.State) {
+			e := enemy("e1", "soldier", 400, "low", "idle")
+			e.Shootable = false
+			s.Enemies = []decide.Enemy{e}
 		}, decide.ModeExplore},
+		{"an idle enemy too far to strike first", func(s *decide.State) {
+			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 900, "low", "idle")}
+		}, decide.ModeExplore},
+		{"an attacker out of view keeps the fight on", func(s *decide.State) {
+			s.Objective = &decide.Objective{Kind: "press"}
+			e := enemy("e1", "soldier", 500, "med", "attacking")
+			e.Visible = false
+			s.Enemies = []decide.Enemy{e}
+		}, decide.ModeFight},
+		{"an alert enemy out of view does not", func(s *decide.State) {
+			s.Objective = &decide.Objective{Kind: "press"}
+			e := enemy("e1", "soldier", 500, "med", "alert")
+			e.Visible = false
+			s.Enemies = []decide.Enemy{e}
+		}, decide.ModeObjective},
 		{"too far to fight", func(s *decide.State) {
-			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 1300, "med", "attacking")}
+			s.Enemies = []decide.Enemy{enemy("e1", "soldier", 1000, "med", "attacking")}
 		}, decide.ModeExplore},
 		{"hurt with health near", func(s *decide.State) {
 			s.Me.Health, s.Me.HP = 35, "low"
@@ -53,8 +86,26 @@ func TestModeRules(t *testing.T) {
 		}, decide.ModePickup},
 		{"health too far", func(s *decide.State) {
 			s.Me.Health, s.Me.HP = 35, "low"
-			s.Items = []decide.ItemView{{ID: "i1", Class: "item_health", Gives: "health+10", Path: 900}}
+			s.Items = []decide.ItemView{{ID: "i1", Class: "item_health", Gives: "health+10", Path: 1200}}
 		}, decide.ModeExplore},
+		{"a little hurt: only health close by", func(s *decide.State) {
+			s.Me.Health, s.Me.HP = 60, "ok"
+			s.Objective = &decide.Objective{Kind: "press"}
+			s.Items = []decide.ItemView{{ID: "i1", Class: "item_health", Gives: "health+10", Path: 700}}
+		}, decide.ModeObjective},
+		{"a little hurt before the exit: heal first", func(s *decide.State) {
+			s.Me.Health, s.Me.HP = 60, "ok"
+			s.Objective = &decide.Objective{Kind: "press", Exit: true}
+			s.Items = []decide.ItemView{{ID: "i1", Class: "item_health", Gives: "health+10", Path: 1200}}
+		}, decide.ModePickup},
+		{"armor near", func(s *decide.State) {
+			s.Objective = &decide.Objective{Kind: "press"}
+			s.Items = []decide.ItemView{{ID: "i4", Class: "item_armor_jacket", Gives: "armor+25", Path: 300}}
+		}, decide.ModePickup},
+		{"a key is the route's", func(s *decide.State) {
+			s.Objective = &decide.Objective{Kind: "press"}
+			s.Items = []decide.ItemView{{ID: "i5", Class: "key_blue_key", Gives: "key:blue_key", Path: 100}}
+		}, decide.ModeObjective},
 		{"an unowned weapon near", func(s *decide.State) {
 			s.Items = []decide.ItemView{{ID: "i2", Class: "weapon_supershotgun", Gives: "weapon:super_shotgun", Path: 700}}
 		}, decide.ModePickup},
@@ -63,8 +114,14 @@ func TestModeRules(t *testing.T) {
 		}, decide.ModeExplore},
 		{"low ammo with ammo near", func(s *decide.State) {
 			s.Me.Ammo = "low"
-			s.Items = []decide.ItemView{{ID: "i3", Class: "ammo_shells", Gives: "shells+10", Path: 300}}
+			s.Items = []decide.ItemView{{ID: "i3", Class: "ammo_shells", Gives: "shells+10", Path: 700}}
 		}, decide.ModePickup},
+		{"ammo next to the path for an owned weapon", func(s *decide.State) {
+			s.Items = []decide.ItemView{{ID: "i3", Class: "ammo_shells", Gives: "shells+10", Path: 250}}
+		}, decide.ModePickup},
+		{"ammo for no owned weapon", func(s *decide.State) {
+			s.Items = []decide.ItemView{{ID: "i3", Class: "ammo_slugs", Gives: "slugs+10", Path: 100}}
+		}, decide.ModeExplore},
 		{"critical health under fire: retreat", func(s *decide.State) {
 			s.Me.Health, s.Me.HP, s.Me.DamageLast1s = 20, "critical", 25
 			s.Enemies = []decide.Enemy{enemy("e1", "gunner", 400, "high", "attacking")}
@@ -138,21 +195,21 @@ func TestMovementRanges(t *testing.T) {
 		units         int
 		want          string // advance, retreat, strafe
 	}{
-		{"shotgun", "soldier", 100, "retreat"},
-		{"shotgun", "soldier", 200, "strafe"},
+		{"shotgun", "soldier", 100, "strafe"},
+		{"shotgun", "soldier", 300, "strafe"},
 		{"shotgun", "soldier", 400, "advance"},
 		{"super_shotgun", "soldier", 150, "strafe"},
 		{"super_shotgun", "soldier", 260, "advance"},
-		{"machinegun", "soldier", 200, "retreat"},
-		{"chaingun", "soldier", 500, "strafe"},
-		{"chaingun", "soldier", 700, "advance"},
-		{"blaster", "soldier", 250, "retreat"},
-		{"blaster", "soldier", 400, "strafe"},
-		{"blaster", "soldier", 600, "advance"},
+		{"machinegun", "soldier", 200, "strafe"},
+		{"chaingun", "soldier", 600, "strafe"},
+		{"chaingun", "soldier", 800, "advance"},
+		{"blaster", "soldier", 250, "strafe"},
+		{"blaster", "soldier", 500, "strafe"},
+		{"blaster", "soldier", 700, "advance"},
 		{"rocket_launcher", "soldier", 150, "retreat"},
 		{"rocket_launcher", "soldier", 250, "strafe"},
-		{"rocket_launcher", "soldier", 900, "advance"},
-		{"railgun", "soldier", 300, "retreat"},
+		{"rocket_launcher", "soldier", 1000, "advance"},
+		{"railgun", "soldier", 300, "strafe"},
 		{"railgun", "soldier", 1500, "strafe"},
 		{"super_shotgun", "berserk", 200, "retreat"}, // melee only: keep 250 away
 		{"super_shotgun", "berserk", 260, "advance"},
@@ -167,6 +224,19 @@ func TestMovementRanges(t *testing.T) {
 		if !ok {
 			t.Errorf("%s vs %s at %d: %s, want %s", tc.weapon, tc.class, tc.units, m, tc.want)
 		}
+	}
+	// hurt under fire: back off; an enemy out of view: wait for it
+	s := baseState()
+	s.Me.Health, s.Me.HP = 35, "low"
+	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 300, "med", "attacking")}
+	if m := p.Decide(s, 0).Movement; m != decide.MoveRetreat {
+		t.Errorf("hurt under fire: %s", m)
+	}
+	s = baseState()
+	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 900, "med", "alert")}
+	s.Enemies[0].Visible = false
+	if m := p.Decide(s, 0).Movement; m != decide.MoveHold {
+		t.Errorf("out of view: %s", m)
 	}
 }
 
@@ -207,8 +277,16 @@ func TestStrafeRhythm(t *testing.T) {
 		t.Errorf("left blocked: %s", m)
 	}
 	s.Space.Right = "blocked"
+	if m := p.Decide(s, now).Movement; m != decide.MoveRetreat {
+		t.Errorf("both sides blocked: %s, want out of the corner", m)
+	}
+	s.Space.Back = "blocked"
+	if m := p.Decide(s, now).Movement; m != decide.MoveAdvance {
+		t.Errorf("sides and back blocked: %s", m)
+	}
+	s.Space.Front = "blocked"
 	if m := p.Decide(s, now).Movement; m != decide.MoveHold {
-		t.Errorf("both blocked: %s", m)
+		t.Errorf("boxed in: %s", m)
 	}
 	s = baseState()
 	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 100, "med", "attacking")}
@@ -231,6 +309,7 @@ func TestWeaponAndPickup(t *testing.T) {
 	p := NewPolicy(Config{})
 	s := baseState()
 	s.Me.Weapons = []string{"blaster", "shotgun", "super_shotgun", "chaingun", "grenade_launcher", "rocket_launcher", "railgun"}
+	s.Me.Weapon = "blaster"
 	for _, tc := range []struct {
 		units int
 		want  decide.WeaponKey
@@ -240,6 +319,21 @@ func TestWeaponAndPickup(t *testing.T) {
 			t.Errorf("at %d: %s, want %s", tc.units, d.Weapon, tc.want)
 		}
 	}
+	// hysteresis: a weapon among the band's best owned is kept
+	s.Me.Weapon = "chaingun"
+	for _, units := range []int{150, 500, 1000} {
+		s.Enemies = []decide.Enemy{enemy("e1", "soldier", units, "med", "attacking")}
+		if d := p.Decide(s, 0); d.Weapon != decide.WeaponKeep {
+			t.Errorf("chaingun in hand at %d: %s, want keep", units, d.Weapon)
+		}
+	}
+	// ... unless it runs dry
+	s.Me.Ammo = "none"
+	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 150, "med", "attacking")}
+	if d := p.Decide(s, 0); d.Weapon != decide.WeaponSuperShotgun {
+		t.Errorf("empty chaingun: %s", d.Weapon)
+	}
+	s.Me.Weapon, s.Me.Ammo = "shotgun", "ok"
 	// never grenades
 	s.Me.Weapons, s.Me.Weapon = []string{"blaster", "grenade_launcher"}, "blaster"
 	s.Enemies = []decide.Enemy{enemy("e1", "soldier", 500, "med", "attacking")}
@@ -255,10 +349,16 @@ func TestWeaponAndPickup(t *testing.T) {
 	if d := p.Decide(s, 0); d.Weapon != decide.WeaponKeep {
 		t.Errorf("no target: %s", d.Weapon)
 	}
-	// nearest needed item
-	s.Items = []decide.ItemView{{ID: "i1", Path: 500}, {ID: "i2", Path: 200}, {ID: "i3", Path: 200}}
+	// nearest item when none is wanted
+	s.Items = []decide.ItemView{{ID: "i1", Path: 1500}, {ID: "i2", Path: 1000}, {ID: "i3", Path: 1000}}
 	if d := p.Decide(s, 0); d.Pickup != "i2" {
 		t.Errorf("pickup %s", d.Pickup)
+	}
+	// the first wanted one otherwise (the projector ranks them)
+	s.Items = []decide.ItemView{{ID: "i1", Class: "key_blue_key", Gives: "key:blue_key", Path: 50},
+		{ID: "i2", Class: "weapon_railgun", Gives: "weapon:railgun", Path: 900}, {ID: "i3", Path: 100}}
+	if d := p.Decide(s, 0); d.Pickup != "i2" || d.Mode != decide.ModePickup {
+		t.Errorf("wanted pickup %s (mode %s)", d.Pickup, d.Mode)
 	}
 }
 

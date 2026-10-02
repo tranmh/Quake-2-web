@@ -2,6 +2,7 @@ package trace
 
 import (
 	"bytes"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,9 +13,9 @@ import (
 // shadows an envelope key.
 func TestRunnerEventsRoundTrip(t *testing.T) {
 	evs := []Event{
-		{Type: TypeCmds, Ep: 1, GMs: 1300, Lvl: 0, Map: "demo1", SF: 19, Body: Cmds{Step: 12, Cmds: []UserCmd{
-			{Msec: 25, Buttons: 1, Angles: [3]int16{-3, 16384, 0}, Forward: 400},
-			{Msec: 25, Angles: [3]int16{-3, 16390, 0}, Side: -400, Up: 400, Impulse: 0},
+		{Type: TypeCmds, Ep: 1, GMs: 1300, Lvl: 0, Map: "demo1", SF: 19, Body: Cmds{Step: 12, Cmds: []StepCmd{
+			{UserCmd: UserCmd{Msec: 25, Buttons: 1, Angles: [3]int16{-3, 16384, 0}, Forward: 400}, Light: 96},
+			{UserCmd: UserCmd{Msec: 25, Angles: [3]int16{-3, 16390, 0}, Side: -400, Up: 400, Impulse: 0}},
 		}}},
 		{Type: TypeProvenance, Ep: 1, GMs: 90000, Map: "demo1", Body: Provenance{Ticks: 900, Fields: []TickField{
 			{Name: "target", Default: 500, Model: 350, Scripted: 40, Stale: 10},
@@ -28,6 +29,10 @@ func TestRunnerEventsRoundTrip(t *testing.T) {
 				t.Errorf("%s.%s uses the envelope key %q", ty.Name(), ty.Field(i).Name, name)
 			}
 		}
+	}
+
+	if b, err := json.Marshal(evs[0]); err != nil || !strings.Contains(string(b), `"cmds":[{"msec":25,"buttons":1,`) || !strings.Contains(string(b), `"forward":400,"side":0,"up":0,"light":96}`) {
+		t.Fatalf("a step command flattens its usercmd: %s %v", b, err)
 	}
 
 	var buf bytes.Buffer

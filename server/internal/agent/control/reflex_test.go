@@ -33,6 +33,7 @@ func TestFireGate(t *testing.T) {
 		{"hold never fires", func(in *FireInput) { in.Mode = FireHold }, false, NoFireHold},
 		{"neutral in the line", func(in *FireInput) { in.Neutral = true }, false, NoFireNeutral},
 		{"neutral beats suppress", func(in *FireInput) { in.Mode, in.Neutral = FireSuppress, true }, false, NoFireNeutral},
+		{"a barrel close in the line", func(in *FireInput) { in.Barrel = true }, false, NoFireBarrel},
 		{"not visible: aligned holds", func(in *FireInput) { in.Visible = false }, false, NoFireNotVisible},
 		{"no line of fire", func(in *FireInput) { in.Shootable = false }, false, NoFireNoLine},
 		{"suppress without a line", func(in *FireInput) { in.Mode, in.Visible, in.Shootable = FireSuppress, false, false }, false, NoFireNoLine},

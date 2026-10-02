@@ -30,7 +30,12 @@ type Shooter struct {
 	useFirst int64
 	refused  map[decide.WeaponKey]int64
 	switches int
+	// lastFire is when the shooter's trigger was last held (ms; 0: never).
+	lastFire int64
 }
+
+// NoteFire records a command fired at now (ms).
+func (s *Shooter) NoteFire(now int64) { s.lastFire = now }
 
 // Weapon switching timing (ms).
 const (
@@ -92,14 +97,15 @@ func weaponScore(k decide.WeaponKey, d float32) float32 {
 }
 
 // usable reports whether the bot may fire weapon k by its belief: the
-// blaster always, the current weapon while it has ammo, others when the
-// inventory lists them with ammo for a shot.
+// blaster always, the current weapon while it has ammo (STAT_AMMO is live:
+// it wins over an inventory listed before the ammo ran out), others when
+// the inventory lists them with ammo for a shot.
 func usable(b *worldmodel.Belief, k decide.WeaponKey) bool {
 	if k == decide.WeaponBlaster {
 		return true
 	}
-	if b.Self.Weapon == k.Pickup() && b.Self.Ammo >= max(1, k.AmmoPerShot()) {
-		return true
+	if b.Self.Weapon == k.Pickup() {
+		return b.Self.Ammo >= max(1, k.AmmoPerShot())
 	}
 	inv := &b.Inventory
 	return inv.Known && inv.Count(k.Pickup()) > 0 && inv.Count(k.AmmoName()) >= max(1, k.AmmoPerShot())
@@ -128,15 +134,20 @@ func (s *Shooter) Choose(now int64, b *worldmodel.Belief, d float32, pref decide
 
 // Switch returns the "use <pickup>" command to send now for weapon k ("" if
 // none): when the view weapon is another one, at most every useDebounce
-// (call it every frame). A switch that did not show in the view weapon
-// within useVerify of its first "use" makes k unavailable (Choose skips
-// it, Switch sends nothing for it) for refuseFor.
+// (call it every frame), and never in the middle of the fire cycle of a
+// rocket, grenade, rail or BFG shot (control.Weapon.Committed, from the
+// shooter's own last shot, NoteFire). A switch that did not show in the
+// view weapon within useVerify of its first "use" makes k unavailable
+// (Choose skips it, Switch sends nothing for it) for refuseFor.
 func (s *Shooter) Switch(now int64, b *worldmodel.Belief, k decide.WeaponKey) string {
 	if k == "" || b.Self.Weapon == k.Pickup() {
 		s.useFor = ""
 		return ""
 	}
 	if until, bad := s.refused[k]; bad && now < until {
+		return ""
+	}
+	if w, _ := control.WeaponByPickup(b.Self.Weapon); w.Committed(now, s.lastFire) {
 		return ""
 	}
 	if s.useFor == k && now-s.useFirst >= useVerify {
@@ -184,6 +195,19 @@ type AimTarget struct {
 	// Fire allows pulling the trigger once aligned (the target is in view
 	// with a line of fire and the fire policy allows it).
 	Fire bool
+}
+
+// Turn returns the view after one command of msec turning towards point p
+// from eye (the rate-capped slew), starting at the view (yaw, pitch) when
+// the shooter has no aim yet.
+func (s *Shooter) Turn(eye Vec3, yaw, pitch float32, p Vec3, msec int) (float32, float32) {
+	if !s.aimed {
+		s.yaw, s.pitch, s.aimed = yaw, pitch, true
+	}
+	if wy, wp, ok := control.LookAt(eye, p); ok {
+		s.yaw, s.pitch = s.Slew.Step(s.yaw, s.pitch, wy, wp, msec)
+	}
+	return s.yaw, s.pitch
 }
 
 // Aim returns the view for one command of msec towards t from eye, starting

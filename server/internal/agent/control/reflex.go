@@ -17,9 +17,9 @@ import (
 //     and the aim within the weapon's tolerance (AimTolerance:
 //     atan(radius/dist) plus the weapon's spread); suppress also fires at a
 //     remembered position with a clear line, within a wider tolerance. No
-//     policy fires with a neutral (misc_insane, misc_actor) in the line of
-//     fire, or a splash weapon at a target or a wall closer than
-//     SplashSafe.
+//     policy fires with a neutral (misc_insane, misc_actor) or a near
+//     explosive barrel in the line of fire, or a splash weapon at a target
+//     or a wall closer than SplashSafe.
 //   - DodgeFor sidesteps an incoming projectile that will pass within
 //     DodgeMiss (plus half its splash radius) in less than DodgeETA.
 //   - GrenadeEscape runs (and jumps) away from a live grenade within
@@ -36,6 +36,10 @@ const (
 	// SplashSafe is the least distance (units) to the target and to a wall
 	// along the line of fire for a splash weapon (rocket, grenade, BFG).
 	SplashSafe = 150
+	// BarrelSafe is the distance (units) within which an explosive barrel
+	// in the line of fire holds it (misc_explobox: 150 damage over a
+	// radius of 190).
+	BarrelSafe = 240
 	// DodgeMiss is the closest approach (units) of a projectile that makes
 	// the bot sidestep; splash projectiles add half their radius.
 	DodgeMiss = 36
@@ -97,6 +101,9 @@ type FireInput struct {
 	// Neutral: a neutral body (misc_insane, misc_actor) is in the line of
 	// fire.
 	Neutral bool
+	// Barrel: an explosive barrel (misc_explobox) within BarrelSafe of the
+	// eye is in the line of fire (its blast would catch the bot).
+	Barrel bool
 	// WallClose: a solid lies within SplashSafe along the view.
 	WallClose bool
 }
@@ -105,6 +112,7 @@ type FireInput struct {
 const (
 	NoFireHold        = "hold"
 	NoFireNeutral     = "neutral"
+	NoFireBarrel      = "barrel"
 	NoFireSplashClose = "splash_close"
 	NoFireSplashWall  = "splash_wall"
 	NoFireNotVisible  = "not_visible"
@@ -127,7 +135,7 @@ type FireVerdict struct {
 // reports as overriding the decision).
 func (v FireVerdict) Vetoed() bool {
 	switch v.Reason {
-	case NoFireNeutral, NoFireSplashClose, NoFireSplashWall:
+	case NoFireNeutral, NoFireBarrel, NoFireSplashClose, NoFireSplashWall:
 		return true
 	}
 	return false
@@ -153,6 +161,8 @@ func FireGate(in FireInput) FireVerdict {
 		v.Reason = NoFireHold
 	case in.Neutral:
 		v.Reason = NoFireNeutral
+	case in.Barrel:
+		v.Reason = NoFireBarrel
 	case in.Weapon.HasSplash() && d < SplashSafe:
 		v.Reason = NoFireSplashClose
 	case in.Weapon.HasSplash() && in.WallClose:

@@ -13,24 +13,27 @@ import (
 
 // TestImports keeps the bot loop fair: its non-test files import only
 // the standard library and this allowlist (its own client, the fair
-// perception and belief, navigation, control, decisions and static map
+// perception and belief, navigation, control, decisions with the scripted
+// policy that reads only the lane state, the trace format and static map
 // knowledge), and nothing it links is server, game or session code (its
 // Cmd satisfies session.CmdFunc without importing it).
 func TestImports(t *testing.T) {
 	allowed := map[string]bool{
-		"quake2web/server/internal/agent/control":    true,
-		"quake2web/server/internal/agent/decide":     true,
-		"quake2web/server/internal/agent/mapdata":    true,
-		"quake2web/server/internal/agent/nav":        true,
-		"quake2web/server/internal/agent/nav/navrt":  true,
-		"quake2web/server/internal/agent/nav/navsim": true,
-		"quake2web/server/internal/agent/perception": true,
-		"quake2web/server/internal/agent/route":      true,
-		"quake2web/server/internal/agent/routeexec":  true,
-		"quake2web/server/internal/agent/worldmodel": true,
-		"quake2web/server/internal/fakeclient":       true,
-		"quake2web/server/internal/q2const":          true,
-		"quake2web/server/internal/qcommon/shared":   true,
+		"quake2web/server/internal/agent/backend/scripted": true,
+		"quake2web/server/internal/agent/control":          true,
+		"quake2web/server/internal/agent/trace":            true,
+		"quake2web/server/internal/agent/decide":           true,
+		"quake2web/server/internal/agent/mapdata":          true,
+		"quake2web/server/internal/agent/nav":              true,
+		"quake2web/server/internal/agent/nav/navrt":        true,
+		"quake2web/server/internal/agent/nav/navsim":       true,
+		"quake2web/server/internal/agent/perception":       true,
+		"quake2web/server/internal/agent/route":            true,
+		"quake2web/server/internal/agent/routeexec":        true,
+		"quake2web/server/internal/agent/worldmodel":       true,
+		"quake2web/server/internal/fakeclient":             true,
+		"quake2web/server/internal/q2const":                true,
+		"quake2web/server/internal/qcommon/shared":         true,
 	}
 	checkImports(t, "bot", allowed)
 }

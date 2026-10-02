@@ -1056,10 +1056,60 @@ func (n *Navigator) pathEnd() control.MoveIntent {
 	if n.goal.Kind == GoalShoot && end != nil {
 		return n.shoot()
 	}
+	if n.goal.Kind == GoalItem {
+		return n.approachItem(end)
+	}
 	if n.now-n.lastPlan >= 500 {
 		n.requestPlan("the path ended before the goal", false)
 	}
 	return n.hold()
+}
+
+// itemApproach bounds the final approach to an item past the end of its
+// path (ms): a goal node counts as touching the item's volume when the
+// player box at the node's origin grown by a unit touches it, but the bot
+// arrives within the arrival tolerance of the node, which may be a few
+// units short.
+const itemApproach = 2500
+
+// approachItem walks from the end of an item goal's path straight onto the
+// item's spot (crouched where the end node is a crouch node), and gives up
+// (Failed, final until Retry or a new goal) when that does not pick it up
+// within itemApproach.
+func (n *Navigator) approachItem(end *nav.Node) control.MoveIntent {
+	o := n.st.Origin()
+	if n.endSince == 0 || dist3(o, n.endSpot) > 64 {
+		n.endSince, n.endSpot = n.now, o
+	}
+	p, ok := n.itemSpot(n.goal.Entity)
+	if n.now-n.endSince >= itemApproach || !ok || n.avoidHit(o, p, n.st.Ducked(), 0) {
+		n.final = true
+		n.status.Follow, n.status.Cause = Failed, CauseWorld
+		n.status.Reason = fmt.Sprintf("%s: the path ended without the item", n.goal)
+		return n.hold()
+	}
+	in := n.stopAt(Vec3{p[0], p[1], o[2]})
+	in.Crouch = in.Crouch || n.st.Ducked() || end != nil && end.Flags&nav.NodeCrouch != 0
+	return in
+}
+
+// itemSpot returns the centre of the item volume of entity ent nearest to
+// the bot (ok false when it has none in the believed state).
+func (n *Navigator) itemSpot(ent int32) (Vec3, bool) {
+	o := n.st.Origin()
+	var best Vec3
+	bd, ok := float32(math.MaxFloat32), false
+	for _, vi := range n.volsOf[ent] {
+		v := &n.g.Volumes[vi]
+		if v.Kind != nav.EffItem || v.Blocker >= 0 && v.Pose >= 0 && n.ms.Possible(v.Blocker)&nav.Pose(int(v.Pose)) == 0 {
+			continue
+		}
+		c := boxCenter(v.Min, v.Max)
+		if d := dist3(o, c); d < bd {
+			best, bd, ok = c, d, true
+		}
+	}
+	return best, ok
 }
 
 // shoot faces the shoot goal's target and fires once the view is on it.

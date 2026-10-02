@@ -1012,5 +1012,39 @@ func (x *Executor) Objective() *decide.ObjectiveView {
 		ov.NextWaypointBearing = ov.Bearing
 	}
 	ov.Stalled = st.Status == StepStalled || st.Attempts > 1 || x.now-x.progressAt > StalledAfter
+	ov.Exit = x.exitAhead()
 	return ov
+}
+
+// Target returns where the current step's objective is (for a kill, the
+// monster as the kill order places it), and false when the step has no
+// point or every step is done.
+func (x *Executor) Target() (Vec3, bool) {
+	if x.Done() {
+		return Vec3{}, false
+	}
+	p := &x.plans[x.cur]
+	if p.op == route.OpKill {
+		if k := x.killOrder(p); k != nil {
+			return k.Pos, true
+		}
+	}
+	return p.point, p.hasPoint
+}
+
+// exitAhead reports whether the steps left lead straight to the level's
+// exit: one of them claims it and none before it is a kill, a pickup or a
+// confirmation.
+func (x *Executor) exitAhead() bool {
+	for i := x.cur; i < len(x.plans); i++ {
+		p := &x.plans[i]
+		switch p.op {
+		case route.OpKill, route.OpPickup, route.OpConfirm:
+			return false
+		}
+		if p.exit {
+			return true
+		}
+	}
+	return false
 }

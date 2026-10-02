@@ -131,3 +131,109 @@ func (p *Planner) Distances(start nav.NodeID, cost CostFunc, buf []float32) []fl
 	}
 	return buf
 }
+
+// regionReach is the region-level reachability of the graph: which
+// regions each region can reach through any edge (conditions ignored:
+// doors count as passable), computed per source region on first use.
+type regionReach struct {
+	adj   [][]int32
+	nodes []int // nodes per region
+	reach map[int32][]bool
+	size  map[int32]int // nodes in the regions a region reaches
+}
+
+func (r *regionReach) init(g *nav.Graph) {
+	n := int32(0)
+	for i := range g.Nodes {
+		n = max(n, g.Nodes[i].Region+1)
+	}
+	r.adj = make([][]int32, n)
+	r.nodes = make([]int, n)
+	for i := range g.Nodes {
+		if rg := g.Nodes[i].Region; rg >= 0 {
+			r.nodes[rg]++
+		}
+	}
+	seen := map[[2]int32]bool{}
+	for i := range g.Edges {
+		e := &g.Edges[i]
+		a, b := g.Nodes[e.From].Region, g.Nodes[e.To].Region
+		if a < 0 || b < 0 || a == b || seen[[2]int32{a, b}] {
+			continue
+		}
+		seen[[2]int32{a, b}] = true
+		r.adj[a] = append(r.adj[a], b)
+	}
+	r.reach = map[int32][]bool{}
+	r.size = map[int32]int{}
+}
+
+// from returns the regions region a reaches (a breadth-first search, cached).
+func (r *regionReach) from(a int32) []bool {
+	if out, ok := r.reach[a]; ok {
+		return out
+	}
+	out := make([]bool, len(r.adj))
+	out[a] = true
+	queue := []int32{a}
+	for len(queue) > 0 {
+		x := queue[0]
+		queue = queue[1:]
+		for _, y := range r.adj[x] {
+			if !out[y] {
+				out[y] = true
+				queue = append(queue, y)
+			}
+		}
+	}
+	r.reach[a] = out
+	return out
+}
+
+// CanReturn reports whether the bot could come back from point to to point
+// from: the region of to's nearest node reaches the region of from's over
+// the graph's edges (conditions ignored). A spot down a one-way drop the
+// bot cannot climb out of fails it: a detour there is a trap. Points off
+// the graph count as returnable.
+func (n *Navigator) CanReturn(from, to Vec3) bool {
+	a, b := n.g.Localize(to, 192), n.g.Localize(from, 192)
+	if a == nav.NoNode || b == nav.NoNode {
+		return true
+	}
+	ra, rb := n.g.Nodes[a].Region, n.g.Nodes[b].Region
+	if ra < 0 || rb < 0 || ra == rb {
+		return true
+	}
+	if n.regions.adj == nil {
+		n.regions.init(n.g)
+	}
+	return n.regions.from(ra)[rb]
+}
+
+// ReachSize returns how many nodes of the graph the region of p's nearest
+// node reaches over its edges (conditions ignored, as CanReturn), and the
+// graph's node count; reach is total for a point off the graph. A reach
+// of a few dozen nodes out of thousands is a pit: whatever the bot was
+// after, it cannot get there from p.
+func (n *Navigator) ReachSize(p Vec3) (reach, total int) {
+	total = len(n.g.Nodes)
+	a := n.g.Localize(p, 192)
+	if a == nav.NoNode || n.g.Nodes[a].Region < 0 {
+		return total, total
+	}
+	if n.regions.adj == nil {
+		n.regions.init(n.g)
+	}
+	ra := n.g.Nodes[a].Region
+	if k, ok := n.regions.size[ra]; ok {
+		return k, total
+	}
+	k := 0
+	for rg, ok := range n.regions.from(ra) {
+		if ok {
+			k += n.regions.nodes[rg]
+		}
+	}
+	n.regions.size[ra] = k
+	return k, total
+}

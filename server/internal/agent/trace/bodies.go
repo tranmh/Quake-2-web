@@ -81,6 +81,10 @@ type UserCmd struct {
 	// not recorded.
 	Seq int `json:"seq,omitempty"`
 	Ack int `json:"ack,omitempty"`
+	// Frame is the server frame the command was built on: the client's
+	// latest frame when it was made (zero when not recorded). It places
+	// the command between the frames of a recording.
+	Frame int32 `json:"frame,omitempty"`
 }
 
 // Field is the outcome of one decision field (one question).

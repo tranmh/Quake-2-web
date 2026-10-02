@@ -39,9 +39,9 @@ type Gate struct {
 	cur       State
 	lastFast  int64
 	fastSent  bool
-	sent      []int64         // submit times of the requests let through (MaxQPS window)
-	forwarded map[uint64]bool // requests the wrapped backend sent
-	refused   [decide.NumLanes]int
+	sent      []int64              // submit times of the requests let through (MaxQPS window)
+	forwarded map[uint64]bool      // requests the wrapped backend sent
+	refused   [decide.NumLanes]int // refused results charged
 	planned   bool
 }
 
@@ -136,6 +136,9 @@ func (g *Gate) Charge(r *decide.Record) {
 	g.mu.Lock()
 	sent := g.forwarded[req.Seq]
 	delete(g.forwarded, req.Seq)
+	if IsRefused(r.Result.Err) {
+		g.refused[req.Lane]++
+	}
 	g.mu.Unlock()
 	if !sent {
 		return
@@ -148,7 +151,8 @@ func (g *Gate) Charge(r *decide.Record) {
 	g.b.Charge(cost, tokens)
 }
 
-// Refused returns how many requests of each lane the gate refused.
+// Refused returns how many collected results of each lane were refused by
+// the gate (Charge).
 func (g *Gate) Refused() [decide.NumLanes]int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -164,14 +168,12 @@ func (g *Gate) admit(req *decide.Request) error {
 		// a tick that was not planned (a caller that skipped Plan): admit
 		// by the last state
 		if g.planned && g.cur.ScriptedOnly {
-			g.refused[req.Lane]++
 			return &RefusedError{Reason: g.cur.Reason}
 		}
 		g.forwarded[req.Seq] = true
 		return nil
 	}
 	if !p.allow[req.Lane] {
-		g.refused[req.Lane]++
 		return &RefusedError{Reason: p.why[req.Lane]}
 	}
 	g.forwarded[req.Seq] = true

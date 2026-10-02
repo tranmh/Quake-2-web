@@ -333,7 +333,13 @@ type Navigator struct {
 	stuck  stuckState
 	status Status
 
-	paths pathCache // PathDistance's last search
+	paths   pathCache   // PathDistance's last search
+	regions regionReach // CanReturn's region reachability
+
+	// the final approach to an item past the end of its path: since when,
+	// from where (approachItem)
+	endSince int64
+	endSpot  Vec3
 }
 
 // New returns a navigator over graph g (resolved for the level's skill)
@@ -436,6 +442,7 @@ func (n *Navigator) ClearGoal() {
 	n.gout.Reset()
 	n.final = false
 	n.shootAt = 0
+	n.endSince = 0
 	n.status = Status{Follow: Idle, Node: n.node, Edge: -1, WaitFor: -1}
 }
 

@@ -52,6 +52,16 @@ const (
 	// routeKillMemory is how long (ms) the monster of a route kill step
 	// stays the target after it went out of view.
 	routeKillMemory = 2500
+	// repositionAfter is how long (ms) the bot may stand still in a fight
+	// with a visible target within repositionFar before it backs off to
+	// another spot (a corner, a gun blocked by the wall next to it).
+	repositionAfter = 1500
+	repositionFar   = 900
+	// fightBudget is how long (ms) the bot fights one target before it
+	// disengages for disengageFor (the target out of reach, a stalemate):
+	// it goes on with its objective, shooting on the move.
+	fightBudget  = 30000
+	disengageFor = 20000
 )
 
 // fightGoal is what the navigator does for the fight.
@@ -71,9 +81,9 @@ type fight struct {
 	move control.Move
 	// goal is the navigator goal the fight set, when, and the point it was
 	// set for (the target's position, or the threat fled)
-	goal   fightGoal
-	goalAt int64
-	goalAt3 Vec3
+	goal    fightGoal
+	goalAt  int64
+	goalFor Vec3
 	// reflexes armed by the frame: until when, and where to
 	dodgeUntil   int64
 	dodgeDir     Vec3
@@ -82,6 +92,16 @@ type fight struct {
 	grenadeJump  bool
 	// reflexes that acted in the commands since the last tick (trace)
 	reflexes []string
+	// stuckSince is when the bot last started to stand in a fight without
+	// moving (a hold, or both strafe sides blocked; 0: it moves),
+	// blockedAt when the strafer last found both sides blocked
+	stuckSince, blockedAt int64
+	// the fight clock: the target fought since foeSince (last at
+	// foeLast), and the one disengaged from until offUntil
+	foe               string
+	foeSince, foeLast int64
+	offFoe            string
+	offUntil          int64
 	// trail is the bot's own way so far (breadcrumbs, newest last)
 	trail []Vec3
 }
@@ -182,13 +202,29 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 	f := &b.fight
 	m := moveOf(b.intent.Movement)
 	b.takeNav()
+	// standing still in a close fight (a hold, or cornered between
+	// blocked strafes) for repositionAfter: back off to another spot
+	still := m == control.MoveHold || m.Side() != 0 && b.now-f.blockedAt < 300
+	switch {
+	case !still || f.goal != goalNone:
+		f.stuckSince = 0
+	case f.stuckSince == 0:
+		f.stuckSince = b.now
+	case b.now-f.stuckSince > repositionAfter && tr.Visible && dist3(bel.Self.Origin, tr.Pos) < repositionFar:
+		m = control.MoveRetreat
+		f.noteReflex("reposition")
+	}
 	switch m {
 	case control.MoveAdvance:
 		if tr.Visible && tr.Shootable && dist3(bel.Self.Eye, tr.Pos) < advanceStop(bel.Self.Weapon) {
 			m = control.MoveHold // close enough: no further
 			break
 		}
-		if f.goal != goalAdvance || b.now-f.goalAt > advanceRepath || dist3(f.goalAt3, tr.Pos) > advanceMove || b.navFailed() {
+		if !b.nav.CanReturn(bel.Self.Origin, tr.Pos) {
+			m = control.MoveHold // down a drop the bot could not climb back from: wait for it
+			break
+		}
+		if f.goal != goalAdvance || b.now-f.goalAt > advanceRepath || dist3(f.goalFor, tr.Pos) > advanceMove || b.navFailed() {
 			b.setFightGoal(goalAdvance, navrt.PointGoal(tr.Pos, 96), tr.Pos)
 		}
 	case control.MoveRetreat:
@@ -201,8 +237,12 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 			}
 		}
 	}
-	if m != control.MoveAdvance && m != control.MoveRetreat && f.goal != goalNone {
-		b.nav.ClearGoal()
+	if m != control.MoveAdvance && m != control.MoveRetreat {
+		// the controller moves the bot itself: no path (the route's goal,
+		// an earlier advance or retreat) to follow meanwhile
+		if _, has := b.nav.Goal(); has {
+			b.nav.ClearGoal()
+		}
 		f.goal = goalNone
 	}
 	f.move = m
@@ -227,7 +267,7 @@ func advanceStop(weapon string) float32 {
 // setFightGoal makes goal the navigator's for the fight.
 func (b *Bot) setFightGoal(kind fightGoal, goal navrt.Goal, at Vec3) bool {
 	f := &b.fight
-	f.goal, f.goalAt, f.goalAt3 = kind, b.now, at
+	f.goal, f.goalAt, f.goalFor = kind, b.now, at
 	if err := b.nav.SetGoal(goal, b.now); err != nil {
 		b.nav.ClearGoal()
 		f.goal = goalNone
@@ -280,7 +320,7 @@ func (b *Bot) retreatGoal(bel *worldmodel.Belief, from Vec3) bool {
 	d0 := dist3(o, from)
 	t := b.fight.trail
 	for i := len(t) - 1; i >= 0; i-- {
-		if dist3(t[i], o) >= coverMin && dist3(t[i], from) > d0+64 {
+		if dist3(t[i], o) >= coverMin && dist3(t[i], from) > d0+64 && b.nav.CanReturn(o, t[i]) {
 			return b.setFightGoal(goalRetreat, navrt.PointGoal(t[i], 32), from)
 		}
 	}
@@ -289,8 +329,9 @@ func (b *Bot) retreatGoal(bel *worldmodel.Belief, from Vec3) bool {
 
 // coverSpot picks a node to back off to from a threat at from: between
 // coverMin and coverMax away, farther from the threat than the bot by a
-// margin, on plain floor, preferring one the threat cannot see (a line of
-// sight from its eye to the node's) and then the nearest.
+// margin, on plain floor, one the bot can come back from (not down a
+// one-way drop), preferring one the threat cannot see (a line of sight
+// from its eye to the node's) and then the nearest.
 func (b *Bot) coverSpot(bel *worldmodel.Belief, from Vec3) (Vec3, bool) {
 	g := b.lv.Graph
 	o := bel.Self.Origin
@@ -309,7 +350,7 @@ func (b *Bot) coverSpot(bel *worldmodel.Belief, from Vec3) (Vec3, bool) {
 			continue
 		}
 		p := nd.Origin
-		if dist3(p, o) < coverMin || dist3(p, from) < d0+128 {
+		if dist3(p, o) < coverMin || dist3(p, from) < d0+128 || !b.nav.CanReturn(o, p) {
 			continue
 		}
 		if tries++; tries > coverTries {
@@ -362,7 +403,7 @@ func (b *Bot) nearestHealth(bel *worldmodel.Belief) *worldmodel.Item {
 	bd := float32(coverMax * 1.5)
 	for i := range bel.Items {
 		it := &bel.Items[i]
-		if it.Kind != "health" || it.Life != worldmodel.LifeAlive {
+		if it.Kind != "health" || it.Life != worldmodel.LifeAlive || b.badItem(it.Pos) || !b.nav.CanReturn(bel.Self.Origin, it.Pos) {
 			continue
 		}
 		if d := dist3(it.Pos, bel.Self.Origin); d < bd {
@@ -412,6 +453,7 @@ func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 		if side != 0 {
 			return run(control.SideDir(side, o, tr.Pos), false)
 		}
+		f.blockedAt = now
 	}
 	return control.MoveIntent{FaceYaw: in.FaceYaw, FacePitch: in.FacePitch}
 }
@@ -440,9 +482,17 @@ func (b *Bot) aimAt(eye Vec3, view Vec3, tr *worldmodel.Track, mode control.Fire
 		p, _ = control.AimPoint(eye, body, w)
 		line = shootable(p)
 	}
+	if !line && tr.Visible {
+		// the middle hidden (a ledge, a crate): the head may show
+		head := Vec3{p[0], p[1], p[2] + (body.Maxs[2]-body.Mins[2])/2 - 8}
+		if shootable(head) {
+			p, line = head, true
+		}
+	}
 	y, pt := b.shoot.Turn(eye, view[q2const.YAW], view[q2const.PITCH], p, navrt.CmdMsec)
 	in := control.FireInput{Mode: mode, Weapon: w, Eye: eye, Yaw: y, Pitch: pt, Aim: p, Radius: body.Radius(),
-		Visible: tr.Visible, Shootable: line, Neutral: b.neutralInLine(bel, eye, p)}
+		Visible: tr.Visible, Shootable: line, Neutral: b.inLine(bel, eye, p, perception.KindNeutral, 0),
+		Barrel: b.inLine(bel, eye, p, perception.KindBarrel, control.BarrelSafe)}
 	if w.HasSplash() && vis != nil {
 		in.WallClose = !shootable(viewPoint(eye, y, pt, control.SplashSafe))
 	}
@@ -454,6 +504,12 @@ func (b *Bot) aimAt(eye Vec3, view Vec3, tr *worldmodel.Track, mode control.Fire
 	return y, pt
 }
 
+// sincos returns the sine and cosine of an angle in degrees.
+func sincos(deg float32) (float32, float32) {
+	s, c := math.Sincos(float64(deg) * math.Pi / 180)
+	return float32(s), float32(c)
+}
+
 // viewPoint is the point d units from eye along the view yaw/pitch.
 func viewPoint(eye Vec3, yaw, pitch, d float32) Vec3 {
 	sy, cy := math.Sincos(float64(yaw) * math.Pi / 180)
@@ -461,13 +517,15 @@ func viewPoint(eye Vec3, yaw, pitch, d float32) Vec3 {
 	return Vec3{eye[0] + float32(cp*cy)*d, eye[1] + float32(cp*sy)*d, eye[2] - float32(sp)*d}
 }
 
-// neutralInLine reports a neutral body (misc_insane, misc_actor) the bot
-// knows of in the line of fire from eye to p.
-func (b *Bot) neutralInLine(bel *worldmodel.Belief, eye, p Vec3) bool {
-	neutral := perception.KindNeutral.String()
+// inLine reports a track of kind k the bot knows of (alive, positioned)
+// in the line of fire from eye to p: a neutral body (misc_insane,
+// misc_actor), or an explosive barrel within within units of the eye
+// (within 0: any distance).
+func (b *Bot) inLine(bel *worldmodel.Belief, eye, p Vec3, k perception.Kind, within float32) bool {
+	kind := k.String()
 	for i := range bel.Tracks {
 		t := &bel.Tracks[i]
-		if t.Kind != neutral || t.Life != worldmodel.LifeAlive || !t.PosKnown {
+		if t.Kind != kind || t.Life != worldmodel.LifeAlive || !t.PosKnown || within > 0 && dist3(eye, t.Pos) > within {
 			continue
 		}
 		mins, maxs := t.Mins, t.Maxs

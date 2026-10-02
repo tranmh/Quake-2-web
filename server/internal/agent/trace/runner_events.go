@@ -22,7 +22,15 @@ type Cmds struct {
 	// Step is the step's index in the episode, from 0 (session Steps of
 	// the campaign loop; the frames a reload waits for are not steps).
 	Step int64     `json:"step"`
-	Cmds []UserCmd `json:"cmds"`
+	Cmds []StepCmd `json:"cmds"`
+}
+
+// StepCmd is one usercmd as sent, complete: the UserCmd fields and the
+// light level the client reports (usercmd_t lightlevel, which the game's
+// monsters read to tell whether they can see the player).
+type StepCmd struct {
+	UserCmd
+	Light uint8 `json:"light,omitempty"`
 }
 
 // Provenance is the body of provenance: the tick counts of every decision

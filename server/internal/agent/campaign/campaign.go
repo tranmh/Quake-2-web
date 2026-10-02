@@ -29,7 +29,9 @@
 // FailAfter the level fails as stalled.
 //
 // Every step is traced on an agent/trace Bus (episode_start, level_start,
-// damage, kill, death, reload, stuck, level_end, error, episode_end) and
+// damage, kill, death, reload, stuck, level_end, error, episode_end, and
+// the bot's decision events: one lane tick event per decision tick, plus
+// the request events when Config.Bot.TraceRequests is set) and
 // summarized by an agent/metrics Collector (EpisodeResult.Summary). The game's level
 // counters (session.Truth) feed only level_end, for metrics; the bot never
 // sees them.
@@ -424,7 +426,16 @@ func newRunner(ctx context.Context, s session.Session, cfg Config) (*runner, err
 		ctl = s
 	}
 	r := &runner{s: s, ctl: ctl, cfg: cfg, camp: camp, lib: lib, bus: bus, col: metrics.NewCollector(),
-		bot: bot.New(bcfg), gen: -1, visits: map[string]int{}, lvl: -1}
+		gen: -1, visits: map[string]int{}, lvl: -1}
+	// the bot's decision events go on the bus, stamped like the others
+	user := bcfg.OnDecision
+	bcfg.OnDecision = func(d *trace.Decision) {
+		r.publish(trace.TypeDecision, *d)
+		if user != nil {
+			user(d)
+		}
+	}
+	r.bot = bot.New(bcfg)
 	for m, n := range cfg.Visits {
 		r.visits[m] = n
 	}
