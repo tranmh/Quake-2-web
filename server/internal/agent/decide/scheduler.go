@@ -57,6 +57,8 @@ type SchedulerConfig struct {
 	SlowInterval, SlowMinGap time.Duration
 	// FastTimeout and SlowTimeout bound one call (the context deadline in
 	// realtime; in lockstep a SimLatency beyond it resolves as a timeout).
+	// A realtime fast call is also cut at StaleAfter: an answer later than
+	// that would be dropped anyway, and it would hold an in-flight slot.
 	FastTimeout, SlowTimeout time.Duration
 	// MaxInFlightFast and MaxInFlightSlow cap the requests in flight per
 	// lane; 0 means ceil(rate × p95), at least 1. HardMaxInFlight bounds
@@ -145,16 +147,20 @@ type Scheduler struct {
 	cfg SchedulerConfig
 	lat *LatencyStats
 
-	last      [NumLanes]int64
+	last      [NumLanes]int64 // the lane's last Submit (accepted or not)
 	submitted [NumLanes]bool
-	urgent    bool // the last Want's fast rate was FastHz
-	stats     SchedulerStats
+	// refused: the lane's last Submit hit the in-flight cap; the lane is
+	// due again as soon as a slot is free, not a whole interval later.
+	refused [NumLanes]bool
+	urgent  bool // the last Want's fast rate was FastHz
+	stats   SchedulerStats
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
 	results  chan outcome // realtime
+	ready    []outcome    // realtime: received, not yet collected
 	inflight [NumLanes]int
 	pending  []*pending // lockstep
 	closed   bool
@@ -237,21 +243,61 @@ func (s *Scheduler) Interval(l Lane) time.Duration {
 	return time.Duration(math.Round(float64(time.Second) / hz))
 }
 
-// Want reports which lanes are due at now (session ms). Submit records
-// the requests; Want only notes the fast rate it chose (Interval).
+// Want reports which lanes are due at now (session ms): at the lane's
+// interval since its last Submit, the slow lane early on an event (after
+// SlowMinGap), and a lane whose last Submit was refused at the in-flight
+// cap as soon as a slot is free again. A lane due while still at its cap
+// is reported anyway (the request is built, so the fallback sees it, and
+// Submit drops it). Submit records the requests; Want only notes the fast
+// rate it chose (Interval).
 func (s *Scheduler) Want(now int64, a Activity) (fast, slow bool) {
 	if a.Combat {
 		s.urgent = a.Urgent
 		iv := durMs(s.Interval(LaneFast))
-		fast = !s.submitted[LaneFast] || now-s.last[LaneFast] >= iv
+		fast = !s.submitted[LaneFast] || now-s.last[LaneFast] >= iv || s.refused[LaneFast] && s.hasRoom(LaneFast, now)
 	}
 	since := now - s.last[LaneSlow]
-	slow = !s.submitted[LaneSlow] || since >= durMs(s.cfg.SlowInterval) || a.Event && since >= durMs(s.cfg.SlowMinGap)
+	slow = !s.submitted[LaneSlow] || since >= durMs(s.cfg.SlowInterval) || a.Event && since >= durMs(s.cfg.SlowMinGap) ||
+		s.refused[LaneSlow] && s.hasRoom(LaneSlow, now)
 	return fast, slow
 }
 
+// busy is the number of a lane's requests that hold an in-flight slot at
+// now: realtime, the calls that have not returned; lockstep, the requests
+// not yet due.
+func (s *Scheduler) busy(l Lane, now int64) int {
+	if s.cfg.Mode == Lockstep {
+		n := 0
+		for _, p := range s.pending {
+			if p.req.Lane == l && p.due > now {
+				n++
+			}
+		}
+		return n
+	}
+	s.drain()
+	return s.inflight[l]
+}
+
+// hasRoom reports a free in-flight slot of a lane at now.
+func (s *Scheduler) hasRoom(l Lane, now int64) bool { return s.busy(l, now) < s.MaxInFlight(l) }
+
+// drain moves the realtime results that have arrived out of the channel
+// (freeing their slots); Collect returns them.
+func (s *Scheduler) drain() {
+	for {
+		select {
+		case o := <-s.results:
+			s.inflight[o.req.Lane]--
+			s.ready = append(s.ready, o)
+		default:
+			return
+		}
+	}
+}
+
 // InFlight is the number of requests of a lane not yet collected
-// (lockstep: not yet due at the lane's last submit).
+// (realtime: whose call has not returned).
 func (s *Scheduler) InFlight(l Lane) int {
 	if s.cfg.Mode == Lockstep {
 		n := 0
@@ -262,12 +308,14 @@ func (s *Scheduler) InFlight(l Lane) int {
 		}
 		return n
 	}
+	s.drain()
 	return s.inflight[l]
 }
 
 // Submit starts req (its SnapTime is the submit time) unless the lane is
 // at its in-flight cap, in which case the request is dropped and Submit
-// returns false. It never blocks.
+// returns false (Want then reports the lane again once a slot is free).
+// It never blocks.
 func (s *Scheduler) Submit(req *Request) bool {
 	if s.closed {
 		return false
@@ -276,15 +324,34 @@ func (s *Scheduler) Submit(req *Request) bool {
 	s.last[l], s.submitted[l] = req.SnapTime, true
 	ls := &s.stats.Lanes[l]
 	ls.Submitted++
+	var ok bool
 	if s.cfg.Mode == Lockstep {
-		return s.submitLockstep(req, ls)
+		ok = s.submitLockstep(req, ls)
+	} else {
+		ok = s.submitRealtime(req, ls)
 	}
-	if s.inflight[l] >= s.MaxInFlight(l) {
+	s.refused[l] = !ok
+	return ok
+}
+
+// callTimeout is a realtime call's deadline: the lane's timeout, and for
+// the fast lane at most StaleAfter.
+func (s *Scheduler) callTimeout(l Lane) time.Duration {
+	d := s.Timeout(l)
+	if sa := s.staleAfter(l); l == LaneFast && sa > 0 {
+		d = min(d, sa)
+	}
+	return d
+}
+
+func (s *Scheduler) submitRealtime(req *Request, ls *LaneStats) bool {
+	l := req.Lane
+	if s.busy(l, req.SnapTime) >= s.MaxInFlight(l) {
 		ls.Dropped++
 		return false
 	}
 	s.inflight[l]++
-	ctx, cancel := context.WithTimeout(s.ctx, s.Timeout(l))
+	ctx, cancel := context.WithTimeout(s.ctx, s.callTimeout(l))
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -300,13 +367,7 @@ func (s *Scheduler) Submit(req *Request) bool {
 }
 
 func (s *Scheduler) submitLockstep(req *Request, ls *LaneStats) bool {
-	n := 0
-	for _, p := range s.pending {
-		if p.req.Lane == req.Lane && p.due > req.SnapTime {
-			n++
-		}
-	}
-	if n >= s.MaxInFlight(req.Lane) {
+	if s.busy(req.Lane, req.SnapTime) >= s.MaxInFlight(req.Lane) {
 		ls.Dropped++
 		return false
 	}
@@ -324,7 +385,9 @@ func (s *Scheduler) submitLockstep(req *Request, ls *LaneStats) bool {
 			defer cancel()
 			defer close(p.done)
 			p.resp, p.err = s.cfg.Backend.Decide(ctx, req)
-			if p.err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// the backend's own deadline (a timed-out attempt, a replayed
+			// timeout) or the hang guard
+			if p.err != nil && (errors.Is(p.err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)) {
 				p.timeout = true
 			}
 		}()
@@ -393,18 +456,16 @@ func (s *Scheduler) Collect(now int64) []Result {
 		s.pending = keep
 		return out
 	}
-	for {
-		select {
-		case o := <-s.results:
-			s.inflight[o.req.Lane]--
-			r := Result{Req: o.req, Resp: o.resp, Err: o.err, Latency: o.lat, Arrived: now, Timeout: o.timeout}
-			s.finish(&r)
-			out = append(out, r)
-		default:
-			sort.SliceStable(out, func(i, j int) bool { return out[i].Req.Seq < out[j].Req.Seq })
-			return out
-		}
+	s.drain()
+	for i, o := range s.ready {
+		r := Result{Req: o.req, Resp: o.resp, Err: o.err, Latency: o.lat, Arrived: now, Timeout: o.timeout}
+		s.finish(&r)
+		out = append(out, r)
+		s.ready[i] = outcome{}
 	}
+	s.ready = s.ready[:0]
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Req.Seq < out[j].Req.Seq })
+	return out
 }
 
 // Stats returns the counters.

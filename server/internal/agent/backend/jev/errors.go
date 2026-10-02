@@ -1,6 +1,7 @@
 package jev
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -54,14 +55,34 @@ func (e *Error) Error() string {
 // HTTPStatus returns the HTTP status (for trace api_call events).
 func (e *Error) HTTPStatus() int { return e.Status }
 
+// Is makes errors.Is(err, context.DeadlineExceeded) hold for a timeout and
+// errors.Is(err, context.Canceled) for a canceled call, so callers (the
+// decide scheduler) see a timed-out attempt as a timeout.
+func (e *Error) Is(target error) bool {
+	switch target {
+	case context.DeadlineExceeded:
+		return e.Class == ClassTimeout
+	case context.Canceled:
+		return e.Class == ClassCanceled
+	}
+	return false
+}
+
 // Retryable reports a class worth another attempt.
 func (c ErrorClass) Retryable() bool {
 	return c == ClassServer || c == ClassTimeout || c == ClassTransport
 }
 
-// failure reports a class that counts towards the circuit breaker.
+// failure reports a class that counts towards the circuit breaker: every
+// answer that is neither usable nor handled on its own (auth disables the
+// client, 429/529 start a cooldown). A 400/422 counts too, so a schema the
+// API rejects in every shape still backs off.
 func (c ErrorClass) failure() bool {
-	return c == ClassServer || c == ClassTimeout || c == ClassTransport || c == ClassDecode
+	switch c {
+	case ClassServer, ClassTimeout, ClassTransport, ClassDecode, ClassBadRequest, ClassHTTP:
+		return true
+	}
+	return false
 }
 
 // ClassOf returns the class of an error returned by Client.Decide ("" for

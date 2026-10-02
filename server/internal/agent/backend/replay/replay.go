@@ -8,7 +8,9 @@
 // divergence is noted; in strict mode the first divergence is an error
 // instead. Recorded failures are replayed as errors, and the recorded
 // latencies are offered as a decide.LatencyModel so the lockstep schedule
-// repeats too.
+// repeats too. A recorded timeout replays as an error that is
+// context.DeadlineExceeded, so the scheduler classifies it as a timeout
+// again.
 package replay
 
 import (
@@ -56,10 +58,19 @@ func (d *Divergence) Unwrap() error { return ErrDivergence }
 
 // RecordedError is a failure replayed from the trace. Its message is the
 // recorded one, unchanged, so a replayed trace compares equal to the
-// original.
-type RecordedError struct{ Msg string }
+// original. Timeout marks a recorded timeout.
+type RecordedError struct {
+	Msg     string
+	Timeout bool
+}
 
 func (e *RecordedError) Error() string { return e.Msg }
+
+// Is makes errors.Is(err, context.DeadlineExceeded) hold for a recorded
+// timeout.
+func (e *RecordedError) Is(target error) bool {
+	return e.Timeout && target == context.DeadlineExceeded
+}
 
 // Stats are the backend's counters.
 type Stats struct {
@@ -77,6 +88,7 @@ type entry struct {
 	digest  string
 	raw     json.RawMessage
 	err     string
+	timeout bool
 	latency time.Duration
 	cost    float64
 }
@@ -106,7 +118,7 @@ func New(events []trace.Event, opt Options) (*Backend, error) {
 		if _, dup := b.entries[d.Req]; dup {
 			return nil, fmt.Errorf("replay: request %d recorded twice in episode %d", d.Req, opt.Episode)
 		}
-		en := &entry{seq: d.Req, lane: d.Lane, digest: d.ReqDigest, raw: d.Response, err: d.Err,
+		en := &entry{seq: d.Req, lane: d.Lane, digest: d.ReqDigest, raw: d.Response, err: d.Err, timeout: d.Timeout,
 			latency: time.Duration(d.LatencyMs * float64(time.Millisecond)), cost: d.CostUSD}
 		if en.digest == "" && d.State != nil && d.Questions != nil {
 			en.digest = decide.RequestDigest(d.State, d.Questions)
@@ -192,7 +204,7 @@ func (b *Backend) Decide(ctx context.Context, req *decide.Request) (*decide.Resp
 		return nil, div
 	}
 	if e.err != "" {
-		return nil, &RecordedError{Msg: e.err}
+		return nil, &RecordedError{Msg: e.err, Timeout: e.timeout}
 	}
 	if e.raw == nil {
 		return nil, &RecordedError{Msg: "replay: no response recorded"}

@@ -333,3 +333,100 @@ func TestLatencyStats(t *testing.T) {
 		t.Fatalf("samples drawn %v", seen)
 	}
 }
+
+// TestSchedulerRefusedLaneRetriesWhenFree: a lane refused at its cap is
+// due again as soon as a slot frees, not a whole interval after the
+// refusal.
+func TestSchedulerRefusedLaneRetriesWhenFree(t *testing.T) {
+	s := NewScheduler(SchedulerConfig{Backend: instant, Mode: Lockstep, MaxInFlightSlow: 1, SimLatency: FixedLatency(650 * time.Millisecond)})
+	defer s.Close()
+	var asked []int64
+	seq := uint64(0)
+	for now := int64(0); now <= 1500; now += 100 {
+		if _, slow := s.Want(now, Activity{}); slow {
+			seq++
+			if s.Submit(bareReq(seq, LaneSlow, now)) {
+				asked = append(asked, now)
+			}
+		}
+		s.Collect(now)
+	}
+	// 0 (due 650); 500 refused; 700 once the slot is free (due 1350);
+	// 1200 refused; 1400
+	if fmt.Sprint(asked) != "[0 700 1400]" {
+		t.Fatalf("accepted slow requests at %v", asked)
+	}
+	if st := s.Stats().Lanes[LaneSlow]; st.Dropped != 2 {
+		t.Fatalf("stats %+v", st)
+	}
+
+	// realtime: a call that has returned frees its slot before Collect
+	rt := NewScheduler(SchedulerConfig{Backend: instant, MaxInFlightFast: 1})
+	defer rt.Close()
+	if !rt.Submit(bareReq(1, LaneFast, 0)) {
+		t.Fatal("first request dropped")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for rt.InFlight(LaneFast) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !rt.Submit(bareReq(2, LaneFast, 50)) {
+		t.Fatal("the returned call still held the slot")
+	}
+	var got []Result
+	for len(got) < 2 && time.Now().Before(deadline) {
+		got = append(got, rt.Collect(100)...)
+		time.Sleep(time.Millisecond)
+	}
+	if len(got) != 2 || got[0].Req.Seq != 1 || got[0].Arrived != 100 {
+		t.Fatalf("results %+v", got)
+	}
+}
+
+// TestSchedulerRealtimeFastCutAtStale: a realtime fast call ends at
+// StaleAfter (its answer would be dropped anyway); the slow lane keeps its
+// timeout.
+func TestSchedulerRealtimeFastCutAtStale(t *testing.T) {
+	g := newGate()
+	s := NewScheduler(SchedulerConfig{Backend: g, FastTimeout: time.Hour, SlowTimeout: time.Hour,
+		StaleAfter: func(Lane) time.Duration { return 40 * time.Millisecond }})
+	defer s.Close()
+	start := time.Now()
+	s.Submit(bareReq(1, LaneFast, 0))
+	s.Submit(bareReq(2, LaneSlow, 0))
+	var got []Result
+	for len(got) == 0 && time.Since(start) < 5*time.Second {
+		got = s.Collect(int64(time.Since(start) / time.Millisecond))
+		time.Sleep(time.Millisecond)
+	}
+	if len(got) != 1 || got[0].Req.Lane != LaneFast || !got[0].Timeout || got[0].Latency < 30*time.Millisecond {
+		t.Fatalf("results %+v", got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if r := s.Collect(200); len(r) != 0 || s.InFlight(LaneSlow) != 1 {
+		t.Fatalf("the slow call ended: %+v", r)
+	}
+	close(g.release)
+}
+
+// TestSchedulerLockstepBackendTimeout: a backend error that is a deadline
+// (a timed-out attempt, a replayed timeout) is a timeout in lockstep too.
+func TestSchedulerLockstepBackendTimeout(t *testing.T) {
+	be := &funcBackend{name: "late", fn: func(_ context.Context, req *Request) (*Response, error) {
+		if req.Seq == 1 {
+			return nil, fmt.Errorf("attempt: %w", context.DeadlineExceeded)
+		}
+		return nil, fmt.Errorf("refused")
+	}}
+	s := NewScheduler(SchedulerConfig{Backend: be, Mode: Lockstep, SimLatency: FixedLatency(100 * time.Millisecond)})
+	defer s.Close()
+	s.Submit(bareReq(1, LaneFast, 0))
+	s.Submit(bareReq(2, LaneSlow, 0))
+	r := s.Collect(100)
+	if len(r) != 2 || !r[0].Timeout || r[1].Timeout || r[1].Err == nil {
+		t.Fatalf("results %+v", r)
+	}
+	if st := s.Stats(); st.Lanes[LaneFast].Timeouts != 1 || st.Lanes[LaneSlow].Errors != 1 {
+		t.Fatalf("stats %+v", st.Lanes)
+	}
+}

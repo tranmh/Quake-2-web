@@ -298,7 +298,7 @@ func TestCostPenalties(t *testing.T) {
 		t.Error("AllowNeedsUse")
 	}
 	// a node a visible monster stands on costs more to walk to
-	n.occupied = [][2]Vec3{{{16, -16, 0}, {48, 16, 56}}}
+	n.occ = []occupant{{id: "e1", lo: Vec3{16, -16, 0}, hi: Vec3{48, 16, 56}, visible: true, solid: -1}}
 	if c, _ := n.cost(0, &g.Edges[0]); c != base+OccupiedCost {
 		t.Errorf("occupied %v", c)
 	}

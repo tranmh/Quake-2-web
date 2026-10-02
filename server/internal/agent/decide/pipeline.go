@@ -46,7 +46,8 @@ type RecordOptions struct {
 func (r *Record) Decision(opt RecordOptions) trace.Decision {
 	req := r.Result.Req
 	d := trace.Decision{Lane: req.Lane.String(), Req: req.Seq, SnapGMs: req.SnapTime, Backend: r.Backend,
-		LatencyMs: float64(r.Result.Latency) / float64(time.Millisecond), ReqDigest: req.Digest(), Stale: r.Result.Stale}
+		LatencyMs: float64(r.Result.Latency) / float64(time.Millisecond), ReqDigest: req.Digest(), Stale: r.Result.Stale,
+		Timeout: r.Result.Timeout}
 	d.StateDigest, _ = trace.Digest(req.State)
 	if req.View != nil {
 		d.Combat = len(req.View.Enemies) > 0 || len(req.View.Incoming) > 0
@@ -150,6 +151,10 @@ type Pipeline struct {
 	sched *Scheduler
 	arb   *Arbiter
 	trig  triggers
+	// event: an event (triggers) not yet covered by an accepted slow
+	// request; it stays set while the slow lane is in its minimum gap or
+	// at its in-flight cap.
+	event bool
 
 	seq      uint64
 	epochSeq uint64
@@ -217,6 +222,7 @@ func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Int
 			p.last = DefaultIntent()
 		}
 		p.trig.reset()
+		p.event = false
 		p.started, p.level, p.epochSeq = true, b.Level, p.seq+1
 	}
 	p.frames = b.Frames
@@ -228,7 +234,10 @@ func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Int
 	for i := range fast.Enemies {
 		act.Urgent = act.Urgent || fast.Enemies[i].Visible
 	}
-	act.Event = p.trig.update(b, &fast, obj)
+	if p.trig.update(b, &fast, obj) {
+		p.event = true
+	}
+	act.Event = p.event
 	wantFast, wantSlow := p.sched.Want(now, act)
 	var snap *worldmodel.Belief
 	if wantFast || wantSlow {
@@ -241,7 +250,9 @@ func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Int
 	if wantSlow {
 		slow := fast
 		p.proj.Extend(&slow, b, cx)
-		p.submit(LaneSlow, now, &slow, snap)
+		if p.submit(LaneSlow, now, &slow, snap) {
+			p.event = false // the accepted request carries what happened
+		}
 	}
 	for _, r := range p.sched.Collect(now) {
 		p.stats.Records++
@@ -260,15 +271,17 @@ func (p *Pipeline) Tick(now int64, b *worldmodel.Belief, obj *ObjectiveView) Int
 	return p.last
 }
 
-func (p *Pipeline) submit(l Lane, now int64, st *State, snap *worldmodel.Belief) {
+// submit builds and submits a lane's request and reports whether the
+// scheduler accepted it.
+func (p *Pipeline) submit(l Lane, now int64, st *State, snap *worldmodel.Belief) bool {
 	p.seq++
 	req, err := NewRequest(p.seq, l, now, st, snap, p.proj.MaxBytes())
 	if err != nil {
-		return // a state that cannot fit the cap: skip the lane this tick
+		return false // a state that cannot fit the cap: skip the lane this tick
 	}
 	p.stats.Requests[l]++
 	p.arb.Observe(req)
-	p.sched.Submit(req)
+	return p.sched.Submit(req)
 }
 
 // Stats returns the counters.

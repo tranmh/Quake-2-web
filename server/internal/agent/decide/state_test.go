@@ -253,6 +253,42 @@ func TestFitStateTrims(t *testing.T) {
 	}
 }
 
+// TestFitStateKeepsCurrentTarget: trimming enemies drops the lowest ranked
+// ones, never the current target the projection put in the last slot.
+func TestFitStateKeepsCurrentTarget(t *testing.T) {
+	p := testProjector()
+	st := p.Fast(testBelief(), Context{Target: "e5"})
+	if n := len(st.Enemies); n != 4 || !st.Enemies[n-1].Current {
+		t.Fatalf("fixture: %+v", st.Enemies)
+	}
+	full := encode(t, st)
+	for _, limit := range []int{len(full) - 1, len(full) - 200, len(full) - 400} {
+		fit, raw, err := FitState(st, limit)
+		if err != nil || len(raw) > limit {
+			t.Fatalf("cap %d: %v, %d bytes", limit, err, len(raw))
+		}
+		if len(fit.Enemies) == len(st.Enemies) {
+			continue
+		}
+		last := fit.Enemies[len(fit.Enemies)-1]
+		if last.ID != "e5" || !last.Current {
+			t.Fatalf("cap %d: the current target was trimmed: %+v", limit, fit.Enemies)
+		}
+		for i, e := range fit.Enemies[:len(fit.Enemies)-1] { // the rest keep their rank order
+			if e.ID != st.Enemies[i].ID {
+				t.Fatalf("cap %d: order %+v", limit, fit.Enemies)
+			}
+		}
+		req, err := NewRequest(1, LaneFast, fixtureNow, &st, nil, limit)
+		if err != nil || req.Question(QTarget) == nil || !req.OptionIndex.Has(QTarget, "e5") {
+			t.Fatalf("cap %d: target options without the current target: %v", limit, err)
+		}
+	}
+	if fit, _, _ := FitState(st, len(full)-400); len(fit.Enemies) >= len(st.Enemies) {
+		t.Fatalf("no enemy trimmed at the smallest cap (%d enemies)", len(fit.Enemies))
+	}
+}
+
 // TestEmptyBelief: an empty level projects valid, small states.
 func TestEmptyBelief(t *testing.T) {
 	p := NewProjector(ProjectorConfig{})

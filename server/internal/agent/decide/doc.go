@@ -11,7 +11,9 @@
 //     FastHz (10 Hz) while enemies or projectiles exist.
 //   - slow (strategy): the fast state plus items, the objective, level
 //     stats and recent events; questions mode, weapon, pickup and danger;
-//     every SlowInterval (500 ms, 2 Hz) and early on events.
+//     every SlowInterval (500 ms, 2 Hz) and early on events (an event is
+//     kept until an accepted slow request carries it, so one that comes
+//     while the lane's slot is busy is asked as soon as it frees).
 //
 // The flow per tick is Pipeline.Tick: project → Scheduler.Want → NewRequest
 // → Arbiter.Observe (the scripted fallback answers the same request at

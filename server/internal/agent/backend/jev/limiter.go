@@ -50,3 +50,10 @@ func (b *TokenBucket) Allow(int) bool {
 	b.tokens--
 	return true
 }
+
+// refund gives back a token taken by Allow (the request was not sent).
+func (b *TokenBucket) refund() {
+	b.mu.Lock()
+	b.tokens = math.Min(b.burst, b.tokens+1)
+	b.mu.Unlock()
+}

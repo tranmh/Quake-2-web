@@ -279,7 +279,7 @@ func TestTimeouts(t *testing.T) {
 		cfg.SlowTimeout = 10 * time.Second
 	})
 	start := time.Now()
-	if _, err := c.Decide(context.Background(), request(t, 1, decide.LaneFast)); ClassOf(err) != ClassTimeout {
+	if _, err := c.Decide(context.Background(), request(t, 1, decide.LaneFast)); ClassOf(err) != ClassTimeout || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("attempt timeout: %v", err)
 	}
 	// the caller's deadline bounds a slow attempt
@@ -296,8 +296,82 @@ func TestTimeouts(t *testing.T) {
 	}
 	// the fast lane's attempt is capped at 800 ms
 	big := client(t, srv.URL(), func(cfg *Config) { cfg.FastTimeout = time.Minute })
-	if big.cfg.FastTimeout != MaxFastTimeout {
-		t.Fatalf("fast timeout %v", big.cfg.FastTimeout)
+	if big.cfg.FastTimeout != MaxFastTimeout || big.cfg.SlowTimeout != DefaultSlowTimeout {
+		t.Fatalf("timeouts %v %v", big.cfg.FastTimeout, big.cfg.SlowTimeout)
+	}
+	if err := (&Error{Class: ClassCanceled}); !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("a canceled call is not context.Canceled")
+	}
+}
+
+// TestSlowRetryAfterTimeout: a slow attempt that hangs leaves room for its
+// retry within the scheduler's slow-lane deadline.
+func TestSlowRetryAfterTimeout(t *testing.T) {
+	srv := scriptedServer(t, jevtest.Faults{Sequence: []jevtest.Fault{jevtest.FaultHang, jevtest.FaultNone}})
+	c := client(t, srv.URL(), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), decide.DefaultSlowTimeout)
+	defer cancel()
+	start := time.Now()
+	resp, err := c.Decide(ctx, request(t, 1, decide.LaneSlow))
+	if err != nil || resp.Retries != 1 || srv.Count() != 2 {
+		t.Fatalf("retry after a hung attempt: %v, %+v, %d calls", err, resp, srv.Count())
+	}
+	if d := time.Since(start); d >= decide.DefaultSlowTimeout {
+		t.Fatalf("took %v", d)
+	}
+	if st := c.Stats(); st.Timeouts != 1 || st.Retries != 1 || st.OK != 1 {
+		t.Fatalf("stats %+v", st)
+	}
+
+	// the shares: the lane's timeout without a deadline or a retry left; a
+	// share of the time left after the pauses; the lane's timeout again
+	// when the share would be too short to be useful
+	bg := context.Background()
+	if d := c.attemptTimeout(bg, decide.LaneSlow, 0, 1); d != DefaultSlowTimeout {
+		t.Fatalf("no deadline: %v", d)
+	}
+	long, cancel2 := context.WithTimeout(bg, 2500*time.Millisecond)
+	defer cancel2()
+	if d := c.attemptTimeout(long, decide.LaneSlow, 0, 0); d != DefaultSlowTimeout {
+		t.Fatalf("no retry left: %v", d)
+	}
+	if d := c.attemptTimeout(long, decide.LaneSlow, 0, 1); d > 1175*time.Millisecond || d < 1100*time.Millisecond {
+		t.Fatalf("share of 2.5 s: %v", d)
+	}
+	short, cancel3 := context.WithTimeout(bg, 300*time.Millisecond)
+	defer cancel3()
+	if d := c.attemptTimeout(short, decide.LaneSlow, 0, 1); d != DefaultSlowTimeout {
+		t.Fatalf("share too short: %v", d)
+	}
+}
+
+// TestRecorderKeepsBody: the recorded request is the body that was sent,
+// byte for byte (no HTML escaping of <, > and &).
+func TestRecorderKeepsBody(t *testing.T) {
+	srv := scriptedServer(t, jevtest.Faults{})
+	var rec bytes.Buffer
+	c := client(t, srv.URL(), func(cfg *Config) { cfg.Recorder = &rec })
+	st := testState()
+	st.Objective = &decide.Objective{Kind: "touch", Desc: "door -> lift & <exit>", Path: 300}
+	req, err := decide.NewRequest(1, decide.LaneSlow, 1234, st, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Decide(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var x struct {
+		Request  json.RawMessage `json:"request"`
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(rec.Bytes(), &x); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(x.Request, srv.Calls()[0].Body) || !bytes.Contains(x.Request, []byte("door -> lift & <exit>")) {
+		t.Fatalf("recorded request differs from the body sent:\n%s\n%s", x.Request, srv.Calls()[0].Body)
+	}
+	if !json.Valid(x.Response) {
+		t.Fatal("no recorded response")
 	}
 }
 
@@ -392,7 +466,56 @@ func TestAuthDisables(t *testing.T) {
 	}
 }
 
+// TestBadRequestMarksQuestionSet: a 400 marks the shape of the question
+// set, not its live text, for BadSetTTL; repeated 400s open the breaker.
 func TestBadRequestMarksQuestionSet(t *testing.T) {
+	clk := newClock()
+	always := jevtest.Faults{Func: func(*jevtest.Call) (jevtest.Fault, bool) { return jevtest.FaultBadRequest, true }}
+	rejecting := scriptedServer(t, always)
+	var logs atomic.Int32
+	rc := client(t, rejecting.URL(), func(cfg *Config) { cfg.Now, cfg.Logf = clk.Now, func(string, ...any) { logs.Add(1) } })
+	fast := func(seq uint64, enemies, shift int) *decide.Request {
+		st := testState()
+		for len(st.Enemies) < enemies {
+			e := st.Enemies[0]
+			e.ID = fmt.Sprintf("e%d", len(st.Enemies)+1)
+			st.Enemies = append(st.Enemies, e)
+		}
+		st.Enemies = st.Enemies[:enemies]
+		for i := range st.Enemies { // live ranges and bearings: other option text
+			st.Enemies[i].Units += 37 * shift
+			st.Enemies[i].Bearing -= 11 * shift
+		}
+		req, err := decide.NewRequest(seq, decide.LaneFast, 1234, st, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	want := func(req *decide.Request, class ErrorClass, calls int) {
+		t.Helper()
+		if _, err := rc.Decide(context.Background(), req); ClassOf(err) != class || rejecting.Count() != calls {
+			t.Fatalf("request %d: %v (%d calls), want %s (%d calls)", req.Seq, err, rejecting.Count(), class, calls)
+		}
+	}
+	want(fast(1, 2, 0), ClassBadRequest, 1)
+	if string(fast(1, 2, 0).QuestionsJSON()) == string(fast(2, 2, 1).QuestionsJSON()) {
+		t.Fatal("the shifted requests should differ in their option text")
+	}
+	want(fast(2, 2, 1), ClassBadSet, 1) // same shape, other ranges: refused locally
+	want(fast(3, 2, 2), ClassBadSet, 1)
+	want(fast(4, 3, 0), ClassBadRequest, 2) // another shape (three enemies) is sent
+	clk.Advance(DefaultBadSetTTL)
+	want(fast(5, 2, 3), ClassBadRequest, 3) // the mark expired: one more try
+	want(fast(6, 2, 4), ClassBadSet, 3)
+	if st := rc.Stats(); st.BadSets != 2 || st.Errors.BadRequest != 3 || st.Errors.BadSet != 3 || logs.Load() != 3 {
+		t.Fatalf("stats %+v, %d logs", st, logs.Load())
+	}
+	// five consecutive 400s (two more shapes) open the breaker
+	want(fast(7, 1, 0), ClassBadRequest, 4)
+	want(fast(8, 0, 0), ClassBadRequest, 5)
+	want(request(t, 9, decide.LaneSlow), ClassBreaker, 5)
+
 	srv := scriptedServer(t, jevtest.Faults{Sequence: []jevtest.Fault{jevtest.FaultBadRequest}})
 	c := client(t, srv.URL(), nil)
 	if _, err := c.Decide(context.Background(), request(t, 1, decide.LaneSlow)); ClassOf(err) != ClassBadRequest {
@@ -530,7 +653,31 @@ func TestRateLimit(t *testing.T) {
 	if _, err := c2.Decide(context.Background(), request(t, 1, decide.LaneFast)); ClassOf(err) != ClassThrottled || d.n.Load() != 1 {
 		t.Fatalf("shared limiter: %v", err)
 	}
+	// its refusals do not spend the client's own tokens: with the clock
+	// stopped, the bucket's one token is still there when it allows again
+	tl := &toggle{}
+	c3 := client(t, srv.URL(), func(cfg *Config) { cfg.Now, cfg.RatePerSec, cfg.Burst, cfg.Limiter = clk.Now, 2, 1, tl })
+	for i := 1; i <= 3; i++ {
+		if _, err := c3.Decide(context.Background(), request(t, uint64(i), decide.LaneFast)); ClassOf(err) != ClassThrottled {
+			t.Fatalf("shared refusal %d: %v", i, err)
+		}
+	}
+	if tl.asked.Load() != 3 {
+		t.Fatalf("the shared limiter was asked %d times, want 3 (the bucket refused instead)", tl.asked.Load())
+	}
+	tl.allow.Store(true)
+	if _, err := c3.Decide(context.Background(), request(t, 4, decide.LaneFast)); err != nil {
+		t.Fatalf("after the shared limiter allows: %v", err)
+	}
 }
+
+// toggle is a shared limiter that refuses until allow is set.
+type toggle struct {
+	allow atomic.Bool
+	asked atomic.Int32
+}
+
+func (l *toggle) Allow(int) bool { l.asked.Add(1); return l.allow.Load() }
 
 func TestMalformedAndMissing(t *testing.T) {
 	srv := scriptedServer(t, jevtest.Faults{Sequence: []jevtest.Fault{jevtest.FaultMalformed, jevtest.FaultMissing}})

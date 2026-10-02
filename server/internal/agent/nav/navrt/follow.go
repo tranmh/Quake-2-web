@@ -7,6 +7,7 @@ import (
 	"quake2web/server/internal/agent/control"
 	"quake2web/server/internal/agent/nav"
 	"quake2web/server/internal/agent/nav/navsim"
+	"quake2web/server/internal/agent/perception"
 	"quake2web/server/internal/agent/worldmodel"
 	"quake2web/server/internal/q2const"
 )
@@ -30,6 +31,17 @@ const (
 	// noLookaheadMsec is how long the follower pursues node by node after
 	// it got stuck.
 	noLookaheadMsec = 3000
+	// airPlanMsec is how long the bot may be in the air before the
+	// navigator plans from where it is anyway (it hangs on a ladder, or
+	// stands on something the prediction does not know).
+	airPlanMsec = 1000
+	// ledgeSpeed is the horizontal speed (units/s) above which a landing
+	// on a ledge node is braked to rest first.
+	ledgeSpeed = 60
+	// strayGrace is how long after a plan the follower does not take the
+	// distance to the first step for straying: the plan may start at a
+	// node some way off (Localize searches up to 192 units).
+	strayGrace = 1000
 	// teleportJump is the distance between two commands' positions that
 	// counts as a teleport (or a respawn, a reload): the bot relocalizes.
 	teleportJump = 96
@@ -67,6 +79,9 @@ func (n *Navigator) Tick(in TickInput) control.MoveIntent {
 		n.note(in.Last)
 	}
 	o := n.st.Origin()
+	if n.st.OnGround() || n.st.WaterLevel >= 2 {
+		n.airSince = n.now
+	}
 	if n.haveOrigin && dist3(o, n.lastOrigin) > teleportJump {
 		n.relocalize(fmt.Sprintf("moved %.0f units in one command", dist3(o, n.lastOrigin)), true)
 	}
@@ -76,10 +91,21 @@ func (n *Navigator) Tick(in TickInput) control.MoveIntent {
 		n.status.Follow = Idle
 		return n.hold()
 	}
-	if n.reached() {
+	if n.arrived && n.leftGoal() {
+		// pushed away from a place goal, or it fell: go back
+		n.arrived = false
+		n.status.Follow = Following
+		n.relocalize("left the goal", true)
+	}
+	if !n.arrived {
+		if spot, ok := n.reached(); ok {
+			n.arrived, n.arriveSpot = true, spot
+		}
+	}
+	if n.arrived {
 		n.status.Follow, n.status.Cause, n.status.Reason = Arrived, CauseNone, ""
 		n.status.Edge, n.status.WaitFor, n.status.Remaining = -1, -1, 0
-		return n.hold()
+		return n.settle()
 	}
 	if n.final {
 		return n.hold()
@@ -92,7 +118,22 @@ func (n *Navigator) Tick(in TickInput) control.MoveIntent {
 	n.faceDirectional(&out)
 	out = n.watch(out)
 	n.status.Remaining = n.remainingCost()
+	n.tidyStatus()
 	return out
+}
+
+// tidyStatus keeps Cause and Reason for the states they explain: once the
+// navigator follows again, a stuck or failure report moves to LastCause
+// and LastReason.
+func (n *Navigator) tidyStatus() {
+	st := &n.status
+	if st.Follow != Following || st.Cause == CauseNone && st.Reason == "" {
+		return
+	}
+	if st.Cause != CauseNone {
+		st.LastCause, st.LastReason = st.Cause, st.Reason
+	}
+	st.Cause, st.Reason = CauseNone, ""
 }
 
 // note folds the predicted result of the last command into the step's
@@ -118,8 +159,9 @@ func (n *Navigator) note(res *navsim.StepResult) {
 	}
 }
 
-// reached reports whether the goal is reached.
-func (n *Navigator) reached() bool {
+// reached reports whether the goal is reached, and the spot to settle
+// at: the goal node arrived at, else where the bot is.
+func (n *Navigator) reached() (Vec3, bool) {
 	o := n.st.Origin()
 	switch n.goal.Kind {
 	case GoalNodes:
@@ -129,21 +171,58 @@ func (n *Navigator) reached() bool {
 				continue
 			}
 			if nd.Blocker < 0 || n.ms.Possible(nd.Blocker)&nav.Pose(int(nd.Pose)) != 0 {
-				return true
+				n.node, n.status.Node = id, id
+				return nd.Origin, true
 			}
 		}
 	case GoalPoint:
-		return (n.st.OnGround() || n.st.WaterLevel >= 1) && pointReached(o, n.goal)
+		return o, (n.st.OnGround() || n.st.WaterLevel >= 1) && pointReached(o, n.goal)
 	case GoalVolume:
-		return boxTouch(o, n.st.Ducked(), n.goal.Min, n.goal.Max)
+		return o, boxTouch(o, n.st.Ducked(), n.goal.Min, n.goal.Max)
 	case GoalTouch:
-		return n.touched(n.goal.Entity, &n.gout) || n.entityMoved(n.goal.Entity)
+		return o, n.touched(n.goal.Entity, &n.gout) || n.entityMoved(n.goal.Entity)
 	case GoalItem:
-		return n.itemTaken(n.goal.Entity) || n.touched(n.goal.Entity, &n.gout)
+		return o, n.itemTaken(n.goal.Entity) || n.touched(n.goal.Entity, &n.gout)
 	case GoalShoot:
-		return n.entityMoved(n.goal.Entity)
+		return o, n.entityMoved(n.goal.Entity)
 	}
-	return false
+	return o, false
+}
+
+// leaveRadius is how far (units) the bot may drift from the spot where it
+// reached a place goal (a node, point or volume) before it goes back.
+const leaveRadius = 64
+
+// leftGoal reports whether the bot got away from a place goal it had
+// reached: a goal that was an event (a touch, a pickup, a shot) stays
+// reached.
+func (n *Navigator) leftGoal() bool {
+	switch n.goal.Kind {
+	case GoalNodes, GoalPoint, GoalVolume:
+	default:
+		return false
+	}
+	if _, ok := n.reached(); ok {
+		return false
+	}
+	return dist3(n.st.Origin(), n.arriveSpot) > leaveRadius
+}
+
+// settle holds the bot at the reached goal: on the ground at a node or
+// point it brakes to rest at the spot (coasting on at full speed could
+// carry it off a ledge), else it holds still.
+func (n *Navigator) settle() control.MoveIntent {
+	switch n.goal.Kind {
+	case GoalNodes, GoalPoint:
+		nd := n.g.Node(n.node)
+		ladder := nd != nil && nd.Flags&nav.NodeLadder != 0
+		if !ladder && n.st.OnGround() && n.st.WaterLevel < 2 && !navsim.Stopped(&n.st, n.arriveSpot) {
+			in := n.stopAt(n.arriveSpot)
+			in.Crouch = in.Crouch || nd != nil && nd.Flags&nav.NodeCrouch != 0
+			return in
+		}
+	}
+	return n.hold()
 }
 
 // touched reports whether the bot touched entity ent: its solid in the
@@ -166,8 +245,10 @@ func (n *Navigator) touched(ent int32, out *navsim.Outcome) bool {
 	return false
 }
 
-// entityMoved reports whether the brush entity ent was seen moving since
-// the goal was set (a button pressed or shot).
+// entityMoved reports whether the brush entity ent was seen moving, or
+// heard starting to (its own button, door or plat sound: a button that
+// moves into its recess can drop out of view at once), since the goal was
+// set (a button pressed or shot).
 func (n *Navigator) entityMoved(ent int32) bool {
 	if n.belief == nil || n.md == nil {
 		return false
@@ -180,7 +261,29 @@ func (n *Navigator) entityMoved(ent int32) bool {
 		return false
 	}
 	mv := n.belief.Mover(e.Model)
-	return mv != nil && mv.Moving && mv.LastUpdate >= n.goalSince
+	if mv == nil {
+		return false
+	}
+	if mv.Moving && mv.LastUpdate >= n.goalSince {
+		return true
+	}
+	for k := range n.belief.Sounds {
+		s := &n.belief.Sounds[k]
+		if s.Num == mv.Num && s.At >= n.goalSince && moverSound(s.Kind) {
+			return true
+		}
+	}
+	return false
+}
+
+// moverSound reports the kinds of the sounds a brush entity makes when it
+// starts to move.
+func moverSound(kind string) bool {
+	switch kind {
+	case perception.SoundButton.String(), perception.SoundDoor.String(), perception.SoundPlat.String():
+		return true
+	}
+	return false
 }
 
 func (n *Navigator) itemTaken(ent int32) bool {
@@ -200,8 +303,8 @@ func (n *Navigator) maybePlan() {
 		return
 	}
 	special := n.cur < len(n.path.Edges) && (n.ph == phaseRun || n.ph == phaseCoast || n.ph == phaseStop) && !n.plainNow(&n.g.Edges[n.path.Edges[n.cur]])
-	if !special && !n.st.OnGround() && n.st.WaterLevel < 2 && len(n.path.Edges) > 0 {
-		return // in the air: plan where it lands
+	if !special && !n.st.OnGround() && n.st.WaterLevel < 2 && n.now-n.airSince < airPlanMsec {
+		return // in the air: plan where it lands (unless it hangs there: a ladder)
 	}
 	n.plan(special)
 }
@@ -246,12 +349,14 @@ func (n *Navigator) plan(keepSpecial bool) {
 		n.status.Follow, n.status.Cause, n.status.Reason = Following, CauseNone, ""
 	}
 	if equalInts(edges, n.path.Edges[min(n.cur, len(n.path.Edges)):]) && len(edges) > 0 {
+		n.planOcc = n.pathOccupants()
 		return // the same way: keep the step's state
 	}
 	// a repath while waiting for the same next edge keeps waiting
 	same := keep < 0 && (n.ph == phaseWait || n.ph == phaseApproach) && len(edges) > 0 &&
 		n.cur < len(n.path.Edges) && edges[0] == n.path.Edges[n.cur]
 	n.setPath(start, edges, p, keep >= 0 || same)
+	n.planOcc = n.pathOccupants()
 	n.status.Repaths++
 	n.stuck.repathed(n.remaining(), ev)
 }
@@ -374,9 +479,12 @@ func (n *Navigator) follow() control.MoveIntent {
 
 // advance moves on to the next step.
 func (n *Navigator) advance() {
+	n.landed = false
 	if n.cur < len(n.path.Edges) {
-		n.node = n.g.Edges[n.path.Edges[n.cur]].To
+		e := &n.g.Edges[n.path.Edges[n.cur]]
+		n.node = e.To
 		n.status.Node = n.node
+		n.landed = e.Kind == nav.EdgeJump || e.Kind == nav.EdgeDrop
 	}
 	n.cur++
 	n.resetStep()
@@ -387,8 +495,9 @@ func (n *Navigator) advance() {
 }
 
 // plainNow reports whether edge e is a plain walk the follower may pursue
-// with lookahead: a walk or crawl that works from a running start, whose
-// conditions hold now without waiting.
+// with lookahead: a walk or crawl that works from a running start, over
+// floor all the way (not a run across a gap, which needs the validated
+// run-up), whose conditions hold now without waiting.
 func (n *Navigator) plainNow(e *nav.Edge) bool {
 	if e.Kind != nav.EdgeWalk && e.Kind != nav.EdgeCrouch {
 		return false
@@ -396,24 +505,53 @@ func (n *Navigator) plainNow(e *nav.Edge) bool {
 	if e.Recipe != navsim.RecipeWalk && e.Recipe != navsim.RecipeCrouch {
 		return false
 	}
-	if e.Flags&(nav.EdgeFromRest|nav.EdgeFragile) != 0 {
+	if e.Flags&(nav.EdgeFromRest|nav.EdgeFragile) != 0 || !n.floored(e) {
 		return false
 	}
 	if len(e.Reqs) == 0 {
 		return true
 	}
-	ok, wait := n.ms.Holds(e, n.now)
+	ok, wait := n.holds(e)
 	return ok && wait == 0
+}
+
+// floored reports whether a walk edge has floor under its straight line
+// (floorBetween its ends; cached: it is static).
+func (n *Navigator) floored(e *nav.Edge) bool {
+	if e.Flags&nav.EdgeFast != 0 || n.static == nil {
+		return true // fast-path walks are level runs over floor
+	}
+	if v, ok := n.floor[e]; ok {
+		return v
+	}
+	v := n.floorBetween(n.g.Nodes[e.From].Origin, n.g.Nodes[e.To].Origin, e.Recipe == navsim.RecipeCrouch)
+	if n.floor == nil {
+		n.floor = map[*nav.Edge]bool{}
+	}
+	n.floor[e] = v
+	return v
 }
 
 // begin starts step i: plain walks run right away; other edges wait for
 // their conditions first and stop at their start when they need to.
 func (n *Navigator) begin(i int, e *nav.Edge) (control.MoveIntent, bool) {
+	landed := n.landed
+	n.landed = false
+	if from := n.g.Nodes[e.From]; landed && from.Flags&nav.NodeLedge != 0 && n.st.OnGround() && n.st.HSpeed() > ledgeSpeed {
+		// came down on a ledge with speed to spare (edges were validated
+		// from rest, and the builder checks running entries from walks
+		// only): stop on it before going on, or the landing's momentum
+		// carries the bot over the edge
+		n.ph, n.swimTo, n.airTicks = phaseStop, false, 0
+		n.ex = navsim.StopAt(from.Origin, CmdMsec)
+		n.deadline = n.now + stopSlack
+		return control.MoveIntent{}, true
+	}
 	if n.plainNow(e) {
 		n.ph = phaseRun
 		return control.MoveIntent{}, true
 	}
-	ok, wait := n.ms.Holds(e, n.now)
+	ok, wait := n.holds(e)
 	if !ok {
 		n.requestPlan(fmt.Sprintf("the conditions of edge %s do not hold", EdgeKey(e)), false)
 		return n.hold(), false
@@ -423,7 +561,7 @@ func (n *Navigator) begin(i int, e *nav.Edge) (control.MoveIntent, bool) {
 		n.waitLim = n.now + int64((wait+1)*1000)
 		n.waitFor = n.unmet(e)
 		n.status.WaitFor = n.waitFor
-		n.waitSpot = n.safeSpot(e)
+		n.waitSpot = n.safeSpot(e, n.waitFor)
 		n.status.Follow = Waiting
 		n.status.Reason = fmt.Sprintf("waiting up to %.1fs for %s", wait+1, n.blockerName(n.waitFor))
 		return control.MoveIntent{}, true
@@ -434,6 +572,9 @@ func (n *Navigator) begin(i int, e *nav.Edge) (control.MoveIntent, bool) {
 // unmet returns the first blocker of e whose condition does not hold now.
 func (n *Navigator) unmet(e *nav.Edge) int32 {
 	for _, r := range e.Reqs {
+		if n.carried(e, r) {
+			continue
+		}
 		if ok, w := n.ms.Satisfied(r, n.now); !ok || w > 0 {
 			return r.Blocker
 		}
@@ -460,6 +601,19 @@ func (n *Navigator) start(i int, e *nav.Edge) (control.MoveIntent, bool) {
 	n.waitFor, n.status.WaitFor = -1, -1
 	from := n.g.Nodes[e.From].Origin
 	o := n.st.Origin()
+	stopFirst := e.Flags&nav.EdgeFromRest != 0 || selfStopping(e)
+	if flight(e) {
+		ledge := n.checksLanding(e)
+		if !stopFirst && n.st.OnGround() && !n.trial(i, e, false, ledge) {
+			// from the way the bot comes in the flight goes wrong in the
+			// simulation: run it the way the builder validated it
+			stopFirst = true
+		}
+		if stopFirst && ledge && !n.trial(i, e, true, true) {
+			n.rejectLanding(e)
+			return n.hold(), false
+		}
+	}
 	switch {
 	case swimStart(e) && n.st.WaterLevel >= 1 && (dist3(o, from) > swimReach || e.Recipe == navsim.RecipeWaterJump && vlen(n.st.Velocity()) > swimStill):
 		// a swim or water jump validated from its (underwater) start: swim
@@ -468,7 +622,7 @@ func (n *Navigator) start(i int, e *nav.Edge) (control.MoveIntent, bool) {
 		n.ex = navsim.Plan{Recipe: navsim.RecipeSwim, From: o, Target: from, StepMsec: CmdMsec}.Executor()
 		n.deadline = n.now + stopSlack
 		return control.MoveIntent{}, true
-	case (e.Flags&nav.EdgeFromRest != 0 || selfStopping(e)) && n.st.OnGround() && !navsim.Stopped(&n.st, from):
+	case stopFirst && n.st.OnGround() && !navsim.Stopped(&n.st, from):
 		// the jump, drop and ladder executors stop at the start
 		// themselves, but give up when the ground flickers (walking down
 		// a ramp leaves the ground for a command): stop here first
@@ -686,6 +840,7 @@ func segDistH(p, a, b Vec3) float32 {
 // walks lead there.
 func (n *Navigator) walk() (control.MoveIntent, bool) {
 	o := n.st.Origin()
+	n.catchUp(o)
 	for n.cur < len(n.path.Edges) {
 		e := &n.g.Edges[n.path.Edges[n.cur]]
 		if !n.plainNow(e) {
@@ -707,8 +862,18 @@ func (n *Navigator) walk() (control.MoveIntent, bool) {
 				n.ph = phaseRun
 				continue
 			}
+			if id := n.trackOf(n.st.Ground); id != "" && n.st.OnGround() {
+				// on a monster's head (a jump got it up there): the nodes
+				// it stands on are out of reach, walk off towards the
+				// first one it does not cover
+				if k := n.occupantOf(id); k >= 0 && boxTouch(to, false, n.occ[k].lo, n.occ[k].hi) {
+					n.advance()
+					n.ph = phaseRun
+					continue
+				}
+			}
 		}
-		if n.st.OnGround() && distH(o, to) > distH(n.g.Nodes[e.From].Origin, to)+96 {
+		if n.st.OnGround() && n.now-n.lastPlan >= strayGrace && distH(o, to) > distH(n.g.Nodes[e.From].Origin, to)+96 {
 			n.relocalize(fmt.Sprintf("strayed from edge %s", EdgeKey(e)), true)
 			return n.hold(), false
 		}
@@ -731,9 +896,73 @@ func (n *Navigator) walk() (control.MoveIntent, bool) {
 			return n.hold(), false
 		}
 	}
-	p := navsim.Plan{Recipe: e.Recipe, From: o, Target: target, Forward: e.Forward, StepMsec: CmdMsec}
+	if n.braking(target) {
+		// the last step to a node or point: run in and stop on it
+		in := control.FromCmd(navsim.StopAt(target, CmdMsec).Next(n.w, &n.st), false)
+		in.Crouch = in.Crouch || e.Recipe == navsim.RecipeCrouch
+		return in, false
+	}
+	rec := e.Recipe
+	switch {
+	case n.st.WaterLevel >= 2 && !n.st.OnGround():
+		// afloat (after a swim edge, or bobbing up in a pool): a walk
+		// steers level and would circle the node on the bottom for ever;
+		// swim at it
+		rec = navsim.RecipeSwim
+	case rec == navsim.RecipeWalk && n.crawl(target):
+		// standing under a low ceiling (got up at the end of a crawl):
+		// only ducked does it get on
+		rec = navsim.RecipeCrouch
+	}
+	p := navsim.Plan{Recipe: rec, From: o, Target: target, Forward: e.Forward, StepMsec: CmdMsec}
 	c := p.Executor().Next(n.w, &n.st)
 	return control.FromCmd(c, n.st.WaterLevel >= 2), false
+}
+
+// braking reports whether the pursuit should brake into target: it is
+// the end of the path's last step, of a goal that is a place (a node or a
+// point: the bot must stay there, not run past it and maybe off a
+// ledge), and the bot is on dry ground (navsim.StopAt does not swim),
+// not on top of a monster.
+func (n *Navigator) braking(target Vec3) bool {
+	if n.cur != len(n.path.Edges)-1 || n.path.GoalEdge || !n.st.OnGround() || n.st.WaterLevel >= 2 {
+		return false
+	}
+	if n.trackOf(n.st.Ground) != "" {
+		return false // on a monster's head over the node: walk off it
+	}
+	if n.goal.Kind != GoalNodes && n.goal.Kind != GoalPoint {
+		return false
+	}
+	return target == n.g.Nodes[n.g.Edges[n.path.Edges[n.cur]].To].Origin
+}
+
+// catchUp moves the current step on to the one among the next plain
+// walks whose end node is nearest to the bot, when the bot can walk there
+// straight: steering at the lookahead it can pass nodes wide of the
+// arrival tolerance, and a step left behind would turn it round.
+func (n *Navigator) catchUp(o Vec3) {
+	if n.cur >= len(n.path.Edges) || !n.st.OnGround() {
+		return
+	}
+	e := &n.g.Edges[n.path.Edges[n.cur]]
+	best, bestD := n.cur, dist3(o, n.g.Nodes[e.To].Origin)
+	for j := n.cur + 1; j < len(n.path.Edges) && j <= n.cur+8; j++ {
+		ej := &n.g.Edges[n.path.Edges[j]]
+		if !n.plainNow(ej) || ej.Recipe != e.Recipe {
+			break
+		}
+		if d := dist3(o, n.g.Nodes[ej.To].Origin); d < bestD {
+			best, bestD = j, d
+		}
+	}
+	if best == n.cur || !n.clearWalk(o, n.g.Nodes[n.g.Edges[n.path.Edges[best]].To].Origin, e.Recipe == navsim.RecipeCrouch) {
+		return
+	}
+	for n.cur < best {
+		n.advance()
+	}
+	n.ph = phaseRun
 }
 
 // lookahead returns the node to steer at on the plain walks from the
@@ -754,7 +983,7 @@ func (n *Navigator) lookahead(o Vec3, cur *nav.Edge) (target Vec3, gap bool) {
 			break
 		}
 		p := n.g.Nodes[e.To].Origin
-		if dist3(o, p) > n.cfg.Lookahead || !n.clearWalk(o, p, ducked) {
+		if dist3(o, p) > n.cfg.Lookahead || !n.clearWalk(o, p, ducked) || n.lineOccupied(o, p, ducked) {
 			break
 		}
 		best, gap = p, false
@@ -805,7 +1034,7 @@ func (n *Navigator) shoot() control.MoveIntent {
 // estimated wait plus a second; then it tries the edge when the blocker
 // is out of sight, or marks the edge blocked.
 func (n *Navigator) waiting(i int, e *nav.Edge) (control.MoveIntent, bool) {
-	ok, wait := n.ms.Holds(e, n.now)
+	ok, wait := n.holds(e)
 	switch {
 	case !ok:
 		n.requestPlan(fmt.Sprintf("the conditions of edge %s no longer hold", EdgeKey(e)), false)
@@ -826,7 +1055,9 @@ func (n *Navigator) waiting(i int, e *nav.Edge) (control.MoveIntent, bool) {
 	}
 	n.status.Follow = Waiting
 	o, ducked := n.st.Origin(), n.st.Ducked()
-	if b := n.waitFor; b >= 0 && n.ms.Auto(b) {
+	if b := n.waitFor; b >= 0 && n.ms.Auto(b) && doorLike(n.g.Blockers[b].Kind) {
+		// an auto door opens when the bot walks into its trigger (a plat's
+		// trigger would keep it up instead: it is waited for outside)
 		if tr := n.ms.Trigger(b); tr != nil && !boxTouch(o, ducked, tr.Min, tr.Max) {
 			if n.ph != phaseApproach {
 				n.ph = phaseApproach
@@ -839,20 +1070,59 @@ func (n *Navigator) waiting(i int, e *nav.Edge) (control.MoveIntent, bool) {
 	return n.stopAt(n.waitSpot), false
 }
 
-// safeSpot returns where to wait before edge e: its start, or the start of
-// an earlier step when the start is in the path of a mover.
-func (n *Navigator) safeSpot(e *nav.Edge) Vec3 {
+// doorLike reports blockers that open when a player walks into their
+// trigger.
+func doorLike(k nav.BlockerKind) bool {
+	switch k {
+	case nav.BlockDoor, nav.BlockRotating, nav.BlockSecret:
+		return true
+	}
+	return false
+}
+
+// safeSpot returns where to wait before edge e for blocker b: its start,
+// else the start of an earlier step, else the nearest node around it the
+// bot can walk to straight, that is out of the path of every mover and,
+// waiting for a plat, out of its center trigger (standing in it keeps a
+// plat at its top up for ever).
+func (n *Navigator) safeSpot(e *nav.Edge, b int32) Vec3 {
 	first := n.g.Nodes[e.From].Origin
-	if !n.inMoverPath(first) {
+	if n.safeWait(first, b) {
 		return first
 	}
 	for k := n.cur - 1; k >= 0 && k >= n.cur-4; k-- {
 		p := n.g.Nodes[n.g.Edges[n.path.Edges[k]].From].Origin
-		if !n.inMoverPath(p) {
+		if n.safeWait(p, b) {
 			return p
 		}
 	}
+	o := n.st.Origin()
+	for _, c := range n.g.Nearby(first, safeSearch) {
+		nd := &n.g.Nodes[c.Node]
+		if nd.Flags&(nav.NodeMover|nav.NodeWater|nav.NodeLadder|nav.NodeCrouch) != 0 {
+			continue
+		}
+		if n.safeWait(nd.Origin, b) && n.clearWalk(o, nd.Origin, false) {
+			return nd.Origin
+		}
+	}
 	return first
+}
+
+// safeSearch is how far (units) safeSpot looks around an edge start.
+const safeSearch = 256
+
+// safeWait reports whether p is a spot to wait at for blocker b.
+func (n *Navigator) safeWait(p Vec3, b int32) bool {
+	if n.inMoverPath(p) {
+		return false
+	}
+	if b >= 0 && int(b) < len(n.g.Blockers) && n.g.Blockers[b].Kind == nav.BlockPlat {
+		if tr := n.ms.Trigger(b); tr != nil && boxTouch(p, false, tr.Min, tr.Max) {
+			return false
+		}
+	}
+	return true
 }
 
 // inMoverPath reports whether a player standing at p is somewhere a door,
@@ -948,22 +1218,30 @@ func (n *Navigator) walkOff() control.MoveIntent {
 	if id == nav.NoNode {
 		return n.hold()
 	}
-	p := navsim.Plan{Recipe: navsim.RecipeWalk, From: o, Target: n.g.Nodes[id].Origin, StepMsec: CmdMsec}
+	rec := navsim.RecipeWalk
+	if n.crawl(n.g.Nodes[id].Origin) {
+		rec = navsim.RecipeCrouch
+	}
+	p := navsim.Plan{Recipe: rec, From: o, Target: n.g.Nodes[id].Origin, StepMsec: CmdMsec}
 	return control.FromCmd(p.Executor().Next(n.w, &n.st), n.st.WaterLevel >= 2)
 }
 
 // faceDirectional makes the bot face a directional trigger's direction
 // (Touch_Multi only fires for a player facing along its movedir, judged
 // on the facing of the last server frame) from well before it enters one
-// the path sets off.
+// the path sets off: from 0.4 s (at least 64 units) out, on the steps that
+// start that close.
 func (n *Navigator) faceDirectional(in *control.MoveIntent) {
 	if len(n.dirYaw) == 0 {
 		return
 	}
 	reach := max(64, n.st.HSpeed()*0.4)
 	o, ducked := n.st.Origin(), n.st.Ducked()
-	for j := n.cur; j < len(n.path.Edges) && j <= n.cur+2; j++ {
+	for j := n.cur; j < len(n.path.Edges) && j <= n.cur+8; j++ {
 		e := &n.g.Edges[n.path.Edges[j]]
+		if j > n.cur && dist3(o, n.g.Nodes[e.From].Origin) > reach+navsim.ArriveXY {
+			break
+		}
 		for _, f := range e.Effects {
 			yaw, ok := n.dirYaw[f.Entity]
 			if !ok || f.Kind != nav.EffTrigger {
@@ -1021,17 +1299,23 @@ type stuckState struct {
 	manDir   Vec3
 	jumped   bool
 	sign     float32
+	// resetAt is when repathed last reset the window.
+	reset   bool
+	resetAt int64
 }
 
 // repathed resets the progress window after a path change that came from
-// an event, or that made the way longer.
+// an event, or that made the way longer: at most once per ProgressWindow,
+// so a bot that keeps replanning without getting anywhere is still found
+// stuck.
 func (s *stuckState) repathed(rem float32, event bool) {
 	if !s.init {
 		return
 	}
-	if event || rem > s.best+levelReset {
+	if (event || rem > s.best+levelReset) && (!s.reset || s.active-s.resetAt >= ProgressWindow) {
 		s.best, s.bestAt = rem, s.active
 		s.nring = 0
+		s.reset, s.resetAt = true, s.active
 	}
 }
 
@@ -1089,7 +1373,11 @@ func (n *Navigator) watch(in control.MoveIntent) control.MoveIntent {
 }
 
 // stuckNow escalates: jump, strafe, back off, relocalize and repath, mark
-// the edge blocked and repath, give up.
+// the edge blocked and repath, give up. Against a monster in the way the
+// first manoeuvre sidesteps it and the second jumps (with pmove's step
+// up a jump gets onto a soldier's head, and over it); the mark covers
+// the edges into its spot (the planner already routes around it where it
+// can).
 func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveIntent {
 	s := &n.stuck
 	cause, detail := n.classify(in)
@@ -1101,7 +1389,7 @@ func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveInte
 		n.status.Follow, n.status.Cause = Waiting, cause
 		n.status.Reason = why + ": " + detail + "; waiting for it"
 		s.man, s.manEnd = manWait, n.now+int64((n.ms.Travel(n.doorHit)+1)*1000)
-		s.manDir = n.safeSpot(&n.g.Edges[n.path.Edges[n.cur]])
+		s.manDir = n.safeSpot(&n.g.Edges[n.path.Edges[n.cur]], n.doorHit)
 		m, _ := n.manoeuvre()
 		return m
 	}
@@ -1117,19 +1405,32 @@ func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveInte
 	if s.sign == 0 {
 		s.sign = 1
 	}
+	monster := cause == CauseEntity && n.blockedBy >= 0
+	if k := n.occupantOf(n.trackOf(n.st.Ground)); k >= 0 && n.st.OnGround() && s.level <= 3 {
+		// stuck on a monster's head (against a low ceiling, say): step off
+		// it the short way, away from its middle (the drop is only its
+		// height, so no floor check)
+		c := boxCenter(n.occ[k].lo, n.occ[k].hi)
+		off := sub(n.st.Origin(), c)
+		off[2] = 0
+		if l := float32(math.Hypot(float64(off[0]), float64(off[1]))); l > 0.5 {
+			off = Vec3{off[0] / l, off[1] / l, 0}
+		} else {
+			off = Vec3{-dir[0], -dir[1], 0}
+		}
+		s.man, s.manEnd, s.manDir = manBack, n.now+400, n.openDir(off)
+		n.status.Reason += " (on its head: stepping off)"
+		n.resetStep()
+		m, _ := n.manoeuvre()
+		return m
+	}
 	switch s.level {
-	case 1:
+	case 1, 2:
+		if monster == (s.level == 1) {
+			n.strafe(dir)
+			break
+		}
 		s.man, s.manEnd, s.manDir, s.jumped = manJump, n.now+150, dir, false
-	case 2:
-		// strafe to a side with floor (the other one first next time)
-		side := Vec3{-dir[1] * s.sign, dir[0] * s.sign, 0}
-		if !n.floorAlong(side, 400) {
-			side = Vec3{-side[0], -side[1], 0}
-		}
-		s.sign = -s.sign
-		if n.floorAlong(side, 400) {
-			s.man, s.manEnd, s.manDir = manStrafe, n.now+400, side
-		}
 	case 3:
 		if back := (Vec3{-dir[0], -dir[1], 0}); n.floorAlong(back, 300) {
 			s.man, s.manEnd, s.manDir = manBack, n.now+300, back
@@ -1139,9 +1440,8 @@ func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveInte
 		return n.hold()
 	case 5:
 		switch {
-		case cause == CauseEntity && n.blockedBy >= 0:
-			// a monster stands in the way: every edge through its spot
-			n.markArea(n.occupied[n.blockedBy])
+		case monster:
+			n.markArea(n.occ[n.blockedBy].lo, n.occ[n.blockedBy].hi)
 		case n.cur < len(n.path.Edges):
 			n.MarkBlocked(n.path.Edges[n.cur], n.now)
 		}
@@ -1158,6 +1458,38 @@ func (n *Navigator) stuckNow(in control.MoveIntent, why string) control.MoveInte
 		return m
 	}
 	return n.hold() // no safe manoeuvre at this level: the next one escalates
+}
+
+// strafe starts a sidestep of 0.4 s to a side with floor, perpendicular
+// to dir (the other side first the next time).
+func (n *Navigator) strafe(dir Vec3) {
+	s := &n.stuck
+	side := Vec3{-dir[1] * s.sign, dir[0] * s.sign, 0}
+	if !n.floorAlong(side, 400) {
+		side = Vec3{-side[0], -side[1], 0}
+	}
+	s.sign = -s.sign
+	if n.floorAlong(side, 400) {
+		s.man, s.manEnd, s.manDir = manStrafe, n.now+400, side
+	}
+}
+
+// openDir returns the first of dir, its two perpendiculars and its
+// opposite in which the hull can move 24 units from where the bot is (in
+// the static world: no wall or low ceiling), dir when none can.
+func (n *Navigator) openDir(dir Vec3) Vec3 {
+	if n.static == nil {
+		return dir
+	}
+	o := n.st.Origin()
+	mins, maxs := hull(n.st.Ducked())
+	for _, d := range []Vec3{dir, {-dir[1], dir[0], 0}, {dir[1], -dir[0], 0}, {-dir[0], -dir[1], 0}} {
+		end := add(o, Vec3{d[0] * 24, d[1] * 24, 0})
+		if tr := n.static.Trace(o, mins, maxs, end, q2const.MASK_PLAYERSOLID); !tr.StartSolid && tr.Fraction == 1 {
+			return d
+		}
+	}
+	return dir
 }
 
 // manoeuvre returns the intent of the recovery manoeuvre in progress.
@@ -1229,7 +1561,7 @@ func (n *Navigator) classify(in control.MoveIntent) (Cause, string) {
 		tr := n.w.Trace(o, mins, maxs, end, q2const.MASK_PLAYERSOLID)
 		if tr.Fraction < 1 || tr.StartSolid {
 			if id := n.trackOf(tr.Ent); id != "" {
-				n.blockedBy = tr.Ent - trackBase
+				n.blockedBy = n.occupantOf(id)
 				class := ""
 				if n.belief != nil {
 					if t := n.belief.Track(id); t != nil {
@@ -1260,14 +1592,14 @@ func (n *Navigator) classify(in control.MoveIntent) (Cause, string) {
 	return CauseWorld, fmt.Sprintf("no way forward at %v", o)
 }
 
-// markArea marks the edges into every node whose player box touches box
-// (a monster standing there) blocked, except into the node the bot is at
-// (it must be able to leave), and repaths.
-func (n *Navigator) markArea(box [2]Vec3) {
+// markArea marks the edges into every node whose player box touches the
+// box lo..hi (a monster standing there) blocked, except into the node the
+// bot is at (it must be able to leave), and repaths.
+func (n *Navigator) markArea(lo, hi Vec3) {
 	here := n.Localize(n.st.Origin(), n.st.Ducked())
-	for _, c := range n.g.Nearby(boxCenter(box[0], box[1]), boxRadius(box[0], box[1])+48) {
+	for _, c := range n.g.Nearby(boxCenter(lo, hi), boxRadius(lo, hi)+48) {
 		nd := &n.g.Nodes[c.Node]
-		if c.Node == here || !boxTouch(nd.Origin, nd.Flags&nav.NodeCrouch != 0, box[0], box[1]) {
+		if c.Node == here || !boxTouch(nd.Origin, nd.Flags&nav.NodeCrouch != 0, lo, hi) {
 			continue
 		}
 		for _, i := range n.g.In(c.Node) {

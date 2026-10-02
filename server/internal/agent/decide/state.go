@@ -851,7 +851,8 @@ func marshal(v any) ([]byte, error) {
 // FitState returns st trimmed to encode within maxBytes (HardCap if <= 0)
 // and its encoding. Trimming is deterministic and drops the least
 // important parts first: events, items, incoming projectiles, enemies
-// (down to one), then the objective's description. st is not modified.
+// (the lowest ranked first, never the current target, down to one), then
+// the objective's description. st is not modified.
 func FitState(st State, maxBytes int) (State, []byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = HardCap
@@ -890,7 +891,7 @@ func FitState(st State, maxBytes int) (State, []byte, error) {
 		case len(st.Incoming) > 0:
 			st.Incoming = st.Incoming[:len(st.Incoming)-1]
 		case len(st.Enemies) > 1:
-			st.Enemies = st.Enemies[:len(st.Enemies)-1]
+			st.Enemies = dropEnemy(st.Enemies)
 		case st.Objective != nil && st.Objective.Desc != "":
 			st.Objective.Desc = ""
 		default:
@@ -906,6 +907,17 @@ func FitState(st State, maxBytes int) (State, []byte, error) {
 			st.Incoming = nil
 		}
 	}
+}
+
+// dropEnemy removes the last enemy that is not the current target (the
+// projection puts a low-ranked current target last, in place of the last
+// of the top N), keeping the order of the rest. es is modified in place.
+func dropEnemy(es []Enemy) []Enemy {
+	i := len(es) - 1
+	for i > 0 && es[i].Current {
+		i--
+	}
+	return append(es[:i], es[i+1:]...)
 }
 
 // EncodeState returns the encoding of st trimmed under maxBytes (see

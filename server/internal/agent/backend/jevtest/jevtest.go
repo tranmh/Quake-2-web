@@ -11,8 +11,10 @@
 //
 // Randomness is seeded per request from the seed and the request's
 // content digest (faults also from the client's attempt number), so the
-// answers do not depend on the order concurrent requests arrive in and a
-// lockstep run against the server repeats exactly.
+// answers and the random faults do not depend on the order concurrent
+// requests arrive in and a lockstep run against the server repeats
+// exactly. Faults.Sequence is the exception: it is indexed by arrival, for
+// serial tests; Faults.Func gives scripted faults keyed by request.
 package jevtest
 
 import (
@@ -383,8 +385,17 @@ type Faults struct {
 	// (rounded up) and as Retry-After-Ms.
 	RetryAfter time.Duration
 	// Sequence gives the faults of the first calls in arrival order; the
-	// random faults apply after it.
+	// random faults apply after it. Arrival order is only defined for
+	// serial calls: with concurrent calls (lockstep fast and slow lanes in
+	// flight together) which request gets which fault depends on timing,
+	// so use Func there.
 	Sequence []Fault
+	// Func, when set, chooses each call's fault before Sequence and the
+	// random faults; ok false leaves the call to them. Keyed on the call's
+	// content (Digest, Attempt, State), it stays deterministic under
+	// concurrency. It runs under the server's lock and must not call the
+	// Server.
+	Func func(c *Call) (f Fault, ok bool)
 }
 
 // Options configures a Server.
@@ -457,15 +468,20 @@ func writeError(w http.ResponseWriter, status int, typ, msg string) {
 	_, _ = w.Write(b)
 }
 
-func (s *Server) fault(n int, digest string, attempt int) (Fault, time.Duration) {
+func (s *Server) fault(c *Call) (Fault, time.Duration) {
 	f := s.opt.Faults
-	rng := rngFor(f.Seed^0x5eed, digest, attempt)
+	rng := rngFor(f.Seed^0x5eed, c.Digest, c.Attempt)
 	var lat time.Duration
 	if len(f.Latency) > 0 {
 		lat = f.Latency[rng.IntN(len(f.Latency))]
 	}
-	if n < len(f.Sequence) {
-		return f.Sequence[n], lat
+	if f.Func != nil {
+		if ft, ok := f.Func(c); ok {
+			return ft, lat
+		}
+	}
+	if c.N < len(f.Sequence) {
+		return f.Sequence[c.N], lat
 	}
 	x := rng.Float64()
 	for _, c := range []struct {
@@ -530,7 +546,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			c.Attempt = n
 		}
 	}
-	fault, lat := s.fault(c.N, digest, c.Attempt)
+	fault, lat := s.fault(&c)
 	c.Fault = fault
 	s.calls = append(s.calls, c)
 	s.mu.Unlock()

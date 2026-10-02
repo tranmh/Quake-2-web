@@ -94,19 +94,13 @@ func TestPredictorReplay(t *testing.T) {
 	}
 }
 
-// TestPredictionMatchesServer drives the bot on demo1 with the navigator
+// testPredictionMatchesServer drives the bot on demo1 with the navigator
 // and compares, every frame, where the predictor says the frame's four
 // commands take the player with the player state the server sends next:
 // nearly always bit for bit.
-func TestPredictionMatchesServer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("lockstep run")
-	}
-	b := startBot(t, "demo1", 3, Config{})
-	b.nav.cfg.Avoid = ExitTriggers(b.g, b.md)
-	for _, a := range b.nav.cfg.Avoid {
-		b.nav.avoid[a] = true
-	}
+func testPredictionMatchesServer(t *testing.T, d *demoLevel) {
+	b := startBotOn(t, d, 3, Config{})
+	b.avoidExits()
 	var pred Vec3
 	have := false
 	sub := 0

@@ -93,14 +93,25 @@ func run(t *testing.T, backend decide.DecisionBackend, lat decide.LatencyModel, 
 	return intents, events
 }
 
+// hangTimeout is the noisy client's attempt timeout: a hung first attempt
+// becomes the client's own timeout (a fast-lane failure; the slow lane
+// retries).
+const hangTimeout = 100 * time.Millisecond
+
 func noisyJev(t *testing.T) *jev.Client {
 	t.Helper()
 	base := jevtest.NewScripted(scripted.Config{Seed: 1})
 	base.Now = func(*jevtest.Call) int64 { return 0 }
+	hang := func(c *jevtest.Call) (jevtest.Fault, bool) {
+		// the first attempts of the requests whose digest starts with "0"
+		// (one in sixteen, chosen by content) hang
+		return jevtest.FaultHang, c.Attempt == 0 && len(c.Digest) > 0 && c.Digest[0] == '0'
+	}
 	srv := jevtest.NewServer(jevtest.Options{APIKey: "k", Policy: &jevtest.Noisy{Base: base, Seed: 3},
-		Faults: jevtest.Faults{Seed: 3, Server: 0.05, Missing: 0.05}})
+		Faults: jevtest.Faults{Seed: 3, Server: 0.05, Missing: 0.05, Func: hang}})
 	t.Cleanup(srv.Close)
-	c, err := jev.New(jev.Config{BaseURL: srv.URL(), APIKey: trace.NewSecret("k"), AllowCustomBase: true, RatePerSec: -1})
+	c, err := jev.New(jev.Config{BaseURL: srv.URL(), APIKey: trace.NewSecret("k"), AllowCustomBase: true, RatePerSec: -1,
+		FastTimeout: hangTimeout, SlowTimeout: hangTimeout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,12 +142,17 @@ func comparable(t *testing.T, events []trace.Event) []string {
 func TestRoundTrip(t *testing.T) {
 	lat := &decide.SampledLatency{Seed: 2, Samples: []time.Duration{90 * time.Millisecond, 212 * time.Millisecond, 350 * time.Millisecond, 900 * time.Millisecond}}
 	want, events := run(t, noisyJev(t), lat, 0)
-	errs, models := 0, 0
+	errs, models, ownTimeouts := 0, 0, 0
 	for _, e := range events {
 		var d trace.Decision
 		_ = e.DecodeBody(&d)
 		if d.Err != "" {
 			errs++
+		}
+		// the backend's own timeout (not a simulated latency beyond the
+		// lane's timeout): it must replay as a timeout, not a plain error
+		if d.Timeout && d.Err != "" && d.LatencyMs <= float64(decide.DefaultFastTimeout/time.Millisecond) {
+			ownTimeouts++
 		}
 		for _, f := range d.Fields {
 			if f.Source == trace.SourceModel {
@@ -144,8 +160,8 @@ func TestRoundTrip(t *testing.T) {
 			}
 		}
 	}
-	if len(events) < 40 || errs == 0 || models == 0 {
-		t.Fatalf("%d decision events, %d errors, %d model fields", len(events), errs, models)
+	if len(events) < 40 || errs == 0 || models == 0 || ownTimeouts == 0 {
+		t.Fatalf("%d decision events, %d errors (%d client timeouts), %d model fields", len(events), errs, ownTimeouts, models)
 	}
 	rb, err := replay.New(events, replay.Options{Strict: true})
 	if err != nil {
@@ -168,7 +184,7 @@ func TestRoundTrip(t *testing.T) {
 	if rb.Divergence() != nil || st.Matched != st.Calls || st.Failures == 0 {
 		t.Fatalf("divergence %v stats %+v", rb.Divergence(), st)
 	}
-	t.Logf("%d events (%d failed requests) replayed, stats %+v", len(events), errs, st)
+	t.Logf("%d events (%d failed requests, %d client timeouts) replayed, stats %+v", len(events), errs, ownTimeouts, st)
 }
 
 // TestStrictDivergence: a run that differs from frame 20 on is reported
@@ -216,10 +232,11 @@ func TestRecordedFailuresAndMissing(t *testing.T) {
 	events := []trace.Event{
 		ev(1, trace.Decision{ReqDigest: dig, Response: raw, LatencyMs: 120, CostUSD: 0.5}),
 		ev(2, trace.Decision{ReqDigest: dig, Err: "jev: server (status 500)"}),
+		ev(4, trace.Decision{ReqDigest: dig, Err: "jev: timeout: context deadline exceeded", Timeout: true, LatencyMs: 300}),
 		{Type: trace.TypeAPICall, Seq: 3},
 	}
 	b, err := replay.New(events, replay.Options{})
-	if err != nil || b.Len() != 2 {
+	if err != nil || b.Len() != 3 {
 		t.Fatalf("%v %d", err, b.Len())
 	}
 	req := &decide.Request{Seq: 1, Lane: decide.LaneSlow, State: state, Questions: q}
@@ -228,8 +245,14 @@ func TestRecordedFailuresAndMissing(t *testing.T) {
 		t.Fatalf("replayed %+v %v", resp, err)
 	}
 	var re *replay.RecordedError
-	if _, err := b.Decide(context.Background(), &decide.Request{Seq: 2, Lane: decide.LaneSlow, State: state, Questions: q}); !errors.As(err, &re) {
+	if _, err := b.Decide(context.Background(), &decide.Request{Seq: 2, Lane: decide.LaneSlow, State: state, Questions: q}); !errors.As(err, &re) ||
+		errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("recorded failure: %v", err)
+	}
+	// a recorded timeout is a timeout again, with the recorded message
+	if _, err := b.Decide(context.Background(), &decide.Request{Seq: 4, Lane: decide.LaneSlow, State: state, Questions: q}); !errors.Is(err, context.DeadlineExceeded) ||
+		err.Error() != "jev: timeout: context deadline exceeded" {
+		t.Fatalf("recorded timeout: %v", err)
 	}
 	if _, err := b.Decide(context.Background(), &decide.Request{Seq: 9, Lane: decide.LaneSlow, State: state, Questions: q}); !errors.Is(err, replay.ErrDivergence) {
 		t.Fatalf("missing request: %v", err)

@@ -113,6 +113,9 @@ type Decision struct {
 	ReqDigest string `json:"req_digest,omitempty"`
 	// Err is the backend's error when the request failed (no Response).
 	Err string `json:"err,omitempty"`
+	// Timeout: the failure was a timeout (the call's deadline, or a
+	// simulated latency beyond it).
+	Timeout bool `json:"timeout,omitempty"`
 	// Stale: the answer arrived after its TTL and was not applied.
 	Stale bool `json:"stale,omitempty"`
 }

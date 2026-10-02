@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"quake2web/server/internal/agent/nav"
-	"quake2web/server/internal/agent/session/sessiontest"
 	"quake2web/server/internal/agent/worldmodel"
 )
 
@@ -149,11 +148,10 @@ func TestMapStatePlatLaserRotating(t *testing.T) {
 	}
 }
 
-// TestMapStateFromMapData: the static facts come from the map data: the
+// testMapStateFromMapData: the static facts come from the map data: the
 // demo1 door *19 is an auto door that closes 3 s after opening, the car
 // *31 is used by its button, demo2's plat *52 is a touch plat.
-func TestMapStateFromMapData(t *testing.T) {
-	fs := sessiontest.DemoFS(t)
+func testMapStateFromMapData(t *testing.T, d *demoLevel) {
 	for _, c := range []struct {
 		name, model   string
 		auto, returns bool
@@ -163,11 +161,12 @@ func TestMapStateFromMapData(t *testing.T) {
 		{"demo1", "*31", false, true, false},
 		{"demo2", "*52", true, false, true},
 	} {
-		md := demoMap(t, fs, c.name)
-		g := demoGraph(t, fs, md)
-		ms := NewMapState(g, md)
-		e := md.ByModel(c.model)
-		b := g.BlockerOf(e.Index)
+		if c.name != d.md.Name {
+			continue
+		}
+		ms := NewMapState(d.g, d.md)
+		e := d.md.ByModel(c.model)
+		b := d.g.BlockerOf(e.Index)
 		if b < 0 {
 			t.Fatalf("%s %s: no blocker", c.name, c.model)
 		}

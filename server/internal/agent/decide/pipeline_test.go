@@ -1,6 +1,7 @@
 package decide
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -130,7 +131,9 @@ func TestPipelineNeedsBackend(t *testing.T) {
 func TestPipelineRealtimeNeverBlocks(t *testing.T) {
 	g := newGate()
 	p, err := NewPipeline(PipelineConfig{Backend: g, Fallback: constBackend(fallbackKeys),
-		Scheduler: SchedulerConfig{FastTimeout: time.Hour, SlowTimeout: time.Hour}})
+		// no call ends before the end of the test (the fast lane's calls are
+		// also cut at StaleAfter)
+		Scheduler: SchedulerConfig{FastTimeout: time.Hour, SlowTimeout: time.Hour, StaleAfter: func(Lane) time.Duration { return time.Hour }}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +180,49 @@ func TestRecordAPICallStatus(t *testing.T) {
 	if c := r.APICall(); c.Status != 200 || c.Retry != 1 || c.InputTokens != 10 || c.CostUSD != 0.1 || c.Model != "m" {
 		t.Fatalf("%+v", c)
 	}
-	if d := r.Decision(RecordOptions{}); d.State != nil || d.Questions != nil || d.Model != "m" || d.ReqDigest != req.Digest() {
+	if d := r.Decision(RecordOptions{}); d.State != nil || d.Questions != nil || d.Model != "m" || d.ReqDigest != req.Digest() || d.Timeout {
 		t.Fatalf("%+v", d)
+	}
+	r.Result = Result{Req: req, Err: context.DeadlineExceeded, Timeout: true, Latency: 300 * time.Millisecond}
+	if d := r.Decision(RecordOptions{}); !d.Timeout || d.Err != context.DeadlineExceeded.Error() || d.LatencyMs != 300 {
+		t.Fatalf("timeout decision %+v", d)
+	}
+}
+
+// TestPipelineSlowEventWhileBusy: an event while the slow lane's one slot
+// is busy is kept and asked as soon as the slot frees, and it does not
+// push the next regular slow request later.
+func TestPipelineSlowEventWhileBusy(t *testing.T) {
+	var slow []int64
+	p, err := NewPipeline(PipelineConfig{
+		Backend:   constBackend(nil),
+		Projector: ProjectorConfig{Space: fixedSpace{300, 300, 300, 300}},
+		Scheduler: SchedulerConfig{Mode: Lockstep, SimLatency: FixedLatency(212 * time.Millisecond)},
+		OnRecord: func(r *Record) {
+			if r.Result.Req.Lane == LaneSlow {
+				slow = append(slow, r.Result.Req.SnapTime)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	b := testBelief()
+	for i := 0; i <= 12; i++ {
+		now := int64(fixtureNow + 100*i)
+		b.Time, b.Frames = now, 100+i
+		if i == 2 { // damage at +200 ms, while the first slow request (due +212) is in flight
+			b.Damage = append(b.Damage, worldmodel.DamageEvent{At: now, Health: 6, Cause: "hit"})
+		}
+		p.Tick(now, b, testObjective())
+	}
+	// +0 (first tick), +300 (the event, once the slot is free), +800
+	want := fmt.Sprint([]int64{fixtureNow, fixtureNow + 300, fixtureNow + 800})
+	if got := fmt.Sprint(slow); got != want {
+		t.Fatalf("slow requests at %s, want %s", got, want)
+	}
+	if st := p.Stats(); st.Scheduler.Lanes[LaneSlow].Dropped != 1 || st.Requests[LaneSlow] != 4 {
+		t.Fatalf("stats %+v requests %v", st.Scheduler.Lanes[LaneSlow], st.Requests)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,6 +41,9 @@ type liveBot struct {
 	rd  *perception.Reader
 	nav *Navigator
 	drv *Driver
+	// trace logs every status change of the next runGoal (also on with
+	// Q2_NAVRT_TRACE=1), traceCmd every command (Q2_NAVRT_TRACECMD=1).
+	trace, traceCmd bool
 }
 
 // demoMap loads the map data of a demo map (skill 1).
@@ -78,13 +82,36 @@ func demoGraph(t testing.TB, fs *pak.FS, md *mapdata.Map) *nav.Graph {
 	return g
 }
 
-func startBot(t testing.TB, name string, seed uint32, cfg Config) *liveBot {
+// demoLevel is a demo map's static data (skill 1): loaded once by a test
+// and shared by its subtests (a graph takes about 2 s to load under the
+// race detector). Both parts are immutable.
+type demoLevel struct {
+	fs *pak.FS
+	md *mapdata.Map
+	g  *nav.Graph
+}
+
+// loadDemo loads demo map name (it skips without the demo pak, and under
+// -race without the nav cache).
+func loadDemo(t testing.TB, name string) *demoLevel {
 	t.Helper()
 	fs := sessiontest.DemoFS(t)
 	md := demoMap(t, fs, name)
-	g := demoGraph(t, fs, md)
-	b := &liveBot{t: t, ctx: context.Background(), fs: fs, md: md, g: g}
-	b.l = session.NewLockstep(session.LockstepConfig{FS: fs, Spec: session.Spec{Map: name, Skill: 1}, Seed: seed,
+	return &demoLevel{fs: fs, md: md, g: demoGraph(t, fs, md)}
+}
+
+func startBot(t testing.TB, name string, seed uint32, cfg Config) *liveBot {
+	t.Helper()
+	return startBotOn(t, loadDemo(t, name), seed, cfg)
+}
+
+// startBotOn starts a lockstep session on level d with the bot in god and
+// notarget mode, and a navigator (cfg) with its driver.
+func startBotOn(t testing.TB, d *demoLevel, seed uint32, cfg Config) *liveBot {
+	t.Helper()
+	name := d.md.Name
+	b := &liveBot{t: t, ctx: context.Background(), fs: d.fs, md: d.md, g: d.g}
+	b.l = session.NewLockstep(session.LockstepConfig{FS: d.fs, Spec: session.Spec{Map: name, Skill: 1}, Seed: seed,
 		Client: fakeclient.Options{MaxHistory: 256}})
 	if err := b.l.Start(b.ctx); err != nil {
 		t.Fatal(err)
@@ -93,13 +120,33 @@ func startBot(t testing.TB, name string, seed uint32, cfg Config) *liveBot {
 	c := b.l.Client()
 	c.StringCmd("god")
 	c.StringCmd("notarget")
-	b.wm = worldmodel.New(worldmodel.Config{ReadFile: fs.ReadFile})
-	b.wm.Reset(worldmodel.Level{Key: worldmodel.LevelKey{Map: name}, Map: md})
+	b.wm = worldmodel.New(worldmodel.Config{ReadFile: d.fs.ReadFile})
+	b.wm.Reset(worldmodel.Level{Key: worldmodel.LevelKey{Map: name}, Map: d.md})
 	b.rd = perception.NewReader()
-	b.nav = New(g, md, cfg)
+	b.nav = New(d.g, d.md, cfg)
 	b.drv = NewDriver(b.nav)
 	b.observe()
 	return b
+}
+
+// avoidExits makes the navigator avoid every trigger that ends the level
+// (but keep, those the test is about).
+func (b *liveBot) avoidExits(keep ...int32) {
+	var avoid []int32
+next:
+	for _, a := range ExitTriggers(b.g, b.md) {
+		for _, k := range keep {
+			if a == k {
+				continue next
+			}
+		}
+		avoid = append(avoid, a)
+	}
+	b.nav.cfg.Avoid = avoid
+	b.nav.avoid = map[int32]bool{}
+	for _, a := range avoid {
+		b.nav.avoid[a] = true
+	}
 }
 
 func (b *liveBot) observe() {
@@ -132,12 +179,13 @@ func (b *liveBot) runGoal(goal Goal, budget int64) (Status, int64, error) {
 	if err := b.nav.SetGoal(goal, start); err != nil {
 		return Status{}, 0, err
 	}
-	trace := os.Getenv("Q2_NAVRT_TRACE") != ""
-	if os.Getenv("Q2_NAVRT_TRACECMD") != "" {
+	trace := b.trace || os.Getenv("Q2_NAVRT_TRACE") != ""
+	if b.traceCmd || os.Getenv("Q2_NAVRT_TRACECMD") != "" {
 		b.drv.OnCmd = func(in control.MoveIntent, u shared.UserCmd, s *navsim.State) {
 			b.t.Logf("    cmd t=%d o=%v v=%v wl=%d ground=%d flags=%#x tm=%d | wish %v sp %.0f j%v c%v up%v mf%v face %.1f/%.1f | f%d s%d u%d", b.now()-start, s.Origin(), s.Velocity(), s.WaterLevel, s.Ground, s.PM.PmFlags, s.PM.PmTime,
 				in.WishDir, in.Speed, in.Jump, in.Crouch, in.SwimUp, in.MustFace, in.FaceYaw, in.FacePitch, u.ForwardMove, u.SideMove, u.UpMove)
 		}
+		defer func() { b.drv.OnCmd = nil }()
 	}
 	var last Status
 	for b.now()-start < budget {
@@ -230,16 +278,21 @@ type walkResult struct {
 // walkRandom walks the bot to count random nodes of the spawn's connected
 // part of the graph, one after the other, each within the time budget the
 // gate allows (planned seconds x 1.5 + 5 s).
-func walkRandom(t *testing.T, name string, count int, seed int64) []walkResult {
-	b := startBot(t, name, uint32(seed), Config{})
-	b.nav.cfg.Avoid = ExitTriggers(b.g, b.md)
-	for _, a := range b.nav.cfg.Avoid {
-		b.nav.avoid[a] = true
-	}
+// after, when given, sees the bot after each target (for debugging).
+func walkRandom(t *testing.T, d *demoLevel, count int, seed int64, after ...func(b *liveBot, k int, r walkResult)) []walkResult {
+	name := d.md.Name
+	b := startBotOn(t, d, uint32(seed), Config{})
+	b.avoidExits()
 	start := spawnNode(b.g)
 	cands := connected(b.nav, start)
 	t.Logf("%s: %d of %d nodes in the largest strongly connected part reachable from the spawn, avoiding %v", name, len(cands), len(b.g.Nodes), b.nav.cfg.Avoid)
 	rng := rand.New(rand.NewSource(seed))
+	// Q2_NAVRT_TRACE_AT=k traces target k (Q2_NAVRT_TRACECMD_AT=1: with
+	// every command)
+	traceAt := -1
+	if v := os.Getenv("Q2_NAVRT_TRACE_AT"); v != "" {
+		traceAt, _ = strconv.Atoi(v)
+	}
 	var res []walkResult
 	for k := 0; k < count; k++ {
 		from := b.origin()
@@ -270,10 +323,18 @@ func walkRandom(t *testing.T, name string, count int, seed int64) []walkResult {
 		}
 		r.planned = p.Cost
 		r.budget = int64(p.Cost*1.5*1000) + 5000
+		b.trace = traceAt == k
+		b.traceCmd = b.trace && os.Getenv("Q2_NAVRT_TRACECMD_AT") != ""
+		if b.trace {
+			t.Logf("target #%d: node %d %v from %v (node %d), planned %.1fs: %v", k, target, r.to, from, here, p.Cost, p.Edges)
+		}
 		st, ms, err := b.runGoal(goal, r.budget)
 		r.status, r.msec, r.err, r.end = st, ms, err, b.origin()
 		r.ok = st.Follow == Arrived && err == nil
 		res = append(res, r)
+		for _, f := range after {
+			f(b, k, r)
+		}
 		if err != nil {
 			break
 		}
@@ -289,9 +350,13 @@ func report(t *testing.T, name string, res []walkResult, need int) {
 			pass++
 			continue
 		}
+		cause, reason := r.status.Cause, r.status.Reason
+		if cause == CauseNone && reason == "" {
+			cause, reason = r.status.LastCause, "(earlier) "+r.status.LastReason
+		}
 		fails = append(fails, fmt.Sprintf("  #%d node %d %v (from %v): %s after %.1fs of %.1fs budget (planned %.1fs), ended at %v: %s %s; %s (repaths %d, stucks %d) %v",
 			i, r.target, r.to, r.from, r.status.Follow, float64(r.msec)/1000, float64(r.budget)/1000, r.planned, r.end,
-			r.status.Cause, r.status.Reason, statusEdge(r.status), r.status.Repaths, r.status.Stucks, r.err))
+			cause, reason, statusEdge(r.status), r.status.Repaths, r.status.Stucks, r.err))
 	}
 	t.Logf("%s: %d/%d arrivals", name, pass, len(res))
 	if len(fails) > 0 {
@@ -312,16 +377,23 @@ func statusEdge(s Status) string {
 // TestGateWalkRandomNodes is the phase-3 gate: on demo1 the bot walks to
 // 50 random nodes of the spawn's connected part of the graph and must
 // arrive at 48 within the time budget; on demo2 and demo3 at 18 of 20.
+//
+// It takes about 8 s; under the race detector about 70 s, so there it
+// runs only with Q2_AGENT_LONG=1 (the other live tests drive the same
+// code under -race in seconds).
 func TestGateWalkRandomNodes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("lockstep gate (seconds of wall time)")
+	}
+	if raceEnabled && os.Getenv("Q2_AGENT_LONG") == "" {
+		t.Skip("about 70 s under -race: set Q2_AGENT_LONG=1")
 	}
 	for _, c := range []struct {
 		name        string
 		count, need int
 	}{{"demo1", 50, 48}, {"demo2", 20, 18}, {"demo3", 20, 18}} {
 		t.Run(c.name, func(t *testing.T) {
-			res := walkRandom(t, c.name, c.count, 7)
+			res := walkRandom(t, loadDemo(t, c.name), c.count, 7)
 			report(t, c.name, res, c.need)
 		})
 	}
@@ -396,20 +468,13 @@ func sccs(g *nav.Graph, ok func(i int) bool) []int {
 	return comp
 }
 
-// TestRouteSmokeDemo1Car walks from the demo1 spawn into the elevator car
+// testRouteSmokeCar walks from the demo1 spawn into the elevator car
 // *31 (the first leg of the demo1 route; pressing its button *34 is the
 // route executor's job): the bot must end standing on the car, at its top
 // pose, with the exits avoided.
-func TestRouteSmokeDemo1Car(t *testing.T) {
-	if testing.Short() {
-		t.Skip("lockstep run")
-	}
-	b := startBot(t, "demo1", 1, Config{})
-	avoid := ExitTriggers(b.g, b.md)
-	b.nav.cfg.Avoid = avoid
-	for _, a := range avoid {
-		b.nav.avoid[a] = true
-	}
+func testRouteSmokeCar(t *testing.T, d *demoLevel) {
+	b := startBotOn(t, d, 1, Config{})
+	b.avoidExits()
 	car := b.md.ByModel("*31")
 	if car == nil {
 		t.Fatal("no *31 in demo1")
@@ -467,10 +532,51 @@ func TestWalkSeedsLong(t *testing.T) {
 		t.Skip("long: set Q2_AGENT_LONG=1")
 	}
 	for _, name := range []string{"demo1", "demo2", "demo3"} {
+		d := loadDemo(t, name)
 		for seed := int64(1); seed <= 5; seed++ {
 			t.Run(fmt.Sprintf("%s-%d", name, seed), func(t *testing.T) {
-				report(t, name, walkRandom(t, name, 50, seed), 45)
+				report(t, name, walkRandom(t, d, 50, seed), 45)
 			})
 		}
 	}
+}
+
+// TestWalkTrace replays one random walk for debugging, with
+// Q2_NAVRT_WALK=map:seed:count (and Q2_NAVRT_TRACE_AT=k, maybe
+// Q2_NAVRT_TRACECMD_AT=1, to trace target k): after each failed target it
+// logs the solid server entities near the bot (a test may look at the
+// server; the navigator may not).
+func TestWalkTrace(t *testing.T) {
+	spec := os.Getenv("Q2_NAVRT_WALK")
+	if spec == "" {
+		t.Skip("set Q2_NAVRT_WALK=map:seed:count")
+	}
+	parts := strings.Split(spec, ":")
+	if len(parts) != 3 {
+		t.Fatalf("Q2_NAVRT_WALK=%q, want map:seed:count", spec)
+	}
+	seed, err1 := strconv.Atoi(parts[1])
+	count, err2 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil {
+		t.Fatalf("Q2_NAVRT_WALK=%q: bad seed or count", spec)
+	}
+	res := walkRandom(t, loadDemo(t, parts[0]), count, int64(seed), func(b *liveBot, k int, r walkResult) {
+		if r.ok {
+			return
+		}
+		o := b.origin()
+		ge := b.l.Server().Game()
+		ed := ge.Edicts()[:ge.NumEdicts()]
+		for i := range ed {
+			e := &ed[i]
+			if !e.InUse || e.Solid == 0 {
+				continue
+			}
+			c := Vec3{(e.AbsMin[0] + e.AbsMax[0]) / 2, (e.AbsMin[1] + e.AbsMax[1]) / 2, (e.AbsMin[2] + e.AbsMax[2]) / 2}
+			if dist3(c, o) < 200 {
+				t.Logf("  #%d: edict %d %s model %d solid %d abs %v..%v origin %v", k, i, e.Classname, e.S.ModelIndex, e.Solid, e.AbsMin, e.AbsMax, e.S.Origin)
+			}
+		}
+	})
+	report(t, parts[0], res, 0)
 }

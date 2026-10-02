@@ -3,6 +3,7 @@ package jevtest_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -171,6 +172,8 @@ func TestRecorded(t *testing.T) {
 	var reqs []*decide.Request
 	want := map[uint64]string{}
 	for i, st := range states()[:6] {
+		// text the recorder must not HTML-escape
+		st.Objective = &decide.Objective{Kind: "touch", Desc: fmt.Sprintf("door %d -> lift & <exit>", i), Path: 900}
 		req, _ := decide.NewRequest(uint64(i+1), decide.LaneSlow, 0, st, nil, 0)
 		reqs = append(reqs, req)
 		resp, err := c.Decide(context.Background(), req)
@@ -178,6 +181,20 @@ func TestRecorded(t *testing.T) {
 			t.Fatal(err)
 		}
 		want[req.Seq] = fmt.Sprint(resp.Answers)
+	}
+	// the recorded requests are the bodies sent, byte for byte
+	lines := strings.Split(strings.TrimSpace(rec.String()), "\n")
+	calls := src.Calls()
+	if len(lines) != len(calls) {
+		t.Fatalf("%d recorded lines, %d calls", len(lines), len(calls))
+	}
+	for i, l := range lines {
+		var x struct {
+			Request json.RawMessage `json:"request"`
+		}
+		if err := json.Unmarshal([]byte(l), &x); err != nil || !bytes.Equal(x.Request, calls[i].Body) {
+			t.Fatalf("recorded request %d differs from the body sent (%v)", i, err)
+		}
 	}
 	// the 500 of the second request (retried) is recorded but not replayed
 	r, err := jevtest.LoadRecorded(bytes.NewReader(rec.Bytes()))
@@ -329,6 +346,78 @@ func TestRandomFaultsDeterministic(t *testing.T) {
 		kinds[f]++
 	}
 	if len(kinds) < 3 {
+		t.Fatalf("fault mix %v", kinds)
+	}
+}
+
+// TestFuncFaults: faults keyed by the call's content are the same whatever
+// order concurrent calls arrive in; ok false leaves a call to the random
+// faults.
+func TestFuncFaults(t *testing.T) {
+	var bodies []string
+	for i, st := range states()[:16] {
+		req, _ := decide.NewRequest(uint64(i), decide.LaneFast, 0, st, nil, 0)
+		b, _ := decide.RequestBody("jev-1.13.0", req)
+		bodies = append(bodies, string(b))
+	}
+	keyed := func(c *jevtest.Call) (jevtest.Fault, bool) {
+		switch c.Digest[len(c.Digest)-1] % 3 {
+		case 0:
+			return jevtest.FaultServer, true
+		case 1:
+			return jevtest.FaultNone, true
+		}
+		return jevtest.FaultNone, false // to the random faults: always 429 here
+	}
+	run := func(order []int, concurrent bool) map[string]jevtest.Fault {
+		srv := jevtest.NewServer(jevtest.Options{APIKey: key, Faults: jevtest.Faults{Func: keyed, RateLimit: 1}})
+		defer srv.Close()
+		done := make(chan struct{}, len(order))
+		for _, i := range order {
+			if concurrent {
+				go func(i int) {
+					defer func() { done <- struct{}{} }()
+					req, _ := http.NewRequest(http.MethodPost, srv.URL()+jevtest.Path, strings.NewReader(bodies[i]))
+					req.Header.Set("Authorization", "Bearer "+key)
+					if resp, err := http.DefaultClient.Do(req); err == nil {
+						_, _ = io.Copy(io.Discard, resp.Body)
+						resp.Body.Close()
+					}
+				}(i)
+				continue
+			}
+			post(t, srv.URL()+jevtest.Path, "Bearer "+key, bodies[i])
+			done <- struct{}{}
+		}
+		for range order {
+			<-done
+		}
+		out := map[string]jevtest.Fault{}
+		for _, c := range srv.Calls() {
+			out[c.Digest] = c.Fault
+		}
+		return out
+	}
+	fwd, rev := make([]int, len(bodies)), make([]int, len(bodies))
+	for i := range fwd {
+		fwd[i], rev[i] = i, len(bodies)-1-i
+	}
+	a, b := run(fwd, false), run(rev, true)
+	if len(a) != len(bodies) || len(b) != len(bodies) {
+		t.Fatalf("%d and %d distinct calls", len(a), len(b))
+	}
+	kinds := map[jevtest.Fault]int{}
+	for d, f := range a {
+		if b[d] != f {
+			t.Fatalf("request %s: fault %v serially, %v concurrently", d, f, b[d])
+		}
+		want := map[byte]jevtest.Fault{0: jevtest.FaultServer, 1: jevtest.FaultNone, 2: jevtest.FaultRateLimit}[d[len(d)-1]%3]
+		if f != want {
+			t.Fatalf("request %s: fault %v, want %v (Func before the random faults)", d, f, want)
+		}
+		kinds[f]++
+	}
+	if len(kinds) != 3 {
 		t.Fatalf("fault mix %v", kinds)
 	}
 }

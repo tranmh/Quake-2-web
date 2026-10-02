@@ -13,10 +13,11 @@
 //   - the model must be pinned to a version unless AllowAlias is set.
 //
 // Failures are classified (ErrorClass): 401/403 disable the client for
-// good (logged once); 400/422 mark the question set bad; 429/529 start a
-// cooldown that honors Retry-After; 5xx and timeouts are retried when the
-// lane allows it (slow: once, fast: never); five consecutive failures open
-// a circuit breaker for five seconds.
+// good (logged once); 400/422 mark the question set's shape bad for a
+// while (BadSetTTL); 429/529 start a cooldown that honors Retry-After; 5xx
+// and timeouts are retried when the lane allows it (slow: once, fast:
+// never) within the caller's deadline; five consecutive failures open a
+// circuit breaker for five seconds.
 package jev
 
 import (
@@ -56,6 +57,18 @@ const (
 
 	// MaxFastTimeout caps one fast-lane attempt.
 	MaxFastTimeout = 800 * time.Millisecond
+	// DefaultSlowTimeout bounds one slow-lane attempt: an attempt, the
+	// pause and one retry fit in the scheduler's 2.5 s slow-lane deadline.
+	DefaultSlowTimeout = 1200 * time.Millisecond
+	// DefaultBadSetTTL is how long a question set refused with 400/422
+	// stays refused locally.
+	DefaultBadSetTTL = time.Minute
+
+	// retryPause is the pause before the first retry (doubling after).
+	retryPause = 150 * time.Millisecond
+	// minAttempt is the least time an attempt is given when the caller's
+	// deadline is shared out among the attempts.
+	minAttempt = 200 * time.Millisecond
 
 	defaultHost = "api.typesafe.ai"
 	maxBody     = 1 << 20
@@ -100,8 +113,9 @@ type Config struct {
 	AllowCustomBase bool
 
 	// FastTimeout and SlowTimeout bound one attempt of a lane's request
-	// (fast: MaxFastTimeout, at most; slow: 3 s). The caller's context
-	// deadline bounds them too.
+	// (fast: MaxFastTimeout, at most; slow: DefaultSlowTimeout). When the
+	// caller's context has a deadline, an attempt that may still be
+	// retried gets at most its share of the time left, so the retry fits.
 	FastTimeout, SlowTimeout time.Duration
 	// FastRetries and SlowRetries are the retries after a retryable
 	// failure. FastRetries defaults to 0; SlowRetries 0 means the default
@@ -123,6 +137,10 @@ type Config struct {
 	// (1 s, doubling while they repeat); MaxCooldown caps any cooldown
 	// (30 s).
 	DefaultCooldown, MaxCooldown time.Duration
+	// BadSetTTL is how long a question set refused with 400/422 is refused
+	// locally (DefaultBadSetTTL); then one request may try it again. Sets
+	// are told apart by their shape (questionShape), not their live text.
+	BadSetTTL time.Duration
 
 	// Pricing prices the usage (DefaultPricing). MaxCostUSD, when > 0,
 	// refuses requests once spent (calls already in flight may overshoot
@@ -176,7 +194,9 @@ type Stats struct {
 	// LastModel is the model id the last response reported.
 	LastModel string
 	Disabled  bool
-	BadSets   int
+	// BadSets is the number of question-set shapes ever refused with
+	// 400/422.
+	BadSets int
 }
 
 // Client is the Jev backend. It is safe for concurrent use.
@@ -189,7 +209,7 @@ type Client struct {
 
 	mu             sync.Mutex
 	disabled       bool
-	bad            map[string]bool
+	bad            map[string]time.Time // question-set shape -> refused until
 	failures       int
 	openUntil      time.Time
 	cooldownUntil  time.Time
@@ -277,7 +297,8 @@ func New(cfg Config) (*Client, error) {
 	}
 	defd(&cfg.FastTimeout, MaxFastTimeout)
 	cfg.FastTimeout = min(cfg.FastTimeout, MaxFastTimeout)
-	defd(&cfg.SlowTimeout, 3*time.Second)
+	defd(&cfg.SlowTimeout, DefaultSlowTimeout)
+	defd(&cfg.BadSetTTL, DefaultBadSetTTL)
 	defd(&cfg.BreakerOpen, 5*time.Second)
 	defd(&cfg.DefaultCooldown, time.Second)
 	defd(&cfg.MaxCooldown, 30*time.Second)
@@ -302,7 +323,7 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Burst <= 0 {
 		cfg.Burst = 5
 	}
-	c := &Client{cfg: cfg, endpoint: endpoint, now: cfg.Now, bad: map[string]bool{}, lat: decide.NewLatencyStats(1024)}
+	c := &Client{cfg: cfg, endpoint: endpoint, now: cfg.Now, bad: map[string]time.Time{}, lat: decide.NewLatencyStats(1024)}
 	if c.now == nil {
 		c.now = time.Now
 	}
@@ -349,6 +370,47 @@ func (c *Client) timeout(l decide.Lane) time.Duration {
 	return c.cfg.FastTimeout
 }
 
+// attemptTimeout bounds attempt n of a request that may be retried
+// retriesLeft more times: the lane's timeout or, under a caller deadline,
+// the attempt's share of the time left after the retry pauses (at least
+// minAttempt; below that the attempt keeps the lane's timeout and the
+// deadline alone bounds it).
+func (c *Client) attemptTimeout(ctx context.Context, l decide.Lane, n, retriesLeft int) time.Duration {
+	d := c.timeout(l)
+	dl, ok := ctx.Deadline()
+	if !ok || retriesLeft <= 0 {
+		return d
+	}
+	left := time.Until(dl)
+	for k := 0; k < retriesLeft; k++ {
+		left -= retryPause << (n + k)
+	}
+	if share := left / time.Duration(retriesLeft+1); share >= minAttempt {
+		d = min(d, share)
+	}
+	return d
+}
+
+// questionShape digests the shape of a question set: each question's id,
+// type, instructions and number of options. Option keys and descriptions
+// are left out: target and pickup options carry live ids, ranges and
+// bearings, so two requests of the same schema would almost never share
+// them, and a schema the API rejects would be sent again every time.
+func questionShape(qs []decide.Question) string {
+	type shape struct {
+		ID           string `json:"id"`
+		Type         string `json:"type"`
+		Instructions string `json:"instructions"`
+		Options      int    `json:"options"`
+	}
+	s := make([]shape, len(qs))
+	for i := range qs {
+		s[i] = shape{ID: qs[i].ID, Type: string(qs[i].Type), Instructions: qs[i].Instructions, Options: len(qs[i].Options)}
+	}
+	d, _ := trace.Digest(s)
+	return d
+}
+
 // count counts a failed attempt or a local refusal.
 func (c *Client) count(class ErrorClass) {
 	c.mu.Lock()
@@ -373,7 +435,7 @@ func (c *Client) admit(setDigest string) *Error {
 	switch {
 	case c.disabled:
 		return &Error{Class: ClassDisabled, Msg: "disabled after an authentication failure"}
-	case c.bad[setDigest]:
+	case now.Before(c.bad[setDigest]):
 		return &Error{Class: ClassBadSet, Msg: "the question set was refused before"}
 	case now.Before(c.openUntil):
 		return &Error{Class: ClassBreaker, Msg: "circuit breaker open"}
@@ -385,12 +447,21 @@ func (c *Client) admit(setDigest string) *Error {
 	return nil
 }
 
-// take asks the rate limiters for a permit.
+// take asks the rate limiters for a permit: the client's own bucket
+// first (a local refusal costs the shared limiter nothing), then the
+// shared one; when the shared limiter refuses, the bucket's token is given
+// back.
 func (c *Client) take(tokens int) bool {
 	if c.bucket != nil && !c.bucket.Allow(tokens) {
 		return false
 	}
-	return c.cfg.Limiter == nil || c.cfg.Limiter.Allow(tokens)
+	if c.cfg.Limiter != nil && !c.cfg.Limiter.Allow(tokens) {
+		if c.bucket != nil {
+			c.bucket.refund()
+		}
+		return false
+	}
+	return true
 }
 
 // Decide implements decide.DecisionBackend: it sends the request (with the
@@ -399,8 +470,7 @@ func (c *Client) Decide(ctx context.Context, req *decide.Request) (*decide.Respo
 	c.mu.Lock()
 	c.stats.Requests++
 	c.mu.Unlock()
-	qs := req.QuestionsJSON()
-	setDigest, _ := trace.Digest(qs)
+	setDigest := questionShape(req.Questions)
 	body, err := decide.RequestBody(c.cfg.Model, req)
 	if err != nil {
 		return nil, c.fail(&Error{Class: ClassBadRequest, Msg: err.Error()})
@@ -413,7 +483,7 @@ func (c *Client) Decide(ctx context.Context, req *decide.Request) (*decide.Respo
 		if !c.take(len(body) / 4) {
 			return nil, c.fail(&Error{Class: ClassThrottled, Msg: "rate limiter"})
 		}
-		resp, e := c.attempt(ctx, req, body, setDigest, attempt)
+		resp, e := c.attempt(ctx, req, body, setDigest, attempt, c.attemptTimeout(ctx, req.Lane, attempt, retries-attempt))
 		if e == nil {
 			resp.Retries = attempt
 			return resp, nil
@@ -426,7 +496,7 @@ func (c *Client) Decide(ctx context.Context, req *decide.Request) (*decide.Respo
 		c.stats.Retries++
 		c.mu.Unlock()
 		// a short pause before the retry, within the caller's deadline
-		t := time.NewTimer(150 * time.Millisecond << attempt)
+		t := time.NewTimer(retryPause << attempt)
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -464,20 +534,24 @@ func (c *Client) record(x *exchange) {
 	if c.cfg.Recorder == nil {
 		return
 	}
-	line, err := json.Marshal(x)
-	if err != nil {
+	// no HTML escaping: the recorded request is the body that was sent,
+	// byte for byte
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(x); err != nil {
 		return
 	}
 	// the key never reaches the recorder, even if a server echoed it
-	line = []byte(trace.Redact(string(line), c.cfg.APIKey))
+	line := []byte(trace.Redact(string(bytes.TrimSuffix(buf.Bytes(), []byte{'\n'})), c.cfg.APIKey))
 	c.recMu.Lock()
 	defer c.recMu.Unlock()
 	_, _ = c.cfg.Recorder.Write(append(line, '\n'))
 }
 
-// attempt sends one HTTP request.
-func (c *Client) attempt(ctx context.Context, req *decide.Request, body []byte, setDigest string, n int) (*decide.Response, *Error) {
-	actx, cancel := context.WithTimeout(ctx, c.timeout(req.Lane))
+// attempt sends one HTTP request, bounded by timeout.
+func (c *Client) attempt(ctx context.Context, req *decide.Request, body []byte, setDigest string, n int, timeout time.Duration) (*decide.Response, *Error) {
+	actx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	hreq, err := http.NewRequestWithContext(actx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -583,10 +657,10 @@ func (c *Client) classify(hresp *http.Response, data []byte, setDigest string) *
 		}
 	case st == http.StatusBadRequest || st == http.StatusUnprocessableEntity:
 		e.Class = ClassBadRequest
-		if !c.bad[setDigest] {
-			c.bad[setDigest] = true
-			c.logf("jev: status %d for question set %s: marked bad", st, setDigest)
+		if !now.Before(c.bad[setDigest]) {
+			c.logf("jev: status %d for question set %s: refused locally for %v", st, setDigest, c.cfg.BadSetTTL)
 		}
+		c.bad[setDigest] = now.Add(c.cfg.BadSetTTL)
 	case st == http.StatusTooManyRequests || st == 529:
 		e.Class = ClassRateLimit
 		if st == 529 {
