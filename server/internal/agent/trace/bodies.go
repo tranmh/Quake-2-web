@@ -132,7 +132,7 @@ type Decision struct {
 	Stale bool `json:"stale,omitempty"`
 	// Intent, Tick and Cmds are set on lane tick events only: the Intent
 	// acted on with its provenance, what the bot executed, and the
-	// usercmds sent since the previous tick.
+	// usercmds built since the previous tick event (see LaneTick).
 	Intent *Intent   `json:"intent,omitempty"`
 	Tick   *Tick     `json:"tick,omitempty"`
 	Cmds   []UserCmd `json:"cmds,omitempty"`

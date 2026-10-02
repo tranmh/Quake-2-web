@@ -4,6 +4,7 @@ import (
 	"math"
 
 	"quake2web/server/internal/agent/nav"
+	"quake2web/server/internal/agent/nav/navsim"
 	"quake2web/server/internal/q2const"
 )
 
@@ -22,6 +23,39 @@ func (n *Navigator) SafeDir(dir Vec3, msec int) bool {
 		return false
 	}
 	return n.safeDir(dir, msec) && !n.hazardAlong(dir, msec)
+}
+
+// Clearance returns how far (units, up to d) the bot's hull can run from
+// its position at the last Tick in the horizontal direction dir (unit
+// length) before a solid stops it: the world, the brush entities and the
+// bodies as the navigator's world poses them. A step the bot walks up
+// (navsim.StepHeight) does not stop it. Call it right after Tick, like
+// SafeDir: SafeDir judges the floor and the hazards of a run, Clearance
+// the room for it.
+func (n *Navigator) Clearance(dir Vec3, d float32) float32 {
+	if !n.haveOrigin {
+		return 0
+	}
+	if n.w == nil || d <= 0 {
+		return max(d, 0)
+	}
+	o := n.st.Origin()
+	mins, maxs := hull(n.st.Ducked())
+	run := Vec3{dir[0] * d, dir[1] * d, 0}
+	room := float32(0)
+	if tr := n.w.Trace(o, mins, maxs, add(o, run), q2const.MASK_PLAYERSOLID); !tr.StartSolid {
+		room = d * tr.Fraction
+	}
+	if room < d {
+		// over a step: the same run lifted by a step's height
+		up := add(o, Vec3{0, 0, navsim.StepHeight})
+		if lift := n.w.Trace(o, mins, maxs, up, q2const.MASK_PLAYERSOLID); lift.Fraction == 1 && !lift.StartSolid {
+			if tr := n.w.Trace(up, mins, maxs, add(up, run), q2const.MASK_PLAYERSOLID); !tr.StartSolid {
+				room = max(room, d*tr.Fraction)
+			}
+		}
+	}
+	return room
 }
 
 // hazardAlong reports a hazard on the straight run from the bot's

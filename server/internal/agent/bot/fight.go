@@ -31,9 +31,11 @@ const (
 	// retreatRepath is how long a retreat goal stands at most.
 	retreatRepath = 2500
 	// strafeLook is the look-ahead (ms) of a strafe's safety check;
-	// dodgeLook a dodge's.
+	// dodgeLook a dodge's. strafeRoom is the room (units) a strafe side
+	// needs before a wall or a body: less, and the side counts as blocked.
 	strafeLook = 300
 	dodgeLook  = 250
+	strafeRoom = 32
 	// searchFor is how long (ms) the bot looks towards a hit whose source
 	// it did not see.
 	searchFor = 1200
@@ -94,8 +96,11 @@ type fight struct {
 	reflexes []string
 	// stuckSince is when the bot last started to stand in a fight without
 	// moving (a hold, or both strafe sides blocked; 0: it moves),
-	// blockedAt when the strafer last found both sides blocked
+	// blockedAt when the strafer last found both sides blocked;
+	// repositioning: the retreat goal is the reposition's (it runs to its
+	// spot whatever the intent's movement)
 	stuckSince, blockedAt int64
+	repositioning         bool
 	// the fight clock: the target fought since foeSince (last at
 	// foeLast), and the one disengaged from until offUntil
 	foe               string
@@ -203,15 +208,21 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 	m := moveOf(b.intent.Movement)
 	b.takeNav()
 	// standing still in a close fight (a hold, or cornered between
-	// blocked strafes) for repositionAfter: back off to another spot
+	// blocked strafes) for repositionAfter: back off to another spot, all
+	// the way there (or for retreatRepath)
 	still := m == control.MoveHold || m.Side() != 0 && b.now-f.blockedAt < 300
 	switch {
+	case f.repositioning && f.goal == goalRetreat && !b.navDone() && b.now-f.goalAt <= retreatRepath:
+		m = control.MoveRetreat
+		b.moveBy = "reposition"
 	case !still || f.goal != goalNone:
 		f.stuckSince = 0
 	case f.stuckSince == 0:
 		f.stuckSince = b.now
 	case b.now-f.stuckSince > repositionAfter && tr.Visible && dist3(bel.Self.Origin, tr.Pos) < repositionFar:
 		m = control.MoveRetreat
+		b.moveBy = "reposition"
+		f.repositioning = true
 		f.noteReflex("reposition")
 	}
 	switch m {
@@ -222,10 +233,12 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 			if f.strafe.Current() < 0 {
 				m = control.MoveStrafeLeft
 			}
+			b.moveBy = "in_range"
 			break
 		}
 		if !b.nav.CanReturn(bel.Self.Origin, tr.Pos) {
 			m = control.MoveHold // down a drop the bot could not climb back from: wait for it
+			b.moveBy = "no_return"
 			break
 		}
 		if f.goal != goalAdvance || b.now-f.goalAt > advanceRepath || dist3(f.goalFor, tr.Pos) > advanceMove || b.navFailed() {
@@ -238,6 +251,7 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 				if f.strafe.Current() < 0 {
 					m = control.MoveStrafeLeft
 				}
+				b.moveBy = "no_cover"
 			}
 		}
 	}
@@ -248,6 +262,9 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 			b.nav.ClearGoal()
 		}
 		f.goal = goalNone
+	}
+	if m != control.MoveRetreat || b.moveBy != "reposition" {
+		f.repositioning = false
 	}
 	f.move = m
 }
@@ -340,10 +357,7 @@ func (b *Bot) coverSpot(bel *worldmodel.Belief, from Vec3) (Vec3, bool) {
 	g := b.lv.Graph
 	o := bel.Self.Origin
 	d0 := dist3(o, from)
-	var vis *perception.Vision
-	if pc := b.world.Percept(); pc != nil {
-		vis = pc.Vision()
-	}
+	vis := b.vision()
 	threatEye := Vec3{from[0], from[1], from[2] + 24}
 	var best Vec3
 	found, bestHidden := false, false
@@ -379,6 +393,9 @@ func (b *Bot) retreatTick(bel *worldmodel.Belief, th *worldmodel.Track) {
 	b.takeNav()
 	if th != nil && th.Visible {
 		b.target = th.ID
+		if th.ID != b.intent.Target {
+			b.targetBy = "retreat_threat"
+		}
 	}
 	if f.goal == goalHeal && !b.navDone() && b.now-f.goalAt < 3*retreatRepath {
 		if it := b.healItem(bel); it == nil || !b.giveUpItem(it, bel.Self.Origin) {
@@ -444,7 +461,9 @@ func (b *Bot) cmdNow() int64 { return b.now + int64(b.cmdSub*navrt.CmdMsec) }
 // move is the driver's Move hook: the reflexes and the fight's own
 // movement replace the navigator's intent where the way is safe; edges
 // that need their exact input (jumps, ducks, swims, a required view) are
-// left alone.
+// left alone. A strafe side is blocked when its way is unsafe (SafeDir) or
+// a wall or a body leaves it less than strafeRoom; the strafer then flips
+// to the other side, and holds with both blocked.
 func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 	if in.MustFace || in.Jump || in.Crouch || in.Swim || in.SwimUp {
 		return in
@@ -465,7 +484,7 @@ func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 	if b.mode != ModeFight || f.goal != goalNone {
 		return in
 	}
-	tr := b.liveTrack(b.world.Belief(), b.target)
+	tr := b.liveTrack(b.belief(), b.target)
 	if tr == nil {
 		return in
 	}
@@ -473,7 +492,8 @@ func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 	switch f.move {
 	case control.MoveStrafeLeft, control.MoveStrafeRight:
 		side := f.strafe.Side(now, f.move.Side(), func(side int) bool {
-			return b.nav.SafeDir(control.SideDir(side, o, tr.Pos), strafeLook)
+			dir := control.SideDir(side, o, tr.Pos)
+			return b.nav.SafeDir(dir, strafeLook) && b.nav.Clearance(dir, strafeRoom) >= strafeRoom
 		})
 		if side != 0 {
 			return run(control.SideDir(side, o, tr.Pos), false)
@@ -486,7 +506,7 @@ func (b *Bot) move(in control.MoveIntent, st *navsim.State) control.MoveIntent {
 // aimAt aims one command of msec from eye at track tr and runs the fire
 // gate with the fire policy mode; it returns the view.
 func (b *Bot) aimAt(eye Vec3, view Vec3, tr *worldmodel.Track, mode control.FireMode) (float32, float32) {
-	bel := b.world.Belief()
+	bel := b.belief()
 	w, _ := control.WeaponByPickup(bel.Self.Weapon)
 	body := control.Body{Origin: tr.Pos, Mins: tr.Mins, Maxs: tr.Maxs, Vel: tr.Vel, OnGround: true}
 	if c := b.classes.ByName(tr.Class); c != nil && (c.Flying || c.Swimming) {
@@ -495,10 +515,7 @@ func (b *Bot) aimAt(eye Vec3, view Vec3, tr *worldmodel.Track, mode control.Fire
 	if body.Maxs == body.Mins {
 		body.Mins, body.Maxs = Vec3{-16, -16, -24}, Vec3{16, 16, 32}
 	}
-	var vis *perception.Vision
-	if pc := b.world.Percept(); pc != nil {
-		vis = pc.Vision()
-	}
+	vis := b.vision()
 	shootable := func(p Vec3) bool { return vis != nil && vis.Shootable(p, -1) }
 	p, feet := control.AimPoint(eye, body, w)
 	line := shootable(p)
@@ -515,9 +532,11 @@ func (b *Bot) aimAt(eye Vec3, view Vec3, tr *worldmodel.Track, mode control.Fire
 		}
 	}
 	y, pt := b.shoot.Turn(eye, view[q2const.YAW], view[q2const.PITCH], p, navrt.CmdMsec)
-	in := control.FireInput{Mode: mode, Weapon: w, Eye: eye, Yaw: y, Pitch: pt, Aim: p, Radius: body.Radius(),
-		Visible: tr.Visible, Shootable: line, Neutral: b.inLine(bel, eye, p, perception.KindNeutral, 0),
-		Barrel: b.inLine(bel, eye, p, perception.KindBarrel, control.BarrelSafe)}
+	c := body.Center()
+	in := control.FireInput{Mode: mode, Weapon: w, Eye: eye, Yaw: y, Pitch: pt, Aim: p, Radius: body.Radius(), TargetDist: dist3(eye, c),
+		Visible: tr.Visible, Shootable: line}
+	reach := shotReach(w, dist3(eye, p), body.Radius())
+	in.Neutral, in.Barrel = b.lineOfFire(bel, vis, w, eye, y, pt, p, reach)
 	if w.HasSplash() && vis != nil {
 		in.WallClose = !shootable(viewPoint(eye, y, pt, control.SplashSafe))
 	}
@@ -527,6 +546,69 @@ func (b *Bot) aimAt(eye Vec3, view Vec3, tr *worldmodel.Track, mode control.Fire
 		b.fight.noteReflex("hold_fire:" + v.Reason)
 	}
 	return y, pt
+}
+
+// shotReach is how far (units) the line of fire of weapon w runs for an
+// aim point d away at a target of half size radius: through the target
+// for a single projectile or bolt (a shot within the aim tolerance stops
+// in it), on to the far wall for shots that go on past it (the railgun's
+// slug pierces bodies; pellets and bullets of a spread pattern miss it).
+func shotReach(w control.Weapon, d, radius float32) float32 {
+	if w.Pickup == "Railgun" || w.Spread > 0 {
+		return maxShot
+	}
+	return d + 2*radius
+}
+
+// maxShot is the range of a hitscan shot (fire_lead, fire_rail: 8192).
+const maxShot = 8192
+
+// lineOfFire reports a neutral, and an explosive barrel within
+// control.BarrelSafe of the eye, in the line of fire of a command of
+// weapon w from eye with view yaw/pitch at aim point p: along the view the
+// shot actually takes and along the line to p (the view slews onto it),
+// each reach units long, widened by the weapon's spread at the body's
+// distance.
+func (b *Bot) lineOfFire(bel *worldmodel.Belief, vis *perception.Vision, w control.Weapon, eye Vec3, yaw, pitch float32, p Vec3, reach float32) (neutral, barrel bool) {
+	shot := viewPoint(eye, yaw, pitch, reach)
+	aim := p
+	if d := dist3(eye, p); d > 1 {
+		f := reach / d
+		aim = Vec3{eye[0] + (p[0]-eye[0])*f, eye[1] + (p[1]-eye[1])*f, eye[2] + (p[2]-eye[2])*f}
+	}
+	in := func(k perception.Kind, within float32) bool {
+		return b.inLine(bel, vis, eye, shot, k, within, w.Spread) || b.inLine(bel, vis, eye, aim, k, within, w.Spread)
+	}
+	return in(perception.KindNeutral, 0), in(perception.KindBarrel, control.BarrelSafe)
+}
+
+// vetoNavFire runs the fire gate on a command in which the navigator pulls
+// the trigger itself (a route shoot goal: a shootable button) from eye
+// with view yaw/pitch, and reports a veto: a neutral or a near barrel in
+// the line of fire, a splash weapon at the goal or a wall too close. The
+// navigator judges the aim; the goal is a brush, visible and shootable by
+// its own account.
+func (b *Bot) vetoNavFire(eye Vec3, yaw, pitch float32) bool {
+	g, ok := b.nav.Goal()
+	if !ok || g.Kind != navrt.GoalShoot {
+		return false
+	}
+	bel := b.belief()
+	w, _ := control.WeaponByPickup(bel.Self.Weapon)
+	vis := b.vision()
+	d := dist3(eye, g.Point)
+	in := control.FireInput{Mode: control.FireAligned, Weapon: w, Eye: eye, Yaw: yaw, Pitch: pitch, Aim: g.Point, Radius: 8, TargetDist: d,
+		Visible: true, Shootable: true}
+	in.Neutral, in.Barrel = b.lineOfFire(bel, vis, w, eye, yaw, pitch, g.Point, max(shotReach(w, d, 8), d))
+	if w.HasSplash() && vis != nil && d > control.SplashSafe {
+		in.WallClose = !vis.Shootable(viewPoint(eye, yaw, pitch, control.SplashSafe), -1)
+	}
+	v := control.FireGate(in)
+	if v.Vetoed() {
+		b.fight.noteReflex("hold_fire:" + v.Reason)
+		return true
+	}
+	return false
 }
 
 // sincos returns the sine and cosine of an angle in degrees.
@@ -545,23 +627,37 @@ func viewPoint(eye Vec3, yaw, pitch, d float32) Vec3 {
 // inLine reports a track of kind k the bot knows of (alive, positioned)
 // in the line of fire from eye to p: a neutral body (misc_insane,
 // misc_actor), or an explosive barrel within within units of the eye
-// (within 0: any distance).
-func (b *Bot) inLine(bel *worldmodel.Belief, eye, p Vec3, k perception.Kind, within float32) bool {
+// (within 0: any distance). The body's box is grown by 4 units plus the
+// spread cone (spread degrees) at its distance; a body behind a wall or
+// glass (no shot from the eye reaches its middle or its top: vis, when
+// known) is not in the line.
+func (b *Bot) inLine(bel *worldmodel.Belief, vis *perception.Vision, eye, p Vec3, k perception.Kind, within, spread float32) bool {
 	kind := k.String()
+	tan := float32(math.Tan(float64(spread) * math.Pi / 180))
 	for i := range bel.Tracks {
 		t := &bel.Tracks[i]
-		if t.Kind != kind || t.Life != worldmodel.LifeAlive || !t.PosKnown || within > 0 && dist3(eye, t.Pos) > within {
+		dt := dist3(eye, t.Pos)
+		if t.Kind != kind || t.Life != worldmodel.LifeAlive || !t.PosKnown || within > 0 && dt > within {
 			continue
 		}
 		mins, maxs := t.Mins, t.Maxs
 		if mins == maxs {
 			mins, maxs = Vec3{-16, -16, -24}, Vec3{16, 16, 32}
 		}
-		lo := Vec3{t.Pos[0] + mins[0] - 4, t.Pos[1] + mins[1] - 4, t.Pos[2] + mins[2] - 4}
-		hi := Vec3{t.Pos[0] + maxs[0] + 4, t.Pos[1] + maxs[1] + 4, t.Pos[2] + maxs[2] + 4}
-		if segmentHitsBox(eye, p, lo, hi) {
-			return true
+		pad := 4 + dt*tan
+		lo := Vec3{t.Pos[0] + mins[0] - pad, t.Pos[1] + mins[1] - pad, t.Pos[2] + mins[2] - pad}
+		hi := Vec3{t.Pos[0] + maxs[0] + pad, t.Pos[1] + maxs[1] + pad, t.Pos[2] + maxs[2] + pad}
+		if !segmentHitsBox(eye, p, lo, hi) {
+			continue
 		}
+		if vis != nil {
+			mid := Vec3{t.Pos[0] + (mins[0]+maxs[0])/2, t.Pos[1] + (mins[1]+maxs[1])/2, t.Pos[2] + (mins[2]+maxs[2])/2}
+			top := Vec3{mid[0], mid[1], t.Pos[2] + maxs[2] - 4}
+			if !vis.Shootable(mid, -1) && !vis.Shootable(top, -1) {
+				continue // behind a wall
+			}
+		}
+		return true
 	}
 	return false
 }

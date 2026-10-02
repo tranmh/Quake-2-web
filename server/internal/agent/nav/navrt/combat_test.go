@@ -242,3 +242,33 @@ func TestDriverMoveHook(t *testing.T) {
 		t.Errorf("usercmd forward %d side %d, want a left strafe", u.ForwardMove, u.SideMove)
 	}
 }
+
+// TestClearance: the room for a straight run is the hull's way to the
+// first solid; a step the bot walks up does not stop it.
+func TestClearance(t *testing.T) {
+	var s *simBot
+	s = newSimGraph(t, Config{}, nil)
+	o := s.g.Nodes[s.nodeAt(-64, 0)].Origin
+	wall := navsim.Solid{ID: 990, Box: true, Origin: Vec3{o[0] + 56, o[1], o[2] - 24}, Mins: Vec3{0, -200, 0}, Maxs: Vec3{8, 200, 120}}
+	step := navsim.Solid{ID: 991, Box: true, Origin: Vec3{o[0], o[1] + 48, o[2] - 24}, Mins: Vec3{-200, 0, 0}, Maxs: Vec3{200, 8, 16}}
+	ledge := navsim.Solid{ID: 992, Box: true, Origin: Vec3{o[0], o[1] - 48, o[2] - 24}, Mins: Vec3{-200, -8, 0}, Maxs: Vec3{200, 0, 40}}
+	s = newSimGraph(t, Config{}, func(g *nav.Graph) { g.Solids = append(g.Solids, wall, step, ledge) })
+	if c := s.nav.Clearance(Vec3{1, 0, 0}, 64); c != 0 {
+		t.Errorf("clearance %v before the first Tick", c)
+	}
+	s.g.Place(s.srv, s.nodeAt(-64, 0))
+	s.tick()
+	// the wall's face is 56 units ahead, the hull 16 wide each side
+	if c := s.nav.Clearance(Vec3{1, 0, 0}, 128); c < 36 || c > 42 {
+		t.Errorf("clearance towards the wall %v, want about 40", c)
+	}
+	if c := s.nav.Clearance(Vec3{-1, 0, 0}, 128); c != 128 {
+		t.Errorf("clearance away from the wall %v", c)
+	}
+	if c := s.nav.Clearance(Vec3{0, 1, 0}, 128); c != 128 {
+		t.Errorf("clearance over a 16 unit step %v", c)
+	}
+	if c := s.nav.Clearance(Vec3{0, -1, 0}, 128); c < 28 || c > 34 {
+		t.Errorf("clearance towards a 40 unit ledge %v, want about 32", c)
+	}
+}

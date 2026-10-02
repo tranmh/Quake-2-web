@@ -191,7 +191,7 @@ type Bot struct {
 	// route's), killFight: the bot fights it (the step is being done)
 	routeKill             string
 	killTarget, killFight bool
-	fight     fight
+	fight                 fight
 	// search: the bot looks towards searchYaw until searchUntil (a hit it
 	// did not see coming, at searchAt)
 	searchAt, searchUntil int64

@@ -224,7 +224,25 @@ func TestRouteKillForcesFight(t *testing.T) {
 			if f.Value != string(decide.FireWhenAligned) || f.Source != trace.SourceReflex {
 				t.Errorf("fire_policy field %+v", f)
 			}
+		case "mode":
+			if f.Value != string(decide.ModeFight) || f.Source != trace.SourceReflex || f.Fallback != "route_kill" {
+				t.Errorf("mode field %+v", f)
+			}
 		}
+	}
+	// the route kill fight is the step's own work: its clock runs on
+	// (Engage, not Yield), as the executor sees once the monster is out of
+	// view and the bot is back on the step
+	for now := int64(300); now <= 1000; now += 100 {
+		m.at(now, bel)
+	}
+	bel.Tracks[0].Visible, bel.Tracks[0].LastSeen = false, 1000
+	m.at(1000+routeKillMemory+200, bel)
+	if m.Mode() != ModeObjective {
+		t.Fatalf("monster out of view: mode %s", m.Mode())
+	}
+	if y := m.Route().Yielded(); y != 0 {
+		t.Errorf("the route kill fight paused the step for %d ms", y)
 	}
 }
 
@@ -300,8 +318,8 @@ func TestWeaponTick(t *testing.T) {
 	b.intent = decide.Intent{Weapon: decide.WeaponRocketLauncher}
 	b.now = 1000
 	b.weaponTick(c, bel)
-	if b.switchCmd != "" {
-		t.Errorf("switched to rockets at a close target: %q", b.switchCmd)
+	if b.switchCmd != "" || b.weaponBy != "splash" || b.weaponTo != decide.WeaponKeep {
+		t.Errorf("switched to rockets at a close target: %q (by %q, to %q)", b.switchCmd, b.weaponBy, b.weaponTo)
 	}
 	if !bytes.Contains(c.Netchan.Message.Bytes(), []byte("use")) == (b.switchCmd != "") {
 		t.Error("the client's outgoing commands disagree with the switch")
@@ -344,4 +362,110 @@ func TestTrapKill(t *testing.T) {
 	if m.Stats().TrapKills != 2 {
 		t.Fatalf("no kill after trapRetry: %d", m.Stats().TrapKills)
 	}
+}
+
+// field returns the named field of the last tick event's Intent.
+func (m *modeBot) field(t *testing.T, name string) trace.Field {
+	t.Helper()
+	if len(m.ticks) == 0 {
+		t.Fatal("no tick event")
+	}
+	d := m.ticks[len(m.ticks)-1]
+	if d.Intent == nil {
+		t.Fatalf("tick event without an intent: %+v", d)
+	}
+	for _, f := range d.Intent.Fields {
+		if f.Name == name {
+			return f
+		}
+	}
+	t.Fatalf("no field %s in %+v", name, d.Intent.Fields)
+	return trace.Field{}
+}
+
+// wantField checks the named field of the last tick: value, and the
+// reflex reason ("" for the intent's own source).
+func (m *modeBot) wantField(t *testing.T, name, value, reflex string) {
+	t.Helper()
+	f := m.field(t, name)
+	if f.Value != value || (reflex != "") != (f.Source == trace.SourceReflex) || reflex != "" && f.Fallback != reflex {
+		t.Errorf("%s field %+v, want value %q reflex %q", name, f, value, reflex)
+	}
+}
+
+// TestTickProvenance: a tick event's fields report the value the bot acted
+// on, and every override of the intent as a reflex with its reason: the
+// campaign's explore burst, a retreat without a threat, a fight on a dead
+// target or one disengaged from, a pickup of an item not there, a retreat
+// shooting back at another monster, a weapon the bot cannot use.
+func TestTickProvenance(t *testing.T) {
+	m := newModeBot(t, "demo1", route.Step{Op: route.OpGoto, Pos: &route.Vec{128, -320, 24}})
+	bel := selfAt(Vec3{0, 0, 24}, 100)
+	bel.Tracks = []worldmodel.Track{monster("e1", Vec3{300, 0, 24}), monster("e2", Vec3{0, 300, 24})}
+	scripted := decide.FieldProvenance{Source: decide.SourceScripted}
+	in := func(i decide.Intent) {
+		p := &i.Provenance
+		p.Mode, p.Target, p.FirePolicy, p.Movement, p.Weapon, p.Pickup, p.Danger = scripted, scripted, scripted, scripted, scripted, scripted, scripted
+		*m.intent = i
+	}
+
+	// acted on as decided: the backend's
+	in(decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireWhenAligned, Movement: decide.MoveHold})
+	m.at(100, bel)
+	m.wantField(t, "mode", "fight", "")
+	m.wantField(t, "target", "e1", "")
+	m.wantField(t, "movement", "hold", "")
+
+	// a retreat with no threat known runs the objective
+	in(decide.Intent{Mode: decide.ModeRetreat, FirePolicy: decide.FireWhenAligned})
+	dead := *bel
+	dead.Tracks = []worldmodel.Track{bel.Tracks[0], bel.Tracks[1]}
+	dead.Tracks[0].Life, dead.Tracks[1].Life = worldmodel.LifeDead, worldmodel.LifeDead
+	m.at(200, &dead)
+	m.wantField(t, "mode", "objective", "no_threat")
+
+	// a fight on a dead target: the objective, no target
+	in(decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireWhenAligned})
+	m.at(300, &dead)
+	m.wantField(t, "mode", "objective", "target_gone")
+	m.wantField(t, "target", "none", "target_gone")
+
+	// a pickup of an item the bot does not know of
+	in(decide.Intent{Mode: decide.ModePickup, Pickup: "i9"})
+	m.at(400, bel)
+	m.wantField(t, "mode", "objective", "item_unavailable")
+
+	// a retreat from e2 while the intent targets e1: the bot shoots back
+	// at the threat
+	bel.Tracks[0].Threat, bel.Tracks[1].Threat = 0, 5
+	in(decide.Intent{Mode: decide.ModeRetreat, Target: "e1", FirePolicy: decide.FireWhenAligned})
+	m.at(500, bel)
+	m.wantField(t, "mode", "retreat", "")
+	m.wantField(t, "target", "e2", "retreat_threat")
+
+	// an intent weapon the bot does not hold: kept
+	bel.Inventory.Known = true
+	bel.Inventory.Items = []worldmodel.InvItem{{Index: 1, Name: "Blaster", Count: 1}}
+	in(decide.Intent{Mode: decide.ModeObjective, Weapon: decide.WeaponRailgun})
+	m.at(600, bel)
+	m.wantField(t, "weapon", "keep", "unusable")
+	m.wantField(t, "mode", "objective", "")
+
+	// the campaign's explore burst: the objective waits
+	in(decide.Intent{Mode: decide.ModeObjective})
+	m.Explore(5000)
+	m.at(700, bel)
+	m.wantField(t, "mode", "explore", "explore_watchdog")
+	m.at(5000, bel) // the burst is over
+	m.at(5100, bel)
+	m.wantField(t, "mode", "objective", "")
+
+	// past the fight budget: disengaged
+	in(decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireWhenAligned, Movement: decide.MoveHold})
+	now := int64(10000)
+	for ; now <= 10000+fightBudget+200; now += 100 {
+		m.at(now, bel)
+	}
+	m.wantField(t, "mode", "objective", "disengaged")
+	m.wantField(t, "target", "e1", "") // still shot at on the move when in view
 }
