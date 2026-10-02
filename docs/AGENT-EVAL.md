@@ -11,8 +11,9 @@ drove:
   bot gains reflexes that act inside the latency, and the route tables add optional detours for the weapons
   and the quad damage demo3 is played with.
 - **Fairness hardening: hearing** (after wave 8): a sound no longer gives the bot its emitter's position, only
-  what the client's mixer renders of it. [Its section](#fairness-hardening-hearing) re-measures the bot; the
-  sections after it are the earlier builds' and say which.
+  what the client's mixer renders of it, and (after the review of the first hearing build) not which monster
+  it is either. [Its section](#fairness-hardening-hearing) re-measures the bot; the sections after it are the
+  earlier builds' and say which.
 
 Every number comes from a lockstep run you can repeat with the commands in [Reproduce](#reproduce) and
 [Reproduce (wave 8)](#reproduce-wave-8). The design is in [ADR-0006](adr/0006-ai-agent.md) and the tools are in

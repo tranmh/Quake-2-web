@@ -122,7 +122,8 @@ Each package's `doc.go` describes it in detail; this is the overview.
     entity lump's spawns of the voice's family that fit the sound (bearing in the arc, the same loudness step,
     not in plain view, not the spawn of a monster seen) pick the arc, and when exactly one fits `Est` is that
     spawn origin (`Ear.AtSpawn`). A track is tied to its lump entity (`Track.Lump`) only once seen, never by
-    the entity number of a sound, so a kill step for a monster never seen goes for its spawn origin. A hit
+    the entity number of a sound, so a kill step for a monster never seen goes for its spawn origin, and
+    takes a monster of its family that hearing places at that spawn (`Ear.AtSpawn`) for it. A hit
     whose bearing the view kick gives narrows the arc of the track it is attributed to. Aiming, turning,
     keeping away, the scan, retreats, damage attribution and a kill step's look and firing position use
     `Loc`; the navigator's obstacles and the line-of-fire checks use positions seen only.
@@ -186,6 +187,9 @@ Each package's `doc.go` describes it in detail; this is the overview.
       towards the side it sounded from, at its stand-in). Without one, it
       turns behind itself, then to one side and the other on later hits. A scan under way is not restarted
       (tick reflex `scan`);
+    - on the move with no target, it looks where an attacker only heard sounded from (its stand-in) while
+      that attacker attacked within the last 1.5 s and sounded near or mid, so it sees the attacker as soon
+      as it shows; the path's movement does not depend on the view (`heardAttacker`);
     - a picked-up quad damage is used (`use Quad Damage`) the first time the bot then fights an awake monster
       in view (tick reflex `quad`). In single player the game only stores a picked-up quad
       (`Pickup_Powerup`), and it lasts 30 s from its use.

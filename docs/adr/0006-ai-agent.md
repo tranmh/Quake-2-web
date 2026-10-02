@@ -149,7 +149,7 @@ Everything the bot knows comes from one of the following:
      that spawn origin (`Ear.AtSpawn`). Which lump entity a heard monster *is* never comes from its entity
      number: the baselines that tie numbers to lump entities cover every entity, seen or not, so a track is
      tied to its lump entity only once it is seen. A route kill step for a monster never seen goes for its
-     spawn origin from the route table. `worldmodel.TestHeardNumbersDoNotPlace` swaps the entity numbers of
+     spawn origin from the route table, and takes a heard monster of its family placed at that spawn for it. `worldmodel.TestHeardNumbersDoNotPlace` swaps the entity numbers of
      two heard soldiers and requires the same belief.
    - A sound whose emitter is not in the packet has no cue (the mixer plays it at a stale origin the
      perceiver cannot know). It is accepted only if it is `ATTN_NONE`, or if the emitter's believed location
