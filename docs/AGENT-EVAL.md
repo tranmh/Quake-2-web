@@ -35,82 +35,148 @@ renders (`S_SpatializeOrigin`): a stereo balance and a distance attenuation.
   steps (hard left, left, center, right, hard right; ahead and behind alike) and the loudness in three (near,
   mid, far), with the sound's class and time. No origin, no velocity. A flash whose shooter is in view is
   seen; a heard explosion keeps its type and cue.
+- *Loops blend.* The mixer sums every entity with the same loop sound into one channel (`S_AddLoopSounds`),
+  so a loop is heard once per sound, with the cue of the sum and no entity number (brush entities excepted).
 - *Strict stereo, not 45° sectors.* Quake II's mixer cannot tell front from back, so a single sound does not
   either. The world model narrows each track's arc with the next sounds: a turn between two of them tells
   front from back. A hit whose bearing the view kick gives narrows the arc of the attacker it is attributed
   to (the bot's own state).
 - *Positions from sight alone.* `Pos`, `PosKnown` and `Vel` change only on a sighting. Out of view a track is
-  located (`Loc`) at its last position seen while the sounds agree with it, at its lump entity's spawn origin
-  when it was never seen and the sounds agree with that, and otherwise at a stand-in built from the cue alone.
+  located (`Loc`) at its last position seen while the sounds agree with it, and otherwise at a stand-in built
+  from the cue alone. For a monster never seen, the entity lump's spawns of the heard voice's family that fit
+  the sound pick the arc, and when exactly one fits the monster stands in at that spawn. A track is tied to
+  its lump entity only once seen, never by the entity number of a sound.
 - *Consumers.* Lane states list such an enemy with `heard` and a bearing to 45° and units to 50. The bot aims,
   turns, keeps off, scans and retreats on `Loc`, never fires suppressively at a stand-in, and backs away from
-  a drain monster that only *sounded* near. A route kill step looks at, and takes firing positions around,
-  the place the sounds point to.
-- *Tests.* `worldmodel.TestPerturbationInvariance` now redraws the origins of the entities only heard
-  wherever every cue of the frame stays the same (1,699 states over demo1's first minute, most of them looping
-  speakers and 16 of them monsters; 1,415 mirrored front to back), and compares the lane states and the
-  scripted policy's answers as well as the beliefs. `TestHeardOnlyOriginsInvariance` does the same on a
-  synthetic fight full of heard soldiers (449 heard-only states, 448 redrawn, 191 mirrored; 550 track-frames
-  placed by ear). Both have a control that moves the heard monsters to the other ear and must change the
-  belief. `fairness.TestDifferential` and every `TestImports` pass.
+  a drain monster that only *sounded* near. On the move with no target it looks where an attacker only heard
+  sounded from (`listen`, below). A route kill step for a monster never seen goes for its spawn origin, and
+  takes a heard monster of its family placed at that spawn for it.
+- *Tests.* `worldmodel.TestPerturbationInvariance` redraws the origins of the entities only heard wherever
+  every cue of the frame stays the same: 1,752 states over demo1's first minute (by channel 14 of 14
+  one-shot-sound states, 3 of 3 flash states and 1,735 of 1,747 loop-maker states; all 17 monster states;
+  1,082 mirrored front to back). It compares the lane states and the scripted policy's answers as well as the
+  beliefs, and it holds the percept to a strict rule: a redraw that keeps every cue and what is seen and
+  admitted must keep the whole percept, or the test fails as a leak. `TestHeardOnlyOriginsInvariance` does the
+  same on a synthetic fight with heard soldiers and a shared loop (591 heard-only states, 582 redrawn, 292
+  mirrored; 203/207 sound, 240/242 flash and 206/215 loop states moved). `TestPerturberCatchesPerceptLeaks`
+  plants leaks after the filter (an emitter's origin in a sound or a flash, the number of makers of a loop)
+  and requires each to be caught. `TestHeardNumbersDoNotPlace` swaps the entity numbers of two heard soldiers
+  and requires the same belief. Both invariance tests keep a control that moves the heard monsters to the
+  other ear and must change the belief. `fairness.TestDifferential` and every `TestImports` pass.
 
-**Results.** The gate protocol (lockstep, skill 1, `-max-deaths 25 -level-timeout 60m`, 212 ms) on the same
-seeds for both builds. *Before* is `a8c9e01`, the tree this change starts from; *after* is this tree. The
-protocol rows are clean mock seeds 1–20, noisy mock 1–10 and scripted 1–10; the pooled rows add seeds 21–40,
-11–20 and 11–30 to the same comparison.
+**Review of the first hearing build.** The first build (`5893546`) passed its tests, and its survival matched
+the build before. Its review found four more ways the bot could know what a player cannot:
 
-| Policy, 212 ms | Seeds | Before: won, demo3 survival | After: won, demo3 survival (run-level 95 %) | p: attempts, ratio, rank-sum |
-|---|---|---|---|---|
-| clean mock | 1–20 | 20/20, 20/62 = 32.3 % | 20/20, 20/87 = 23.0 % (17–37 %) | 0.26, 0.31, 0.22 |
-| noisy mock | 1–10 | 10/10, 10/32 = 31.2 % | 10/10, 10/25 = 40.0 % (24–83 %) | 0.58, 0.55, 0.26 |
-| scripted | 1–10 | 10/10, 10/35 = 28.6 % | 10/10, 10/24 = 41.7 % (30–62 %) | 0.40, 0.28, 0.38 |
-| clean mock | 1–40 | 40/40, 40/134 = 29.9 % | 40/40, 40/155 = 25.8 % (20–35 %) | 0.51, 0.51, 0.69 |
-| noisy mock | 1–20 | 20/20, 20/62 = 32.3 % | 20/20, 20/65 = 30.8 % (22–48 %) | 1.00, 0.91, 0.80 |
-| scripted | 1–30 | 30/30, 30/96 = 31.2 % | 30/30, 30/81 = 37.0 % (30–48 %) | 0.43, 0.36, 0.30 |
+| Finding | Fix |
+|---|---|
+| A monster never seen was placed at the spawn of *its* lump entity, found through its entity number. The baselines that tie numbers to lump entities cover every entity, seen or not, so the bot knew which monster it heard and where an idle one stood. | The spawn prior above: candidates by family, number-blind. `TestHeardNumbersDoNotPlace` fails on the first build. |
+| The invariance tests could not see a leak in the percept: a redraw that changed the percept was simply put back. With an exact-origin field planted in `Hearing` and used by the world model, both tests passed. | The strict percept rule, per-channel coverage (at least 90 % moved) and `TestPerturberCatchesPerceptLeaks`. The same planted field now fails both tests. |
+| Loop sounds came one per entity, with its number and cue. | Blended loops. |
+| A sound of an emitter outside the packet has no cue, which tells the bot the emitter is outside its PVS. | Stated as an assumption in ADR-0006: the bot gets less there, no direction where a player hears a stale one. |
 
-- **Every run of both builds won**: 90 of 90 after, as before. Pooled over the three policies, demo3
-  survival is 90/301 (29.9 %) after against 90/292 (30.8 %) before.
-- **No difference is significant.** The clean mock lost 4 points over 40 seeds (9 on seeds 1–20 alone), the
-  scripted policy gained 6 and the noisy mock is level; every p is above 0.2. Seed blocks of one build differ
-  as much: the clean mock's seeds 1–20 and 21–40 give 23 % and 29 % after, 32 % and 28 % before.
-- **Model-driven.** All 60 mock runs after pass the provenance gate. Clean seeds 1–40: target, fire_policy and
-  mode from the model on at least 0.79, 0.87 and 0.85 of decided ticks (medians 0.86, 0.90, 0.93), at most
-  1.6 % of ticks on stale answers. Noisy seeds 1–20: at least 0.84, 0.84 and 0.88, at most 4.5 % stale. Before:
-  0.82/0.87/0.86 and 0.84/0.85/0.88.
-- **How much is heard.** In the clean runs after, 53 % of the fast-lane states with enemies list one placed by
-  ear, and 15 % of the target answers name one.
-- **Determinism.** Two noisy seed-1 runs: `run.json` equal without `run`, `started` and `wall_ms`, traces
-  equal without `wall` and `run` (25,786 events). `q2bot replay -strict`: 25,784 events replayed equal, 29,476
-  usercmds, 5,439 responses matched (1 in flight at the end); `q2bot validate`: valid.
+The fair spawn prior cost what the first build had gained from the leak. On the same seeds (R2 below),
+pooled demo3 survival fell to 117/493 (23.7 %) from 117/371 (31.5 %) before (p = 0.013). Two fair uses of the
+cue were added (R3 and `listen`, below). On the seeds they were chosen on they brought survival back; on fresh
+seeds they did not, and the final build stays below the build before.
 
-**Development sequence** (protocol rows, clean / noisy / scripted). Each build adds to the one above; none
-of these steps is significant on its own.
+**Results.** The gate protocol (lockstep, skill 1, `-max-deaths 25 -level-timeout 60m`, 212 ms). *Before* is
+`a8c9e01`, the tree the hearing work starts from; *first build* is `5893546`; *final* is this tree. The
+protocol rows are clean mock seeds 1–20, noisy mock 1–10 and scripted 1–10. The next block adds seeds 21–49,
+11–29 and 11–39; the final build was chosen on noisy 11–29 and scripted 11–39. The *fresh* block is seeds no
+build of this work was chosen on.
 
-| Build | Adds | Clean 1–20 | Noisy 1–10 | Scripted 1–10 |
-|---|---|---|---|---|
-| H1 | cues only: the consumers on `Loc` | 20/75 (26.7 %) | 10/31 (32.3 %) | 9/43 (20.9 %): seed 3 lost, 19 deaths at the 60 min level watchdog |
-| H2 | the hit bearing narrows the arc; no suppressive fire at a stand-in | 20/51 (39.2 %) | 10/35 (28.6 %) | not run |
-| H3 | a kill step follows the sounds; a track nowhere located is no target | 20/79 (25.3 %) | 10/46 (21.7 %) | 10/30 (33.3 %) |
-| after | the spawn origin as the stand-in while the sounds agree | 20/87 (23.0 %) | 10/25 (40.0 %) | 10/24 (41.7 %) |
+| Policy, 212 ms | Seeds | Before | First build | Final (run-level 95 %) | p, final vs before: attempts, ratio, rank-sum |
+|---|---|---|---|---|---|
+| clean mock | 1–20 | 20/62 = 32.3 % | 20/87 = 23.0 % | 20/64 = 31.2 % (22–49 %) | 1.00, 0.96, 0.32 |
+| noisy mock | 1–10 | 10/32 = 31.2 % | 10/25 = 40.0 % | 10/35 = 28.6 % (19–48 %) | 1.00, 0.89, 0.84 |
+| scripted | 1–10 | 10/35 = 28.6 % | 10/24 = 41.7 % | 10/39 = 25.6 % (14–67 %) | 0.80, 0.86, 0.53 |
+| clean mock | 1–49 | 49/166 = 29.5 % | 49/201 = 24.4 % | 49/172 = 28.5 % (23–37 %) | 0.91, 0.87, 0.43 |
+| noisy mock | 1–29 | 29/90 = 32.2 % | 29/87 = 33.3 % | 29/90 = 32.2 % (25–43 %) | 1.00, 1.00, 0.87 |
+| scripted | 1–39 | 39/115 = 33.9 % | 39/111 = 35.1 % | 39/125 = 31.2 % (22–47 %) | 0.68, 0.74, 0.19 |
+| clean mock, fresh | 50–69 | 20/65 = 30.8 % | not run | 20/65 = 30.8 % (23–43 %) | 1.00, 1.00, 0.81 |
+| noisy mock, fresh | 30–49 | 20/77 = 26.0 % | not run | 20/110 = 18.2 % (13–29 %) | 0.21, 0.24, 0.54 |
+| scripted, fresh | 40–59 | 20/41 = 48.8 % | not run | 20/97 = 20.6 % (15–31 %) | 0.002, 0.004, 0.006 |
+| clean mock, all | 1–69 | 69/231 = 29.9 % | | 69/237 = 29.1 % (24–36 %) | 0.92, 0.89, 0.44 |
+| noisy mock, all | 1–49 | 49/167 = 29.3 % | | 49/200 = 24.5 % (19–32 %) | 0.34, 0.35, 0.52 |
+| scripted, all | 1–59 | 59/156 = 37.8 % | | 59/222 = 26.6 % (21–36 %) | 0.024, 0.054, 0.49 |
 
-- H1 to H3 placed a kill monster never seen at the stand-in whenever it was heard: the bot aimed there, and
-  from H3 on the kill step went there too. On clean seed 14 of H3 the ambush gunner, idle at its post,
-  sounded "mid" from about 1,100 units: the kill step stalled for 350 s, and the bot's `route_kill` overrides
-  took fire_policy's model share to 0.67, under the gate. The spawn origin of the gunner's lump entity (static
-  map knowledge) agrees with what is heard from it there. With it the route-kill overrides are back near the
-  level before the change: 1,832 ticks over clean seeds 1–20, against 1,608 before and 2,655 (H1), 3,565 (H2)
-  and 5,507 (H3, seeds 1–20 but 3).
+- **Every run won**: 177 of 177 for each of the final build and the build before (the first build: 117 of
+  117).
+- **The final build is below the build before.** Pooled over all seeds and policies, demo3 survival is
+  177/659 (26.9 %) against 177/554 (31.9 %), p = 0.057 on the attempts. On the fresh seeds alone it is 60/272
+  (22.1 %) against 60/183 (32.8 %), p = 0.013. The clean mock is level (29.1 % against 29.9 % over 69 seeds).
+  The noisy mock is 5 points lower and not significantly. The scripted policy is 11 points lower over 59
+  seeds (p = 0.024 on the attempts, 0.054 and 0.49 at run level), most of it on the fresh seeds 40–59, where
+  the build before had its best block (48.8 %; its other scripted blocks: 28.6, 32.8 and 47.4 %).
+- **Where it comes from.** The final build reaches demo3 with less health: 12 of its 177 runs arrive under 40
+  health, against 2 before, and every demo3 attempt restarts from that arrival save. Runs that arrive with 40
+  or more survive 165/592 (27.9 %) against 175/550 (31.8 %) before. In demo3 the extra deaths come from hits
+  the bot cannot place (no track near the hit's bearing). The kill step of the ambush gunner takes as long as
+  before on the first block of seeds (178 s per run against 179 s), but not on the fresh scripted seeds (272 s
+  against 107 s).
+- **The first build's parity was the leak.** It matched the build before because heard monsters never seen
+  stood at the exact spawn of their own lump entity, found through the entity number (the review's first
+  finding). Its lower clean row (24.4 % on seeds 1–49; the review's fresh seeds 41–49 gave 9/46) was not
+  significant (p = 0.31) and does not show in the final build's clean rows.
+- **Model-driven.** Every mock run of the final build passes the provenance gate. Clean seeds 1–49: target,
+  fire_policy and mode from the model on at least 0.80, 0.88 and 0.88 of decided ticks (medians 0.85, 0.90,
+  0.93), at most 1.6 % of ticks on stale answers. Noisy seeds 1–29: at least 0.78, 0.86 and 0.82 (medians
+  0.85, 0.87, 0.89), at most 4.5 % stale. The fresh mock runs: at least 0.80, 0.85 and 0.87. The kill step's
+  forced target (`route_kill`) overrides 2,924 ticks over clean seeds 1–20 (first build 1,832).
+- **How much is heard.** In the final clean runs, 52 % of the fast-lane states with enemies list one placed
+  by ear, and 15 % of the target answers name one.
+- **Determinism.** Two noisy seed-1 runs of the final build: `run.json` equal without `run`, `started` and
+  `wall_ms`, traces equal without `wall` and `run` (42,013 events). `q2bot replay -strict`: 42,011 events
+  replayed equal, 46,964 usercmds, 9,113 responses matched (1 in flight at the end); `q2bot validate`: valid.
+
+**Development sequence.** Each build adds to the one above. *Chosen on* are the two columns the final build
+was picked on; *fresh* pools clean 50–69, noisy 30–49 and scripted 40–59.
+
+| Build | Adds | Clean 1–20 | Noisy 1–10 | Scripted 1–10 | Chosen on: noisy 11–29 | Chosen on: scripted 11–39 | Fresh |
+|---|---|---|---|---|---|---|---|
+| before (`a8c9e01`) | exact heard positions (the leak) | 20/62 (32.3 %) | 10/32 (31.2 %) | 10/35 (28.6 %) | 19/58 (32.8 %) | 29/80 (36.2 %) | 60/183 (32.8 %) |
+| H1 | cues only: the consumers on `Loc` | 20/75 (26.7 %) | 10/31 (32.3 %) | 9/43 (20.9 %), seed 3 lost | | | |
+| H2 | the hit bearing narrows the arc; no suppressive fire at a stand-in | 20/51 (39.2 %) | 10/35 (28.6 %) | | | | |
+| H3 | a kill step follows the sounds; a track nowhere located is no target | 20/79 (25.3 %) | 10/46 (21.7 %) | 10/30 (33.3 %) | | | |
+| first (`5893546`) | the spawn of the number-bound lump entity as the stand-in | 20/87 (23.0 %) | 10/25 (40.0 %) | 10/24 (41.7 %) | 19/62 (30.6 %) | 29/87 (33.3 %) | |
+| R1 | the number-blind spawn prior; the lump tie only on sight | 20/69 (29.0 %) | 10/43 (23.3 %) | 10/33 (30.3 %) | | | |
+| R2 | blended loops | 20/66 (30.3 %) | 10/49 (20.4 %) | 10/33 (30.3 %) | 19/81 (23.5 %) | 29/144 (20.1 %) | |
+| R3 | a kill step takes a heard monster placed at its spawn for it | | | | 19/87 (21.8 %) | 29/119 (24.4 %) | 60/254 (23.6 %) |
+| final | `listen`: on the move, look where a heard attacker sounded from | 20/64 (31.2 %) | 10/35 (28.6 %) | 10/39 (25.6 %) | 19/55 (34.5 %) | 29/86 (33.7 %) | 60/272 (22.1 %) |
+
+- *H1–H3 and the first build* are the hearing work before the review (their rows as measured then).
+- *The cost of the fair spawn prior.* A diagnostic build of R2 that tied heard tracks to their lump entities
+  by number again, which the kill step and the route's effects read, but kept the number-blind stand-in, gave
+  19/86 (22.1 %) and 29/123 (23.6 %) on the chosen-on columns. So the identity alone was not what the first
+  build had gained; most likely its stand-in was: the exact spawn of an idle monster, known through its
+  number.
+- *Tried and dropped.* Letting the scripted policy keep a fight on for an attacker only heard near or mid
+  (as it does for one out of view within 700 units) gave scripted 29/93 (31.2 %), but noisy 18/126 (14.3 %),
+  and noisy seed 29 lost at the 60 min level watchdog.
+- *`listen`* is a reflex: with no target and the path under way, the bot looks at the stand-in of the
+  nearest attacker only heard that attacked within 1.5 s and sounded near or mid (`bot.heardAttacker`). The
+  path's movement does not depend on the view. It uses the cue's direction and nothing more. On the seeds it
+  was chosen on it looked like the fix (demo3 deaths per run 3.2 for R2, 2.3 for the final build, 2.2 before).
+  On the fresh seeds it is level with R3 (22.1 % against 23.6 %, p ≥ 0.2 on every row): its gain there was
+  selection. It stays in because it is fair and costs nothing measurable.
 
 **Caveats.**
 
 - *Brush entities.* A door's or plat's sound still admits the brush's pose (ADR-0006 states the exception).
 - *Loudness.* The steps are judged against the sound's own level up close, so the bot knows each sound's
   attenuation as a player knows how loud a familiar sound is.
-- *Coverage.* Demo1's first minute holds only 16 states of a monster heard out of view; the synthetic test
+- *PVS.* The bot can tell a sound of an emitter outside its PVS (no cue) from one inside it; a player cannot.
+- *Voices.* Entity numbers still tie the successive sounds of one emitter to one track.
+- *Coverage.* Demo1's first minute holds only 17 states of a monster heard out of view; the synthetic test
   carries most of the hearing evidence.
-- *Nightly gates.* The 5-of-6 victory gates stand: every run of both builds won. The rates AGENT.md derives
-  them from are wave 8's; on this build the pooled demo3 survival in the nightly summary should read about
-  26 % (clean) and 31 % (noisy).
+- *Selection.* The final build was picked among R3, the dropped policy rule and `listen` on noisy seeds 11–29
+  and scripted 11–39, so those rows flatter it; the fresh block shows how much.
+- *Survival.* The fair build is about 5 points below the build before over all seeds (11 for the scripted
+  policy). That is the open cost of hearing fairly: the bot no longer knows where an idle monster it only
+  heard stands, and it reaches demo3 with less health more often.
+- *Nightly gates.* The 5-of-6 victory gates stand: every run of the final build won. The rates AGENT.md
+  derives them from are wave 8's; on this build the pooled demo3 survival in the nightly summary should read
+  about 29 % (clean) and 25 % (noisy).
 - *Format change.* Lane states with a heard enemy differ from the earlier builds' (`heard`, coarse bearing
   and units, the target option's "only heard"), so traces recorded before do not replay with this build;
   replay them with the build they were recorded with (`git checkout a8c9e01`).
@@ -120,20 +186,22 @@ of these steps is significant on its own.
 ```sh
 go build -o /tmp/q2bot ./cmd/q2bot          # once per build; keep binaries out of the tree
 COMMON="-session lockstep -skill 1 -max-deaths 25 -level-timeout 60m -record=false"
-for s in $(seq 1 40); do /tmp/q2bot run -backend mock -mock-policy scripted -seed $s $COMMON -out /tmp/hear/clean/s$s; done
-for s in $(seq 1 20); do /tmp/q2bot run -backend mock -seed $s $COMMON -out /tmp/hear/noisy/s$s; done
-for s in $(seq 1 30); do /tmp/q2bot run -backend scripted -sim-latency 212ms -seed $s $COMMON -out /tmp/hear/scripted/s$s; done
+for s in $(seq 1 69); do /tmp/q2bot run -backend mock -mock-policy scripted -seed $s $COMMON -out /tmp/hear/clean/s$s; done
+for s in $(seq 1 49); do /tmp/q2bot run -backend mock -seed $s $COMMON -out /tmp/hear/noisy/s$s; done
+for s in $(seq 1 59); do /tmp/q2bot run -backend scripted -sim-latency 212ms -seed $s $COMMON -out /tmp/hear/scripted/s$s; done
 # demo3 survival of a row (attempts = deaths + 1 per visit), and the gate shares
 jq -s '[.[].episodes[0].levels[] | select(.map=="demo3")]
        | {exits: map(select(.outcome=="exit")) | length, attempts: (map(.deaths+1) | add)}' /tmp/hear/clean/s*/*/run.json
 jq -c '[.gate.model_shares.target, .gate.model_shares.fire_policy, .gate.model_shares.mode, .gate.passed]' /tmp/hear/clean/s*/*/run.json
 # the fairness tests
-go test -count=1 -run 'TestPerturbationInvariance|TestHeardOnlyOriginsInvariance|TestEar' -v ./internal/agent/worldmodel
+go test -count=1 -run 'TestPerturbationInvariance|TestHeardOnlyOriginsInvariance|TestPerturberCatchesPerceptLeaks|TestHeardNumbersDoNotPlace|TestEar' -v ./internal/agent/worldmodel
 go test -count=1 ./internal/agent/fairness ./internal/agent/perception
 ```
 
-The *before* rows are the same commands on a build of `a8c9e01`. The run-level interval and tests are those
-of [Reproduce (wave 8)](#reproduce-wave-8). The development builds H1–H3 are not in the tree.
+The *before* rows are the same commands on a build of `a8c9e01`, the *first build* rows on `5893546` (its
+seeds 41–49, 21–29 and 31–39 are the review's runs). The run-level interval and tests are those of
+[Reproduce (wave 8)](#reproduce-wave-8). The builds H1–H3, R1–R3, the diagnostic and the dropped rule are
+not in the tree.
 
 ## Read this first: what decides a run
 

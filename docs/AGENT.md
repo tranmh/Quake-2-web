@@ -662,9 +662,10 @@ with `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide ./intern
   - The thresholds come from AGENT-EVAL.md's wave-8 rates, pooled over the seeds of one build. Clean mock:
     80/199 (40 %, run-level 95 % interval 34–47 %) over seeds 1–80. Noisy mock: 50/171 (29 %, 24–37 %) over
     seeds 1–50. Every one of those 130 runs won, seeds 1–6 of both included.
-  - The hearing hardening leaves them standing (AGENT-EVAL.md, "Fairness hardening: hearing"): all 60 mock
-    runs of that build won, at demo3 survival 40/155 (26 %, clean, seeds 1–40) and 20/65 (31 %, noisy, seeds
-    1–20). The pooled survival in the job summary should read about those rates now.
+  - The hearing hardening leaves them standing (AGENT-EVAL.md, "Fairness hardening: hearing"): all 118 mock
+    runs of the final hearing build won, at demo3 survival 69/237 (29 %, clean, seeds 1–69) and 49/200 (25 %,
+    noisy, seeds 1–49). The pooled survival in the job summary should read about those rates now; the noisy
+    rate is below wave 8's.
   - With no loss in 80 (clean) and 50 (noisy) runs, a per-run loss rate above 3.7 % and 5.8 % is ruled out at
     95 %. Even at those bounds, an unchanged bot misses 5 of 6 with probability 1.8 % (clean) and 4.3 %
     (noisy). At the survival rates alone the chance is under 10⁻⁵. 6 of 6 would catch more, but the runs
