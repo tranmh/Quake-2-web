@@ -43,6 +43,9 @@ type actor struct {
 	hasObs bool
 	// earMask: the world yaws the cues heard since Ear.At-earMemory allow
 	earMask yawMask
+	// fits: the spawns of its family that fit the last sound while it was
+	// never seen (World.spawnFits), lump indexes
+	fits []int
 }
 
 func (a *actor) setLife(l LifeState, now int64) {
@@ -172,7 +175,12 @@ func (w *World) actorFor(num int32, c *perception.Class, family string, pos Vec3
 	}
 	a.ID = w.newID(trackPrefix(c))
 	a.Num = num
-	a.Lump = w.lumpFor(num, c, family)
+	// only a sighting ties a track to its lump entity: which of a family's
+	// monsters a sound is, a player who has not seen it cannot tell
+	a.Lump = -1
+	if c != nil {
+		a.Lump = w.lumpFor(num, c, "")
+	}
 	a.Class, a.Kind = family, perception.KindMonster.String()
 	if family == "" {
 		a.Class = "monster"
@@ -259,6 +267,11 @@ func (w *World) seeActor(s *perception.Sighting) {
 	a.LastSeen = w.now
 	if a.FirstSeen == 0 {
 		a.FirstSeen = w.now
+		if a.Lump < 0 {
+			// first seen after it was heard (actorFor)
+			a.Lump = w.lumpFor(s.Num, s.Class, "")
+		}
+		a.fits = nil
 	}
 	a.Anim = s.Anim.State.String()
 

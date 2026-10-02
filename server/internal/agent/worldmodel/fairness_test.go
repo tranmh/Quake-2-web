@@ -40,6 +40,14 @@ func sameSet(a, b []int32) bool { return reflect.DeepEqual(a, b) }
 type perturber struct {
 	rng     *rand.Rand
 	checker *perception.Perceiver
+	// leak is called when a rewrite keeps everything the percept may say
+	// about the entities it touched (what is seen and admitted, every cue
+	// of every emitter) and the percept still differs: the percept carries
+	// something about an entity beyond what a player perceives of it.
+	leak func(msg string)
+	// mutate (tests of the test only) changes each percept the perturber
+	// judges, after the filter made it: a leak planted on purpose.
+	mutate  func(pc *perception.Percept, in *perception.FrameInput)
 	changed int // entity states rewritten
 	frames  int // frames with at least one rewrite
 	retries int
@@ -48,6 +56,20 @@ type perturber struct {
 	// heard-only emitters whose origin moved, those mirrored front to back
 	// (the stereo cue is the same), and the monsters among the moved
 	heardMoved, heardMirrored, heardMonsters int
+	// heard-only states by channel (one-shot sounds, muzzle flashes, loop
+	// sounds; an emitter may be heard on several) and how many moved, and
+	// the monsters among them
+	chanStates, chanMoved [nChannels]int
+	monsterStates         int
+}
+
+// perceive is the percept the perturber judges a frame input by.
+func (p *perturber) perceive(in *perception.FrameInput) *perception.Percept {
+	pc := p.checker.Perceive(in)
+	if p.mutate != nil {
+		p.mutate(pc, in)
+	}
+	return pc
 }
 
 // percSig is what must not change: the entities seen and those admitted,
@@ -70,7 +92,7 @@ func signature(pc *perception.Percept) percSig {
 		cues: map[int32]string{}}
 	for i := range pc.Heard {
 		h := &pc.Heard[i]
-		sig.cues[h.Num] += fmt.Sprintf("s%d:%v:%v:%v;", h.Index, h.Cue, h.Placed, h.Seen)
+		sig.cues[cueKey(h)] += fmt.Sprintf("s%d:%v:%v:%v;", h.Index, h.Cue, h.Placed, h.Seen)
 	}
 	for i := range pc.Flashes {
 		f := &pc.Flashes[i]
@@ -79,23 +101,68 @@ func signature(pc *perception.Percept) percSig {
 	return sig
 }
 
+// cueKey is the key of a sound's cues in percSig.cues: its entity, or for
+// a blended loop (no entity) minus its sound index.
+func cueKey(h *perception.Hearing) int32 {
+	if h.Num == 0 && h.Loop {
+		return -h.Index
+	}
+	return h.Num
+}
+
 func (a percSig) equal(b percSig) bool {
 	return reflect.DeepEqual(a.seen, b.seen) && reflect.DeepEqual(a.admitted, b.admitted) &&
 		reflect.DeepEqual(a.heard, b.heard) && reflect.DeepEqual(a.flashes, b.flashes) && reflect.DeepEqual(a.temp, b.temp)
 }
 
-// cued returns the entity numbers a sound or flash placed this frame names
-// (heard at their origin or with them in the packet: only a cue admitted).
-func cued(pc *perception.Percept) map[int32]bool {
-	out := map[int32]bool{}
+// sameCues reports whether a and b agree on all a rewrite may change only
+// together with what the player perceives: the entities seen and admitted
+// and the cues of every emitter. If they do and a and b still differ, the
+// percept says more about some entity than that.
+func (a percSig) sameCues(b percSig) bool {
+	return reflect.DeepEqual(a.seen, b.seen) && reflect.DeepEqual(a.admitted, b.admitted) && reflect.DeepEqual(a.cues, b.cues)
+}
+
+// channels a heard-only emitter is heard on
+const (
+	chSound = iota // a one-shot sound (svc_sound) placed at it
+	chFlash        // a muzzle flash
+	chLoop         // a loop sound it is one of the makers of
+	nChannels
+)
+
+// cued returns the entities of frame in that a sound or flash placed this
+// frame names (heard at their origin or with them in the packet: only a
+// cue admitted), and the audible makers of the loop sounds heard (the
+// blend of all the frame's entities with that sound; one out of earshot
+// adds nothing to it and is hidden), with the channels each is heard on.
+func cued(pc *perception.Percept, in *perception.FrameInput) map[int32][nChannels]bool {
+	out := map[int32][nChannels]bool{}
+	set := func(n int32, ch int) {
+		c := out[n]
+		c[ch] = true
+		out[n] = c
+	}
+	loops := map[int32]bool{}
 	for i := range pc.Heard {
-		if h := &pc.Heard[i]; h.Placed && h.Num > 0 {
-			out[h.Num] = true
+		switch h := &pc.Heard[i]; {
+		case h.Num == 0 && h.Loop:
+			loops[h.Index] = true
+		case h.Placed && h.Num > 0:
+			set(h.Num, chSound)
 		}
 	}
 	for i := range pc.Flashes {
 		if f := &pc.Flashes[i]; f.Placed {
-			out[f.Num] = true
+			set(f.Num, chFlash)
+		}
+	}
+	own := in.OwnEntity()
+	for i := range in.Entities {
+		// a loop plays like a one-shot ATTN_STATIC sound at full volume
+		// (SOUND_LOOPATTENUATE is ATTN_STATIC's distance multiplier)
+		if e := &in.Entities[i]; e.Sound != 0 && e.Number != own && loops[e.Sound] && pc.Audible(e.Origin, 1, q2const.ATTN_STATIC) {
+			set(e.Number, chLoop)
 		}
 	}
 	return out
@@ -233,9 +300,9 @@ const (
 // view would be seen, a heard one moved off its cue heard differently,
 // which is not a leak), and put back if that fails.
 func (p *perturber) perturb(in perception.FrameInput) perception.FrameInput {
-	pc := p.checker.Perceive(&in)
+	pc := p.perceive(&in)
 	sig := signature(pc)
-	heard := cued(pc)
+	heard := cued(pc, &in)
 	v := pc.Vision()
 	adm, seen := map[int32]bool{}, map[int32]bool{}
 	for _, n := range sig.admitted {
@@ -265,7 +332,7 @@ func (p *perturber) perturb(in perception.FrameInput) perception.FrameInput {
 			}
 		case adm[e.Number]:
 			kind[i] = keep // a mover a sound gave the pose of
-		case heard[e.Number]:
+		case heard[e.Number] != [nChannels]bool{}:
 			kind[i] = heardOnly
 		default:
 			kind[i] = hidden
@@ -310,13 +377,29 @@ func (p *perturber) perturb(in perception.FrameInput) perception.FrameInput {
 		}
 	}
 	for attempt := 0; ; attempt++ {
-		got := signature(p.checker.Perceive(&out))
+		got := signature(p.perceive(&out))
 		if got.equal(sig) {
+			break
+		}
+		if got.sameCues(sig) {
+			p.leak(fmt.Sprintf("frame %d: rewriting what was not admitted kept what is seen and admitted and every cue, "+
+				"yet the percept changed: it says more about an entity than a player perceives\nverbatim:  %+v %+v %+v\nperturbed: %+v %+v %+v",
+				in.ServerFrame, sig.heard, sig.flashes, sig.temp, got.heard, got.flashes, got.temp))
+			out.Entities = append(out.Entities[:0:0], in.Entities...)
 			break
 		}
 		p.retries++
 		// put back or resample the rewrites that changed what is perceived
+		// (a blended loop's cue, key minus its sound, names all its makers)
 		bad := map[int32]bool{}
+		badLoop := map[int32]bool{}
+		mark := func(n int32) {
+			if n < 0 {
+				badLoop[-n] = true
+			} else {
+				bad[n] = true
+			}
+		}
 		for _, n := range got.admitted {
 			if !adm[n] {
 				bad[n] = true
@@ -329,19 +412,20 @@ func (p *perturber) perturb(in perception.FrameInput) perception.FrameInput {
 		}
 		for n, c := range got.cues {
 			if sig.cues[n] != c {
-				bad[n] = true
+				mark(n)
 			}
 		}
 		for n, c := range sig.cues {
 			if got.cues[n] != c {
-				bad[n] = true
+				mark(n)
 			}
 		}
 		for i := range out.Entities {
 			if kind[i] == keep {
 				continue
 			}
-			if attempt >= 20 || bad[out.Entities[i].Number] || len(bad) == 0 && kind[i] == brush {
+			e := &out.Entities[i]
+			if attempt >= 20 || bad[e.Number] || badLoop[e.Sound] && e.Sound != 0 || len(bad)+len(badLoop) == 0 && kind[i] == brush {
 				if attempt < 20 {
 					rewrite(i)
 				} else {
@@ -351,6 +435,23 @@ func (p *perturber) perturb(in perception.FrameInput) perception.FrameInput {
 		}
 		if attempt > 21 {
 			panic("perturbation does not converge")
+		}
+	}
+	for i := range out.Entities {
+		if kind[i] != heardOnly {
+			continue
+		}
+		moved := out.Entities[i].Origin != in.Entities[i].Origin
+		for ch, on := range heard[in.Entities[i].Number] {
+			if on {
+				p.chanStates[ch]++
+				if moved {
+					p.chanMoved[ch]++
+				}
+			}
+		}
+		if c := cls.Classify(&in.Entities[i]).Class; c != nil && c.Kind == perception.KindMonster {
+			p.monsterStates++
 		}
 	}
 	n := 0
@@ -402,8 +503,11 @@ func (p *perturber) perturb(in perception.FrameInput) perception.FrameInput {
 	}
 	full := out.Entities
 	out.Entities = kept
-	if !signature(p.checker.Perceive(&out)).equal(sig) {
-		p.retries++
+	if got := signature(p.perceive(&out)); !got.equal(sig) {
+		// the dropped entities are neither seen, admitted nor heard: no
+		// legitimate part of the percept depends on them
+		p.leak(fmt.Sprintf("frame %d: dropping hidden entities no event names from the packet changed the percept\nverbatim:  %+v\nperturbed: %+v",
+			in.ServerFrame, sig, got))
 		out.Entities = full
 	}
 	p.changed += n
@@ -546,7 +650,7 @@ func PerturbationRun(t *testing.T, each func(frame int, verbatim, perturbed *Wor
 	controlDiffers, earControlDiffers := false, false
 	earFrames := 0 // track-frames placed by ear alone
 	table := perception.NewClassTable()
-	p := &perturber{rng: rand.New(rand.NewSource(7)),
+	p := &perturber{rng: rand.New(rand.NewSource(7)), leak: func(msg string) { t.Fatal(msg) },
 		checker: perception.NewPerceiver(lv.Map.CM, perception.NewClassifier(table), perception.NewAnimCache(fs.ReadFile), perception.Options{})}
 	for i, in := range inputs {
 		pert := p.perturb(in)
@@ -566,12 +670,12 @@ func PerturbationRun(t *testing.T, each func(frame int, verbatim, perturbed *Wor
 		// the listener changes its stereo balance
 		ear := in
 		ear.Entities = append([]shared.EntityState(nil), in.Entities...)
-		heardNow := cued(wa.Percept())
+		heardNow := cued(wa.Percept(), &in)
 		var right Vec3
 		shared.AngleVectors(in.PlayerState.ViewAngles, nil, &right, nil)
 		eye := perception.Eye(&in.PlayerState)
 		for k := range ear.Entities {
-			if e := &ear.Entities[k]; heardNow[e.Number] && wa.Percept().Sighting(e.Number) == nil {
+			if e := &ear.Entities[k]; heardNow[e.Number] != [nChannels]bool{} && wa.Percept().Sighting(e.Number) == nil {
 				d := shared.VectorSubtract(e.Origin, eye)
 				e.Origin = shared.VectorMA(e.Origin, -2*shared.DotProduct(d, right), right)
 			}
@@ -599,12 +703,23 @@ func PerturbationRun(t *testing.T, each func(frame int, verbatim, perturbed *Wor
 		len(inputs), p.changed, p.frames, p.hiddenMonsters, p.heardOnly, p.heardMoved, p.heardMonsters, p.heardMirrored,
 		p.brushes,
 		p.oldOrigins, p.removed, p.retries, p.injected, p.injectedTracked, earFrames)
-	if p.frames < len(inputs)/2 || p.hiddenMonsters == 0 || p.brushes == 0 || p.heardOnly == 0 || p.removed == 0 ||
-		p.injectedTracked == 0 || p.heardMoved < p.heardOnly/2 || p.heardMirrored == 0 || p.heardMonsters == 0 ||
-		earFrames == 0 {
+	t.Logf("heard-only states moved by channel: sounds %d/%d, flashes %d/%d, loops %d/%d; monsters %d/%d",
+		p.chanMoved[chSound], p.chanStates[chSound], p.chanMoved[chFlash], p.chanStates[chFlash],
+		p.chanMoved[chLoop], p.chanStates[chLoop], p.heardMonsters, p.monsterStates)
+	// nearly every heard-only state must move, on each channel heard in
+	// the run (one-shot sounds and loops always are), and so must nearly
+	// every heard-only monster's
+	short := p.chanStates[chSound] == 0 || p.chanStates[chLoop] == 0 || p.monsterStates == 0 ||
+		p.heardMonsters*10 < p.monsterStates*9
+	for ch := range p.chanStates {
+		short = short || p.chanMoved[ch]*10 < p.chanStates[ch]*9
+	}
+	if short || p.frames < len(inputs)/2 || p.hiddenMonsters == 0 || p.brushes == 0 || p.heardOnly == 0 || p.removed == 0 ||
+		p.injectedTracked == 0 || p.heardMirrored == 0 || earFrames == 0 {
 		t.Fatalf("the perturbation did not touch enough: %d frames, %d hidden monster states, %d brushes, "+
-			"%d heard-only (%d moved, %d mirrored), %d dropped, %d sounds for tracks, %d track-frames by ear", p.frames,
-			p.hiddenMonsters, p.brushes, p.heardOnly, p.heardMoved, p.heardMirrored, p.removed, p.injectedTracked, earFrames)
+			"%d heard-only (%d moved, %d mirrored; by channel %v of %v; monsters %d of %d), %d dropped, %d sounds for tracks, "+
+			"%d track-frames by ear", p.frames, p.hiddenMonsters, p.brushes, p.heardOnly, p.heardMoved, p.heardMirrored,
+			p.chanMoved, p.chanStates, p.heardMonsters, p.monsterStates, p.removed, p.injectedTracked, earFrames)
 	}
 	if len(wa.Belief().Tracks) == 0 {
 		t.Fatal("no tracks: the run perceived nothing")
@@ -614,6 +729,88 @@ func PerturbationRun(t *testing.T, each func(frame int, verbatim, perturbed *Wor
 	}
 	if !earControlDiffers {
 		t.Fatal("moving the heard monsters to the other ear did not change the belief: hearing is ignored")
+	}
+}
+
+// TestPerturberCatchesPerceptLeaks is the negative check of the strict
+// rule of perturber.perturb: a percept that carries anything about a
+// heard-only entity beyond its cue (here planted on purpose after the
+// filter: the exact origin of the emitter of a sound or a muzzle flash,
+// or how many entities make a blended loop) is reported as a leak,
+// although every cue stays the same and so no belief could differ.
+func TestPerturberCatchesPerceptLeaks(t *testing.T) {
+	origin := func(in *perception.FrameInput, num int32) float32 {
+		for i := range in.Entities {
+			if in.Entities[i].Number == num {
+				return in.Entities[i].Origin[0]
+			}
+		}
+		return 0
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(pc *perception.Percept, in *perception.FrameInput)
+	}{
+		{"sound origin", func(pc *perception.Percept, in *perception.FrameInput) {
+			for i := range pc.Heard {
+				if h := &pc.Heard[i]; h.Num > 0 && !h.Loop && !h.Seen {
+					h.Volume = origin(in, h.Num)
+				}
+			}
+		}},
+		{"flash origin", func(pc *perception.Percept, in *perception.FrameInput) {
+			for i := range pc.Flashes {
+				if f := &pc.Flashes[i]; !f.Seen {
+					f.Volume = origin(in, f.Num)
+				}
+			}
+		}},
+		{"loop makers", func(pc *perception.Percept, in *perception.FrameInput) {
+			for i := range pc.Heard {
+				if h := &pc.Heard[i]; h.Loop && h.Num == 0 {
+					for k := range in.Entities {
+						if in.Entities[k].Sound == h.Index {
+							h.Channel++
+						}
+					}
+				}
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSim(t)
+			s.cs[q2const.CS_SOUNDS+sLoop] = "world/amb10.wav"
+			leaks := 0
+			p := &perturber{rng: rand.New(rand.NewSource(3)), mutate: tc.mutate, leak: func(string) { leaks++ },
+				checker: perception.NewPerceiver(floorCM(t), perception.NewClassifier(perception.NewClassTable()), nil, perception.Options{})}
+			for frame := 0; frame < 20; frame++ {
+				s.ps.ViewAngles[q2const.YAW] = float32(frame * 20)
+				s.ents = []shared.EntityState{soldierAt(30, Vec3{-300, 200, 24}), soldierAt(31, Vec3{100, -500, 24}),
+					{Number: 40, Sound: sLoop, Origin: Vec3{0, 250, 40}},  // a speaker in earshot
+					{Number: 41, Sound: sLoop, Origin: Vec3{0, 4000, 40}}} // and one far out of it
+				s.ev = perception.Events{Sounds: []fakeclient.Sound{{SoundNum: sSight, Ent: 30, Volume: 1, Attenuation: 1}},
+					MuzzleFlashes: []fakeclient.MuzzleFlash{{Ent: 31, Monster: true, Weapon: q2const.MZ2_SOLDIER_MACHINEGUN_1}}}
+				p.perturb(s.input())
+				s.step()
+			}
+			if leaks == 0 {
+				t.Fatal("a leak planted in the percept was not reported")
+			}
+		})
+	}
+	// and the filter itself leaks nothing on the same frames
+	s := newSim(t)
+	s.cs[q2const.CS_SOUNDS+sLoop] = "world/amb10.wav"
+	p := &perturber{rng: rand.New(rand.NewSource(3)), leak: func(msg string) { t.Fatal(msg) },
+		checker: perception.NewPerceiver(floorCM(t), perception.NewClassifier(perception.NewClassTable()), nil, perception.Options{})}
+	for frame := 0; frame < 20; frame++ {
+		s.ps.ViewAngles[q2const.YAW] = float32(frame * 20)
+		s.ents = []shared.EntityState{soldierAt(30, Vec3{-300, 200, 24}), soldierAt(31, Vec3{100, -500, 24}),
+			{Number: 40, Sound: sLoop, Origin: Vec3{0, 250, 40}}, {Number: 41, Sound: sLoop, Origin: Vec3{0, 4000, 40}}}
+		s.ev = perception.Events{Sounds: []fakeclient.Sound{{SoundNum: sSight, Ent: 30, Volume: 1, Attenuation: 1}},
+			MuzzleFlashes: []fakeclient.MuzzleFlash{{Ent: 31, Monster: true, Weapon: q2const.MZ2_SOLDIER_MACHINEGUN_1}}}
+		p.perturb(s.input())
+		s.step()
 	}
 }
 
@@ -637,14 +834,21 @@ func TestInjectedSoundsAreNotIgnoredBlindly(t *testing.T) {
 // TestHeardOnlyOriginsInvariance is the hearing half of the perturbation
 // test on a synthetic fight with many heard monsters: four soldiers move
 // at random around a turning player, out of view as often as in it, crying
-// out and firing at random. A second world gets the same frames with the
-// origin (and so the velocity) of every soldier only heard redrawn at
-// random wherever every cue of the frame stays the same (often mirrored
-// front to back), and its angles, frame and box rewritten too: its belief
-// must equal the first world's at every frame. A control world that moves
-// the heard soldiers to the other ear must differ.
+// out and firing at random; two of them and a speaker also make the same
+// loop sound. A second world gets the same frames with the origin (and so
+// the velocity) of every entity only heard redrawn at random wherever
+// every cue of the frame stays the same (often mirrored front to back),
+// and its angles, frame and box rewritten too: its belief must equal the
+// first world's at every frame. A draw that keeps every cue and what is
+// seen and admitted must keep the whole percept: anything else in it would
+// tell the bot more about a heard entity than its cue. Nearly every heard
+// state must move, on each channel (sounds, flashes, loops). A control
+// world that moves the heard soldiers to the other ear must differ.
 func TestHeardOnlyOriginsInvariance(t *testing.T) {
 	a, b, c := newSim(t), newSim(t), newSim(t)
+	for _, s := range []*sim{a, b, c} {
+		s.cs[q2const.CS_SOUNDS+sLoop] = "world/amb10.wav"
+	}
 	checker := perception.NewPerceiver(floorCM(t), perception.NewClassifier(perception.NewClassTable()), nil, perception.Options{})
 	rng := rand.New(rand.NewSource(11))
 	p := &perturber{rng: rand.New(rand.NewSource(12)), checker: checker}
@@ -656,7 +860,9 @@ func TestHeardOnlyOriginsInvariance(t *testing.T) {
 	for i := range mons {
 		mons[i].pos = Vec3{p.offset(900), p.offset(900), 24}
 	}
+	speaker := shared.EntityState{Number: 40, Sound: sLoop, Origin: Vec3{p.offset(600), p.offset(600), 40}}
 	moved, mirrored, nHeard, earFrames, differs := 0, 0, 0, 0, false
+	var chStates, chMoved [nChannels]int
 	for frame := 0; frame < 400; frame++ {
 		yaw := float32(frame) * 4 // a slow turn: turns tell front from back
 		var ents []shared.EntityState
@@ -670,7 +876,11 @@ func TestHeardOnlyOriginsInvariance(t *testing.T) {
 			for k := 0; k < 2; k++ {
 				m.pos[k] = max(-1200, min(1200, m.pos[k]))
 			}
-			ents = append(ents, soldierAt(m.num, m.pos))
+			e := soldierAt(m.num, m.pos)
+			if m.num >= 32 {
+				e.Sound = sLoop
+			}
+			ents = append(ents, e)
 			switch r := rng.Intn(10); {
 			case r < 2:
 				ev.Sounds = append(ev.Sounds, fakeclient.Sound{SoundNum: sSight, Ent: m.num, Volume: 1, Attenuation: float32(1 + rng.Intn(2))})
@@ -678,6 +888,7 @@ func TestHeardOnlyOriginsInvariance(t *testing.T) {
 				ev.MuzzleFlashes = append(ev.MuzzleFlashes, fakeclient.MuzzleFlash{Ent: m.num, Monster: true, Weapon: q2const.MZ2_SOLDIER_MACHINEGUN_1})
 			}
 		}
+		ents = append(ents, speaker)
 		for _, s := range []*sim{a, b, c} {
 			s.ps.ViewAngles[q2const.YAW] = yaw
 			s.ents, s.ev = append([]shared.EntityState(nil), ents...), ev
@@ -685,23 +896,31 @@ func TestHeardOnlyOriginsInvariance(t *testing.T) {
 		in := a.input()
 		pc := checker.Perceive(&in)
 		sig := signature(pc)
-		heard := cued(pc)
+		heard := cued(pc, &in)
 		v := pc.Vision()
 		var right Vec3
 		shared.AngleVectors(a.ps.ViewAngles, nil, &right, nil)
 		for i := range b.ents {
 			e := &b.ents[i]
-			if !heard[e.Number] || pc.Sighting(e.Number) != nil {
+			chans := heard[e.Number]
+			if chans == [nChannels]bool{} || pc.Sighting(e.Number) != nil {
 				continue
 			}
 			nHeard++
 			orig := *e
 			ok := false
-			for try := 0; try < 30 && !ok; try++ {
+			for try := 0; try < 60 && !ok; try++ {
 				mir := p.randomizeHeard(e, orig, v)
-				e.Solid = solidStd // a box the class allows, so a draw that comes into view is told apart
+				if orig.ModelIndex != 0 {
+					e.Solid = solidStd // a box the class allows, so a draw that comes into view is told apart
+				}
 				pin := b.input()
-				ok = signature(checker.Perceive(&pin)).equal(sig)
+				got := signature(checker.Perceive(&pin))
+				ok = got.equal(sig)
+				if !ok && got.sameCues(sig) {
+					t.Fatalf("frame %d: moving heard-only entity %d kept every cue and what is seen, yet the percept changed: "+
+						"it says more about it than its cue\nverbatim:  %+v %+v\nperturbed: %+v %+v", frame, e.Number, sig.heard, sig.flashes, got.heard, got.flashes)
+				}
 				if ok && e.Origin != orig.Origin {
 					moved++
 					if mir {
@@ -711,6 +930,14 @@ func TestHeardOnlyOriginsInvariance(t *testing.T) {
 			}
 			if !ok {
 				*e = orig
+			}
+			for ch, on := range chans {
+				if on {
+					chStates[ch]++
+					if e.Origin != orig.Origin {
+						chMoved[ch]++
+					}
+				}
 			}
 			// the control: the other ear
 			ce := &c.ents[i]
@@ -735,10 +962,16 @@ func TestHeardOnlyOriginsInvariance(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d heard-only soldier states, %d moved (%d mirrored front to back); %d track-frames placed by ear",
-		nHeard, moved, mirrored, earFrames)
-	if moved < nHeard/2 || mirrored == 0 || earFrames < 100 {
-		t.Fatalf("the perturbation did not touch enough: %d heard-only, %d moved, %d mirrored, %d by ear", nHeard, moved, mirrored, earFrames)
+	t.Logf("%d heard-only states, %d moved (%d mirrored front to back); by channel: sounds %d/%d, flashes %d/%d, loops %d/%d; "+
+		"%d track-frames placed by ear", nHeard, moved, mirrored, chMoved[chSound], chStates[chSound], chMoved[chFlash],
+		chStates[chFlash], chMoved[chLoop], chStates[chLoop], earFrames)
+	short := moved*100 < nHeard*95 || mirrored == 0 || earFrames < 100
+	for ch := range chStates {
+		short = short || chStates[ch] < 50 || chMoved[ch]*100 < chStates[ch]*90
+	}
+	if short {
+		t.Fatalf("the perturbation did not touch enough: %d heard-only, %d moved, %d mirrored, %d by ear; by channel %v of %v",
+			nHeard, moved, mirrored, earFrames, chMoved, chStates)
 	}
 	if !differs {
 		t.Fatal("moving the heard soldiers to the other ear did not change the belief: hearing is ignored")

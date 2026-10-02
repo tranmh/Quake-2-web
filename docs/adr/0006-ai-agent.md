@@ -119,6 +119,10 @@ Everything the bot knows comes from one of the following:
      Never the emitter's origin, its velocity, its height or its box. A heard explosion keeps only its type
      and cue. A muzzle flash whose shooter is in view is seen (the sighting places the shooter), and one out
      of view is hearing.
+   - **Loop sounds blend.** The mixer sums every entity of the frame that has the same loop sound into one
+     channel (`S_AddLoopSounds`), so a player hears one loop per sound, not how many entities make it nor
+     which. The perceiver passes on one hearing per loop sound, with the cue of the summed left and right
+     volumes and no entity number. A brush entity's loop is the exception below.
    - **Strict stereo, not sectors.** Quake II's mixer has no front/back or height cue: a source 30° to the
      left ahead and one 30° to the left behind sound the same, and a source above sounds more central than
      its bearing. The cue is therefore the stereo balance, not a 45° sector, which would hand the bot the
@@ -130,21 +134,35 @@ Everything the bot knows comes from one of the following:
      attributed to a track placed by ear, narrows its arc to that bearing ±30°.
    - **Positions come from sight alone.** A track's `Pos`, `PosKnown` and `Vel` change only on a sighting.
      Out of view, the bot locates a track (`Track.Loc`) at its last position seen while what it hears from it
-     agrees (the bearing in the arc, the same loudness step); a monster never seen, at the spawn origin of its
-     lump entity (rule 4) while the sounds agree with that; and otherwise at a stand-in derived from the cue
-     alone: the middle of the arc, at the middle distance of the loudness step for that sound's attenuation,
-     from where the bot stood when it heard it. Consumers that need a point use `Loc`: aiming and turning,
-     keeping away, the scan, a retreat's threat, damage attribution, and a route kill step's look and firing
-     position (from the last position seen when the stand-in has none). The navigator's obstacles and the
-     line-of-fire checks use positions seen only. A lane state lists an enemy placed by ear with `heard` (near,
-     mid or far), its bearing in steps of 45°, no elevation, its units in steps of 50 and no aim.
+     agrees (the bearing in the arc, the same loudness step). Otherwise it uses a stand-in derived from the
+     cue alone: the middle of the arc, at the middle distance of the loudness step for that sound's
+     attenuation, from where the bot stood when it heard it (or a spawn origin, next bullet). Consumers that
+     need a point use `Loc`: aiming and turning, keeping away, the scan, a retreat's threat, damage
+     attribution, and a route kill step's look and firing position (from the last position seen when the
+     stand-in has none). The navigator's obstacles and the line-of-fire checks use positions seen only. A lane
+     state lists an enemy placed by ear with `heard` (near, mid or far), its bearing in steps of 45°, no
+     elevation, its units in steps of 50 and no aim.
+   - **The map's spawns, not the entity number.** For a monster never seen, the entity lump (rule 4) lists
+     where the monsters of the heard voice's family spawn. The spawns that fit the sound count: the bearing
+     in the arc, the loudness step the one heard, not in plain view, and not the spawn of a monster already
+     seen. They pick the arc when ahead and behind both fit. When exactly one fits, the monster stands in at
+     that spawn origin (`Ear.AtSpawn`). Which lump entity a heard monster *is* never comes from its entity
+     number: the baselines that tie numbers to lump entities cover every entity, seen or not, so a track is
+     tied to its lump entity only once it is seen. A route kill step for a monster never seen goes for its
+     spawn origin from the route table. `worldmodel.TestHeardNumbersDoNotPlace` swaps the entity numbers of
+     two heard soldiers and requires the same belief.
    - A sound whose emitter is not in the packet has no cue (the mixer plays it at a stale origin the
      perceiver cannot know). It is accepted only if it is `ATTN_NONE`, or if the emitter's believed location
-     (`Loc`) is within earshot. It never locates a track.
+     (`Loc`) is within earshot. It never locates a track, and a sound of an emitter the bot has no track of is
+     dropped. That the bot can tell this case is a stated assumption: a player hears such a sound from the
+     stale origin and cannot tell it from one in the packet. The bot gets less here, no direction where the
+     player gets a misleading one, plus the one bit that the emitter is outside its PVS.
    - A door's, plat's or button's sound admits the brush's pose. That is a stated exception: the brush's
      geometry and travel are static map knowledge, and a player who hears a plat knows it moves, though not
      exactly where it is.
    - Entity numbers identify an entity across frames, standing in for a player's visual re-identification.
+     They also tie the successive sounds of one emitter to one track (a voice told from another), but never
+     to a lump entity while it is unseen.
 3. **Its own state:**
    - Damage bearing comes from the change in `kick_angles` on frames where `STAT_FLASHES` pulses, after
      subtracting the predicted run, bob and fall terms.
@@ -192,18 +210,27 @@ still hears.
   replayed through a passive client twice: once verbatim, and once with everything the percept did not admit
   rewritten at random:
   - hidden monsters' states and brushes outside the frustum;
-  - the entities only heard: everything but what makes their sound, *their origins included* (and so their
-    velocities), moved anywhere that keeps every cue of the frame the same; a third of the draws mirror the
-    origin front to back about the listener;
+  - the entities only heard (a one-shot sound or a flash placed at them, or one of the audible makers of a
+    loop sound): everything but what makes their sound, *their origins included* (and so their velocities),
+    moved anywhere that keeps every cue of the frame the same; a third of the draws mirror the origin front
+    to back about the listener;
   - unseen `old_origin`s and packet membership;
   - injected unpositioned sounds from out of earshot.
   The two beliefs must have identical digests at every frame, and so must the decisions made from them: both
-  lane states and the scripted policy's answers. Two control runs must change the belief, so the comparison
+  lane states and the scripted policy's answers. The percept itself is held to a stricter rule, since the
+  world model sees nothing else: a redraw that keeps what is seen and admitted and every emitter's cues
+  must keep the whole percept, or the test fails as a leak (the percept would tell more about a heard
+  entity than its cue, though no belief need differ). Dropping hidden entities that no event names from the
+  packet must change nothing at all. `TestPerturberCatchesPerceptLeaks` plants such leaks (a heard
+  emitter's origin in a sound or a flash, the number of makers of a loop) and requires them to be caught.
+  Nearly every heard-only state must move: at least 90 % on each channel heard in the run (one-shot sounds,
+  flashes, loops) and of the heard-only monsters. Two control runs must change the belief, so the comparison
   is not blind: one moves the *seen* monsters by 8 units, the other mirrors the heard-only ones to the other
-  ear. Demo1's first minute holds few monsters heard out of view (16 such states), so
+  ear. Demo1's first minute holds few monsters heard out of view (17 such states), so
   `worldmodel.TestHeardOnlyOriginsInvariance` adds a synthetic fight: four soldiers moving at random around
-  a turning player, crying out and firing, with the origin of every one only heard redrawn within its cues
-  (about 450 states, 40 % of them mirrored front to back) and the same two checks.
+  a turning player, crying out and firing, two of them and a speaker making the same loop, with the origin
+  of every entity only heard redrawn within its cues (about 600 states, at least 95 % moved and 90 % on each
+  channel, half of them mirrored front to back), the same strict percept rule and the same two checks.
 - **`.dm2` differential** (`fairness.TestDifferential`). A lockstep episode is recorded the way its client saw
   it: the `.dm2` holds the server messages verbatim. The trace records every decision tick and usercmd.
   `fairness.Rebuild` then plays the recording into a fresh bot on a passive client. That test binary does not
@@ -329,9 +356,11 @@ Rejected alternatives:
     HelpComputer's kill counters are no longer `%!i(...)`.
 - **Bounded fairness claims.** The fairness claims are exactly the rules above, and the three tests check
   them. Their stated assumptions are part of the claim: the FOV, that bodies do not occlude, class priors,
-  entity numbers standing in for re-identification, that a player knows how loud a familiar sound is up close
-  (the loudness steps are judged against the sound's own attenuation) and that hearing a brush move admits its
-  pose. The pan ignores the view kick, which the client's listener vector includes.
+  entity numbers standing in for re-identification (of a seen entity, and of one voice from another), that a
+  player knows how loud a familiar sound is up close (the loudness steps are judged against the sound's own
+  attenuation), that hearing a brush move admits its pose, and that the bot can tell a sound of an emitter
+  outside its PVS (no cue) from one inside it. The pan ignores the view kick, which the client's listener
+  vector includes.
 - **Bounded determinism claims.** Determinism is claimed for lockstep runs with local backends only, on one
   machine and Go version. Nav graphs are byte-stable on one machine and Go version.
   - `game` `func_clock` with spawnflags 0 reads the wall clock. It is absent from demo1–3, so other maps would

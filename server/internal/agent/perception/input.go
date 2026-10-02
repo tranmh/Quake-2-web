@@ -25,9 +25,11 @@ type LevelStatic struct {
 	PlayerNum   int32  // svc_serverdata playernum; the own entity is PlayerNum+1
 	ServerCount int32
 	// Baselines are the svc_spawnbaseline states, in entity number order.
-	// They carry each entity's spawn state (model and origin), which is map
-	// knowledge: the entity lump has the same information. The world model
-	// uses them only to tie lump entities to entity numbers.
+	// They carry each entity's spawn state (model and origin), which the
+	// entity lump also has. The server sends them for every entity, seen or
+	// not, so the world model uses them only to tie lump entities to the
+	// entity numbers of entities it has seen (and items and lasers), never
+	// to tell which lump entity a heard monster is.
 	Baselines []shared.EntityState
 }
 

@@ -121,7 +121,7 @@ func TestObservationFilter(t *testing.T) {
 	}
 	below := Cue{PanCenter, LoudNear}
 	want := []hk{{21, true, false, below, false, false}, {99, false, false, Cue{}, false, false},
-		{27, true, false, below, true, false}, {25, true, false, Cue{PanCenter, LoudFar}, false, true}}
+		{27, true, false, below, true, false}, {0, true, false, Cue{PanCenter, LoudFar}, false, true}}
 	if !reflect.DeepEqual(heard, want) {
 		t.Fatalf("heard %+v\nwant  %+v", heard, want)
 	}
@@ -147,6 +147,46 @@ func TestObservationFilter(t *testing.T) {
 	// speaker loop 25 and the flash of 22 admit only their cues
 	if got := pc.Admitted(); !reflect.DeepEqual(got, []int32{20, 24, 27}) {
 		t.Fatalf("admitted %v", got)
+	}
+}
+
+// TestLoopSoundsBlend: the mixer sums every entity making the same loop
+// sound into one channel (S_AddLoopSounds), so a loop is heard once per
+// sound, with the cue of the blend and without an entity number: two
+// speakers left and right at the same distance sound like one ahead or
+// behind, and how many make it does not show. A brush entity's loop keeps
+// its entity (its pose is admitted: the stated exception).
+func TestLoopSoundsBlend(t *testing.T) {
+	p := newFloorPerceiver(t)
+	loops := func(ents ...shared.EntityState) []Hearing {
+		in := floorInput()
+		in.Entities = append([]shared.EntityState{{Number: 1, ModelIndex: 255, Origin: Vec3{0, 0, 24}, Solid: solidStd}}, ents...)
+		in.Events = Events{}
+		return p.Perceive(&in).Heard
+	}
+	left := shared.EntityState{Number: 30, Sound: 2, Origin: Vec3{0, 150, 46}}
+	right := shared.EntityState{Number: 31, Sound: 2, Origin: Vec3{0, -150, 46}}
+	h := loops(left)
+	if len(h) != 1 || h[0].Num != 0 || h[0].Seen || !h[0].Loop || h[0].Cue != (Cue{PanHardLeft, LoudNear}) {
+		t.Fatalf("one speaker on the left: %+v", h)
+	}
+	h = loops(left, right)
+	if len(h) != 1 || h[0].Num != 0 || h[0].Cue != (Cue{PanCenter, LoudNear}) {
+		t.Fatalf("speakers left and right: %+v", h)
+	}
+	far := right
+	far.Origin = Vec3{0, -400, 46}
+	if h = loops(left, far); len(h) != 1 || h[0].Cue.Pan != PanLeft {
+		t.Fatalf("a near speaker on the left and a farther one on the right: %+v", h)
+	}
+	other := right
+	other.Sound = 1 // another sound: another channel
+	if h = loops(left, other); len(h) != 2 || h[0].Index != 1 || h[1].Index != 2 || h[0].Num != 0 || h[1].Num != 0 {
+		t.Fatalf("two different loops: %+v", h)
+	}
+	door := shared.EntityState{Number: 27, ModelIndex: 2, Solid: 31, Sound: 3}
+	if h = loops(door, left); len(h) != 2 || h[0].Num != 27 || h[0].Mover == nil || h[1].Num != 0 {
+		t.Fatalf("a door under way and a speaker: %+v", h)
 	}
 }
 

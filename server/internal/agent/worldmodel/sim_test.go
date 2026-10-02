@@ -23,6 +23,7 @@ const (
 	sSight = 2
 	sGib   = 3
 	sDoor  = 4
+	sLoop  = 5 // set by the tests that use it
 
 	solidStd = 8290 // (-16 -16 -24) (16 16 32)
 )

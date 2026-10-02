@@ -32,7 +32,9 @@ const (
 
 // killOrder returns the monster of kill step p as the bot knows it: where
 // it was last seen (its spawn origin before), or where hearing places it
-// when it was heard since from where that disagrees with.
+// when it was heard since from where that disagrees with. A monster never
+// seen has no track here (the world model ties a track to its lump entity
+// only once seen): the step goes for its spawn origin.
 func (x *Executor) killOrder(p *plan) *KillOrder {
 	k := &KillOrder{Lump: p.ent, Class: p.class, Pos: x.spawnCenter(p)}
 	if t := x.killTrack(p); t != nil {
@@ -66,9 +68,9 @@ func boxCenter(t *worldmodel.Track, o Vec3) Vec3 {
 }
 
 // killTrack finds the track of kill step p's monster: the one the world
-// model tied to its lump entity (by class and spawn origin at level
-// entry), else the nearest track of its class near its spawn origin that
-// is tied to no lump entity.
+// model tied to its lump entity (by class and spawn origin at level entry,
+// once seen), else the nearest track of its class near its spawn origin
+// that is tied to no lump entity.
 func (x *Executor) killTrack(p *plan) *worldmodel.Track {
 	b := x.belief
 	if b == nil {

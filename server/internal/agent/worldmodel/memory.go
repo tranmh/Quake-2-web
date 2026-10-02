@@ -92,8 +92,11 @@ type lumpMatch struct {
 // spawn origin. An entity's baseline is its state two frames after the
 // level started: items dropped to the floor (their x and y match the lump
 // exactly, z lies at most a drop below), monsters dropped too and may have
-// taken their first steps. Pairs are assigned nearest first. Lump knowledge
-// and baselines are both static map data; no frame state is used.
+// taken their first steps. Pairs are assigned nearest first. No frame state
+// is used. The baselines cover every entity, seen or not (svc_spawnbaseline),
+// so a track takes its lump entity from this match only once it is seen
+// (actorFor, seeActor): which of a family's monsters a sound comes from is
+// not something a player can tell.
 func matchLump(m *mapdata.Map, baselines []shared.EntityState, cls *perception.Classifier) lumpMatch {
 	lm := lumpMatch{numToLump: map[int32]int{}, lumpToNum: map[int]int32{}}
 	byClassname := map[string][]int{}

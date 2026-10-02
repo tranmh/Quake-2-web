@@ -122,28 +122,140 @@ func TestHitNarrowsTheEar(t *testing.T) {
 	}
 }
 
-// TestEarPrefersTheSpawnThatAgrees: a monster never seen, tied to a lump
-// entity, is placed at that entity's spawn origin (static map knowledge)
-// while what is heard agrees with it, and by the cue alone once it does not.
+// withLump gives the sim's level an entity lump (static map knowledge)
+// and baselines (which tie lump entities to entity numbers): Reset before
+// the first step.
+func (s *sim) withLump(ents []mapdata.Entity, baselines []shared.EntityState) {
+	for i := range ents {
+		ents[i].Index = i
+	}
+	s.w.Reset(Level{Key: LevelKey{Map: "floor"}, CM: floorCM(s.t), Map: &mapdata.Map{Entities: ents}})
+	s.level.Baselines = baselines
+}
+
+// TestEarPrefersTheSpawnThatAgrees: a monster never seen is placed at a
+// spawn origin of its family (static map knowledge) when that is the only
+// one what is heard agrees with, at hearing's stand-in when several or
+// none agree, and never at the spawn of a monster seen elsewhere.
 func TestEarPrefersTheSpawnThatAgrees(t *testing.T) {
-	s := newSim(t)
 	spawn := Vec3{0, 300, 24} // on the left
+	lump := func(extra ...mapdata.Entity) []mapdata.Entity {
+		return append([]mapdata.Entity{{Classname: "worldspawn"},
+			{Classname: "monster_soldier", Origin: spawn},
+			{Classname: "monster_gunner", Origin: Vec3{-20, 310, 24}},               // on the left too: another family
+			{Classname: "monster_soldier_ss", Origin: Vec3{0, -300, 24}}}, extra...) // on the right
+	}
+	s := newSim(t)
+	s.withLump(lump(), nil)
 	s.ents = []shared.EntityState{voiceAt(30, 90, 320)}
 	s.sound(sSight, 30)
 	s.step()
-	s.w.level.Map = &mapdata.Map{Entities: []mapdata.Entity{{Index: 0}, {Index: 1, Classname: "monster_soldier", Origin: spawn}}}
-	for _, a := range s.w.actors {
-		a.Lump = 1
+	if tr := s.track("e1"); !tr.Ear.AtSpawn || tr.Loc != spawn || tr.LocSeen || tr.PosKnown || tr.Lump != -1 {
+		t.Fatalf("heard where the only soldier spawn on the left is: %+v", tr)
 	}
+	s.ents = []shared.EntityState{voiceAt(30, -150, 320)} // now behind on the right: the soldier_ss spawn there
 	s.sound(sSight, 30)
 	s.step()
-	if tr := s.track("e1"); !tr.Ear.AtSpawn || tr.Loc != spawn || tr.LocSeen || tr.PosKnown {
-		t.Fatalf("heard where it spawns: %+v", tr)
+	if tr := s.track("e1"); !tr.Ear.AtSpawn || tr.Loc != (Vec3{0, -300, 24}) {
+		t.Fatalf("heard where the only soldier spawn on the right is: %+v", tr)
 	}
-	s.ents = []shared.EntityState{voiceAt(30, -90, 320)} // now on the right
+	s.ents = []shared.EntityState{voiceAt(30, -60, 1400)} // far on the right: no spawn sounds so far
 	s.sound(sSight, 30)
 	s.step()
-	if tr := s.track("e1"); tr.Ear.AtSpawn || tr.Loc == spawn || absf(angleDiff(tr.Ear.Yaw, -90)) > tr.Ear.Spread {
-		t.Fatalf("heard elsewhere: %+v", tr)
+	if tr := s.track("e1"); tr.Ear.AtSpawn || tr.Loc != tr.Ear.Est || tr.Ear.Loud == perception.LoudNear ||
+		absf(angleDiff(tr.Ear.Yaw, -60)) > tr.Ear.Spread {
+		t.Fatalf("heard where no spawn is: %+v", tr)
+	}
+
+	// two soldier spawns agree: the stand-in, in the arc they are in
+	two := newSim(t)
+	two.withLump(lump(mapdata.Entity{Classname: "monster_soldier_light", Origin: Vec3{-60, 330, 24}}), nil)
+	two.ents = []shared.EntityState{voiceAt(30, 90, 320)}
+	two.sound(sSight, 30)
+	two.step()
+	if tr := two.track("e1"); tr.Ear.AtSpawn || tr.Loc != tr.Ear.Est || absf(angleDiff(tr.Ear.Yaw, 90)) > tr.Ear.Spread {
+		t.Fatalf("two spawns agree: %+v", tr)
+	}
+
+	// the soldier of that spawn was seen elsewhere: its spawn is no
+	// candidate
+	seen := newSim(t)
+	seen.withLump(lump(), []shared.EntityState{{Number: 20, ModelIndex: mSoldier, SkinNum: 2, Origin: spawn}})
+	seen.ents = []shared.EntityState{soldierAt(20, Vec3{300, 0, 24})}
+	seen.ents[0].SkinNum = 2
+	seen.step()
+	if tr := seen.track("e1"); tr.Lump != 1 {
+		t.Fatalf("the soldier seen is not tied to its spawn: %+v", tr)
+	}
+	seen.ents = []shared.EntityState{{Number: 20, Origin: Vec3{300, 0, 24}}, voiceAt(30, 90, 320)}
+	seen.sound(sSight, 30)
+	seen.step()
+	if tr := seen.track("e2"); tr.Ear.AtSpawn || tr.Loc == spawn {
+		t.Fatalf("placed at the spawn of a soldier seen elsewhere: %+v", tr)
+	}
+}
+
+// TestHeardNumbersDoNotPlace: the entity number of a sound says nothing
+// about which of a family's monsters it is. Two soldiers never seen, each
+// heard near a spawn of theirs, are believed alike whether or not their
+// entity numbers are the ones the baselines tie to those spawns: swapping
+// the numbers leaves the belief the same but for the numbers.
+func TestHeardNumbersDoNotPlace(t *testing.T) {
+	spawnA, spawnB := Vec3{0, 400, 24}, Vec3{-200, -500, 24}
+	ents := func() []mapdata.Entity {
+		return []mapdata.Entity{{Classname: "worldspawn"},
+			{Classname: "monster_soldier_light", Origin: spawnA},
+			{Classname: "monster_soldier_light", Origin: spawnB}}
+	}
+	baselines := []shared.EntityState{{Number: 30, ModelIndex: mSoldier, Origin: spawnA}, {Number: 31, ModelIndex: mSoldier, Origin: spawnB}}
+	a, b := newSim(t), newSim(t)
+	a.withLump(ents(), baselines)
+	b.withLump(ents(), baselines)
+	at := []Vec3{{40, 380, 24}, {-180, -460, 24}} // X near A, Y near B
+	numA := []int32{30, 31}                       // a: the numbers the baselines give
+	numB := []int32{31, 30}                       // b: swapped
+	strip := func(bel *Belief) string {
+		c := bel.Clone()
+		for i := range c.Tracks {
+			c.Tracks[i].Num = 0
+		}
+		for i := range c.Sounds {
+			c.Sounds[i].Num = 0
+		}
+		return c.Digest()
+	}
+	atSpawn := 0
+	for frame := 0; frame < 40; frame++ {
+		for _, x := range []struct {
+			s    *sim
+			nums []int32
+		}{{a, numA}, {b, numB}} {
+			x.s.ps.ViewAngles[q2const.YAW] = float32(frame * 9) // a turn: front and back resolve
+			x.s.ents = nil
+			for k, p := range at {
+				x.s.ents = append(x.s.ents, shared.EntityState{Number: x.nums[k], Origin: p})
+				if frame%2 == k%2 {
+					x.s.sound(sSight, x.nums[k])
+				}
+			}
+			x.s.step()
+		}
+		if len(a.w.match.numToLump) != 2 {
+			t.Fatalf("the baselines tie %d numbers to the lump", len(a.w.match.numToLump))
+		}
+		if da, db := strip(a.w.Belief()), strip(b.w.Belief()); da != db {
+			t.Fatalf("frame %d: swapping the entity numbers changed the belief\n%+v\n%+v", frame, a.w.Belief().Tracks, b.w.Belief().Tracks)
+		}
+		for _, tr := range a.w.Belief().Tracks {
+			if tr.Lump != -1 {
+				t.Fatalf("a track never seen is tied to lump entity %d: %+v", tr.Lump, tr)
+			}
+			if tr.Ear.AtSpawn {
+				atSpawn++
+			}
+		}
+	}
+	if atSpawn == 0 {
+		t.Fatal("no track was ever placed at a spawn: the test shows nothing")
 	}
 }

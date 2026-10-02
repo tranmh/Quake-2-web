@@ -111,17 +111,21 @@ Each package's `doc.go` describes it in detail; this is the overview.
     client's mixer renders (`perception.Pan`: hard left, left, center, right, hard right; ahead and behind
     sound alike) and its loudness against the sound's own level (`perception.Loudness`: near, mid, far), with
     the sound's class and time. A heard explosion keeps its type and cue; a door's or plat's sound admits the
-    brush's pose.
+    brush's pose. A loop sound is the blend the mixer makes of every entity with that sound
+    (`S_AddLoopSounds`): one hearing per sound, with the cue of the sum and no entity number.
   - **Placing a track by ear** (`worldmodel/ear.go`). Each track keeps the world yaws its recent cues allow and
     narrows them with each cue within 1.5 s: a turn of the bot between two sounds tells front from back.
     `Track.Ear` holds the last cue, the arc (`Yaw` ± `Spread`, `Ambiguous` while ahead and behind both fit)
     and a stand-in `Est`: the middle of the arc at the middle distance of the loudness step.
     `Track.Loc` is where the bot believes the track is: in view its position, out of view its last position
-    seen while the sounds agree with it, otherwise `Est` (`LocSeen` false). For a monster never seen, `Est` is
-    its lump entity's spawn origin while the sounds agree with that (`Ear.AtSpawn`). A hit whose bearing the
-    view kick gives narrows the arc of the track it is attributed to. Aiming, turning, keeping away, the scan,
-    retreats, damage attribution and a kill step's look and firing position use `Loc`; the navigator's
-    obstacles and the line-of-fire checks use positions seen only.
+    seen while the sounds agree with it, otherwise `Est` (`LocSeen` false). For a monster never seen, the
+    entity lump's spawns of the voice's family that fit the sound (bearing in the arc, the same loudness step,
+    not in plain view, not the spawn of a monster seen) pick the arc, and when exactly one fits `Est` is that
+    spawn origin (`Ear.AtSpawn`). A track is tied to its lump entity (`Track.Lump`) only once seen, never by
+    the entity number of a sound, so a kill step for a monster never seen goes for its spawn origin. A hit
+    whose bearing the view kick gives narrows the arc of the track it is attributed to. Aiming, turning,
+    keeping away, the scan, retreats, damage attribution and a kill step's look and firing position use
+    `Loc`; the navigator's obstacles and the line-of-fire checks use positions seen only.
 - **Route executor** (`routeexec`).
   - Each step becomes a navigator goal. It is judged done from the belief: a mover pose, a laser gone, a
     track dead, an item taken, the inventory. A directional touch counts only while the bot faces along the
@@ -599,8 +603,10 @@ with `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide ./intern
   - `route.TestCheckedInTablesValid` and `q2nav TestPlanValidatesCheckedInTables`: the route tables against
     the pak.
   - `worldmodel.TestPerturbationInvariance` (beliefs, lane states and scripted answers unchanged when hidden
-    state and the origins of heard-only monsters are rewritten within their cues) with
-    `TestHeardOnlyOriginsInvariance` (the same for a synthetic fight full of heard monsters),
+    state and the origins of heard-only emitters are rewritten within their cues; a redraw that keeps every
+    cue must keep the whole percept) with `TestHeardOnlyOriginsInvariance` (the same for a synthetic fight
+    full of heard monsters), `TestPerturberCatchesPerceptLeaks` (planted percept leaks are caught),
+    `TestHeardNumbersDoNotPlace` (swapping two heard monsters' entity numbers changes nothing),
     `fairness.TestDifferential` and `TestImports` in every agent package.
   - `campaign.TestCampaignGod` (victory with god/notarget) and `campaign.TestCampaignScripted` (no cheats;
     under `-race` only with `Q2_AGENT_LONG=1`).
