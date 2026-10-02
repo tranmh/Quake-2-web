@@ -39,6 +39,8 @@ type Collector struct {
 	ticks  map[int]*tickAcc
 	tickEv map[int]*tickAcc
 	gate   *GateConfig
+	// config is the run's configuration (SetConfig).
+	config *RunConfig
 }
 
 type episodeAcc struct {
@@ -69,6 +71,15 @@ func (c *Collector) SetGate(cfg GateConfig) {
 	defer c.mu.Unlock()
 	g := cfg.withDefaults()
 	c.gate = &g
+}
+
+// SetConfig sets the summary's Config section: the run's configuration
+// as its run_start recorded it (the runner maps it; nil: none). The
+// collector keeps a copy.
+func (c *Collector) SetConfig(cfg *RunConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.config = cfg.clone()
 }
 
 var _ trace.Sink = (*Collector)(nil)
@@ -351,6 +362,7 @@ func (c *Collector) Summary() RunSummary {
 	defer c.mu.Unlock()
 	s := c.s
 	s.Maps = append([]string(nil), c.s.Maps...)
+	s.Config = c.config.clone()
 	s.ModelDriven = c.modelBackend && !c.scriptedOnly
 	if c.seen {
 		s.Started = time.UnixMilli(c.firstWall).UTC().Format(time.RFC3339Nano)

@@ -556,7 +556,10 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	}
 	defer er.log.close()
 	if ep == r.epFrom {
-		r.runStart = r.publishRun(trace.TypeRunStart, r.runStartBody())
+		rs := r.runStartBody()
+		r.runStart = r.publishRun(trace.TypeRunStart, rs)
+		// run.json's config section, as Summarize derives it from the trace
+		r.col.SetConfig(runConfig(rs))
 	}
 
 	// the backend, the session and the bot's policy

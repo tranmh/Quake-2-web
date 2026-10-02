@@ -16,6 +16,33 @@
   "episode_seeds": [
     78
   ],
+  "config": {
+    "backend": "jev",
+    "model_backend": true,
+    "model": "jev-1.13",
+    "session": "lockstep",
+    "campaign": "demo",
+    "maps": [
+      "demo1",
+      "demo2",
+      "demo3"
+    ],
+    "stop_after": 3,
+    "skill": 1,
+    "seed": 77,
+    "episodes": 1,
+    "sim_latency": "212ms",
+    "sim_latency_ms": 212,
+    "budget": {
+      "usd": 2,
+      "on_exhausted": "fallback"
+    },
+    "max_deaths": 25,
+    "level_timeout": "1h0m0s",
+    "min_model_share": 0.7,
+    "trace": "full",
+    "record": true
+  },
   "model_driven": false,
   "started": "2026-10-01T09:00:00.01Z",
   "wall_ms": 410,

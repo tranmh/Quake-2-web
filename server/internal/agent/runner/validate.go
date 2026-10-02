@@ -163,6 +163,12 @@ func Validate(dir string, opt ValidateOptions) (*ValidateReport, error) {
 	}
 	rep.Summary = s
 	if runJSON != nil {
+		if runJSON.Config == nil && s.Config != nil {
+			// a run.json written before the config section existed: the
+			// rest must still match
+			rep.warnf("%s has no config section (written before it existed; q2bot summarize adds it)", RunFile)
+			s.Config = nil
+		}
 		want, _ := trace.Canonical(s)
 		got, _ := trace.Canonical(runJSON)
 		if !bytes.Equal(want, got) {

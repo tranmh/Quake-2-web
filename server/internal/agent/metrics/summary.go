@@ -35,6 +35,10 @@ type RunSummary struct {
 	Seed    uint64   `json:"seed"`
 	// EpisodeSeeds are the seeds of the episodes in order.
 	EpisodeSeeds []uint64 `json:"episode_seeds,omitempty"`
+	// Config is the run's configuration as its run_start recorded it
+	// (Collector.SetConfig; nil in a run.json written before the section
+	// existed, which still validates).
+	Config *RunConfig `json:"config,omitempty"`
 	// ModelDriven is false unless a model backend answered for the whole
 	// run (a budget switching to scripted-only clears it). With a gate
 	// (Collector.SetGate) it is the gate's verdict.
@@ -58,6 +62,114 @@ type RunSummary struct {
 	Errors    int              `json:"errors"`
 	LastError string           `json:"last_error,omitempty"`
 	Episodes  []EpisodeSummary `json:"episodes"`
+}
+
+// RunConfig is the configuration a run was played with (run.json
+// "config"), as its run_start event recorded it: what tells two runs'
+// numbers apart (a clean or a noisy mock, the simulated latency, the
+// watchdogs, the budgets) and what a rerun needs. It holds no credential:
+// the API key is never part of a run's configuration.
+type RunConfig struct {
+	Backend string `json:"backend"`
+	// ModelBackend: the backend queries a model (jev, mock).
+	ModelBackend bool   `json:"model_backend"`
+	Model        string `json:"model,omitempty"` // pinned model id
+	Session      string `json:"session"`         // lockstep | inproc
+	// Campaign names the route tables; Maps are the visits played and
+	// StopAfter how many (0: the whole campaign, to its terminal).
+	Campaign  string   `json:"campaign,omitempty"`
+	Maps      []string `json:"maps,omitempty"`
+	StopAfter int      `json:"stop_after,omitempty"`
+	Skill     int      `json:"skill"`
+	// Seed is the run's seed: episode i plays with Seed+i.
+	Seed     uint64 `json:"seed"`
+	Episodes int    `json:"episodes"`
+	// SimLatency is a lockstep run's simulated backend latency as
+	// q2bot -sim-latency reads it ("212ms", "80ms,150ms", "0s" for none)
+	// and SimLatencyMs its mean; both are empty in a realtime session.
+	SimLatency   string  `json:"sim_latency,omitempty"`
+	SimLatencyMs float64 `json:"sim_latency_ms,omitempty"`
+	// Mock is the fake Jev server's policy and faults (backend mock).
+	Mock *MockConfig `json:"mock,omitempty"`
+	// Budget is the run's own budget (nil: none). A process-wide account
+	// limit (q2bot -account-qps, q2server's Q2_JEV_MAX_QPS) is not
+	// recorded.
+	Budget *BudgetConfig `json:"budget,omitempty"`
+	// MaxDeaths (per level; -1: no cap), LevelTimeout and EpisodeTimeout
+	// are the campaign watchdogs the run set (empty: the campaign's
+	// defaults).
+	MaxDeaths      int    `json:"max_deaths,omitempty"`
+	LevelTimeout   string `json:"level_timeout,omitempty"`
+	EpisodeTimeout string `json:"episode_timeout,omitempty"`
+	// MinModelShare and MaxStaleRate are the gate thresholds the run asked
+	// for (0: the defaults; Gate holds the ones applied).
+	MinModelShare float64 `json:"min_model_share,omitempty"`
+	MaxStaleRate  float64 `json:"max_stale_rate,omitempty"`
+	// EntryCommands are the client commands sent at every level entry
+	// (cheats such as god: a test run, not a benchmark).
+	EntryCommands []string `json:"entry_commands,omitempty"`
+	// Trace is the decision events' state detail (full, digest,
+	// every:N); Record whether a .dm2 was written per level attempt.
+	Trace  string `json:"trace,omitempty"`
+	Record bool   `json:"record"`
+	// ReplayTrace is the recording a replay backend answered from.
+	ReplayTrace string `json:"replay_trace,omitempty"`
+}
+
+// MockConfig is the configuration of a mock run's fake Jev server.
+type MockConfig struct {
+	// Policy is "noisy" or "scripted" (a clean model); empty in a trace
+	// recorded before the policy was.
+	Policy string `json:"policy,omitempty"`
+	// Noise is the noisy policy's noise in effect (nil for the scripted
+	// policy).
+	Noise *MockNoise `json:"noise,omitempty"`
+	// Faults are the server's injected faults as run_start records them
+	// ("seed=5 server=0.02 missing=0.02 ...").
+	Faults string `json:"faults,omitempty"`
+}
+
+// MockNoise is the noisy mock policy's noise in effect (q2bot -mock-noise,
+// -mock-swap, -mock-lowconf; 0: that effect is off).
+type MockNoise struct {
+	// Noise is the largest share of probability mass spread at random.
+	Noise float64 `json:"noise"`
+	// Swap is the chance that the top two options swap.
+	Swap float64 `json:"swap"`
+	// LowConfidence is the chance of a confidence in [0.05, 0.3].
+	LowConfidence float64 `json:"low_confidence"`
+}
+
+// BudgetConfig is a run's budget (q2bot -budget-usd, -budget-queries,
+// -max-qps, -on-exhausted).
+type BudgetConfig struct {
+	USD         float64 `json:"usd,omitempty"`
+	Queries     int     `json:"queries,omitempty"`
+	MaxQPS      float64 `json:"max_qps,omitempty"`
+	OnExhausted string  `json:"on_exhausted,omitempty"`
+}
+
+// clone returns a deep copy of c (nil for nil).
+func (c *RunConfig) clone() *RunConfig {
+	if c == nil {
+		return nil
+	}
+	d := *c
+	d.Maps = append([]string(nil), c.Maps...)
+	d.EntryCommands = append([]string(nil), c.EntryCommands...)
+	if c.Mock != nil {
+		m := *c.Mock
+		if c.Mock.Noise != nil {
+			n := *c.Mock.Noise
+			m.Noise = &n
+		}
+		d.Mock = &m
+	}
+	if c.Budget != nil {
+		b := *c.Budget
+		d.Budget = &b
+	}
+	return &d
 }
 
 // EpisodeSummary is one episode (episode.json).

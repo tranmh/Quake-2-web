@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"quake2web/server/internal/agent/budget"
+	"quake2web/server/internal/agent/metrics"
 	"quake2web/server/internal/agent/trace"
 )
 
@@ -96,4 +97,65 @@ func gateFromRunStart(rs trace.RunStart) (minShare, maxStale float64) {
 	minShare, _ = strconv.ParseFloat(rs.Config[keyMinModelShare], 64)
 	maxStale, _ = strconv.ParseFloat(rs.Config[keyMaxStaleRate], 64)
 	return minShare, maxStale
+}
+
+// runConfig maps a run_start to run.json's config section
+// (metrics.RunConfig). The runner and Summarize both derive it from the
+// run's run_start, so a run.json and what its traces recompute agree. A
+// trace recorded before a key existed leaves that part empty; a value
+// that does not parse is left out too (the trace keeps it verbatim).
+func runConfig(rs trace.RunStart) *metrics.RunConfig {
+	m := rs.Config
+	c := &metrics.RunConfig{Backend: rs.Backend, ModelBackend: rs.ModelBackend, Model: rs.Model, Session: rs.Session,
+		Campaign: m[keyCampaign], Maps: append([]string(nil), rs.Maps...), Skill: rs.Skill, Seed: rs.Seed,
+		Episodes: max(rs.Episodes, 1), SimLatency: m[keySimLatency], SimLatencyMs: rs.SimLatencyMs,
+		LevelTimeout: m[keyLevelTimeout], EpisodeTimeout: m[keyEpisodeTimeout], Trace: m[keyTrace],
+		Record: m[keyRecord] == "true", ReplayTrace: m[keyReplayTrace]}
+	c.StopAfter, _ = strconv.Atoi(m[keyStopAfter])
+	c.MaxDeaths, _ = strconv.Atoi(m[keyMaxDeaths])
+	c.MinModelShare, _ = strconv.ParseFloat(m[keyMinModelShare], 64)
+	c.MaxStaleRate, _ = strconv.ParseFloat(m[keyMaxStaleRate], 64)
+	if s := m[keyEntryCommands]; s != "" {
+		c.EntryCommands = strings.Split(s, ";")
+	}
+	if rs.Backend == BackendMock {
+		c.Mock = &metrics.MockConfig{Faults: m[keyMockFaults]}
+		c.Mock.Policy, c.Mock.Noise = parseMockPolicy(m[keyMockPolicy])
+	}
+	b := metrics.BudgetConfig{USD: rs.BudgetUSD, OnExhausted: m[keyBudgetOnExhausted]}
+	b.Queries, _ = strconv.Atoi(m[keyBudgetQueries])
+	b.MaxQPS, _ = strconv.ParseFloat(m[keyBudgetMaxQPS], 64)
+	if b != (metrics.BudgetConfig{}) {
+		c.Budget = &b
+	}
+	return c
+}
+
+// parseMockPolicy reads run_start's mock.policy (mockPolicyDesc: "scripted",
+// or "noisy noise=0.3 swap=0.1 lowconf=0.1"): the policy and, for the
+// noisy one, its noise (nil when a value is missing or does not parse).
+func parseMockPolicy(desc string) (string, *metrics.MockNoise) {
+	f := strings.Fields(desc)
+	if len(f) == 0 {
+		return "", nil
+	}
+	if f[0] != MockPolicyNoisy {
+		return f[0], nil
+	}
+	vals := map[string]float64{}
+	for _, kv := range f[1:] {
+		k, v, ok := strings.Cut(kv, "=")
+		x, err := strconv.ParseFloat(v, 64)
+		if !ok || err != nil {
+			return f[0], nil
+		}
+		vals[k] = x
+	}
+	noise, ok1 := vals["noise"]
+	swap, ok2 := vals["swap"]
+	low, ok3 := vals["lowconf"]
+	if !ok1 || !ok2 || !ok3 {
+		return f[0], nil
+	}
+	return f[0], &metrics.MockNoise{Noise: noise, Swap: swap, LowConfidence: low}
 }

@@ -91,9 +91,11 @@ type SummarizeOptions struct {
 }
 
 // Summarize recomputes a run's summary (run.json) from its events, with
-// the provenance gate of its run_start (or the options').
+// the provenance gate of its run_start (or the options') and the config
+// section its run_start describes.
 func Summarize(events []trace.Event, opt SummarizeOptions) (metrics.RunSummary, error) {
 	minShare, maxStale := opt.MinModelShare, opt.MaxStaleRate
+	var cfg *metrics.RunConfig
 	for i := range events {
 		if events[i].Type != trace.TypeRunStart {
 			continue
@@ -109,10 +111,12 @@ func Summarize(events []trace.Event, opt SummarizeOptions) (metrics.RunSummary, 
 		if maxStale == 0 {
 			maxStale = s
 		}
+		cfg = runConfig(rs)
 		break
 	}
 	c := metrics.NewCollector()
 	c.SetGate(metrics.GateConfig{MinModelShare: minShare, MaxStaleRate: maxStale})
+	c.SetConfig(cfg)
 	var errs []error
 	for _, e := range events {
 		if err := c.Add(e); err != nil {

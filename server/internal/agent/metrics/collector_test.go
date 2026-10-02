@@ -114,8 +114,18 @@ func publish(evs []trace.Event, sinks ...trace.Sink) []trace.Event {
 	return out
 }
 
+// goldenConfig is the config section of the golden run (the runner maps
+// it from run_start; here it is set directly).
+func goldenConfig() *RunConfig {
+	return &RunConfig{Backend: "jev", ModelBackend: true, Model: "jev-1.13", Session: "lockstep", Campaign: "demo",
+		Maps: []string{"demo1", "demo2", "demo3"}, StopAfter: 3, Skill: 1, Seed: 77, Episodes: 1, SimLatency: "212ms",
+		SimLatencyMs: 212, Budget: &BudgetConfig{USD: 2, OnExhausted: "fallback"}, MaxDeaths: 25, LevelTimeout: "1h0m0s",
+		MinModelShare: 0.7, Trace: "full", Record: true}
+}
+
 func TestSummaryGolden(t *testing.T) {
 	c := NewCollector()
+	c.SetConfig(goldenConfig())
 	publish(run(), c)
 	s := c.Summary()
 	b, err := json.MarshalIndent(s, "", "  ")
@@ -159,6 +169,44 @@ func TestSummaryGolden(t *testing.T) {
 	}
 	if s.Errors != 1 || s.Budget == nil || !s.Budget.ScriptedOnly || s.GameMs != 70000 || s.Events != len(run()) {
 		t.Fatalf("errors %d budget %+v game %d events %d", s.Errors, s.Budget, s.GameMs, s.Events)
+	}
+	if s.Config == nil || s.Config.Backend != "jev" || s.Config.Budget == nil || s.Config.Budget.USD != 2 {
+		t.Fatalf("config %+v", s.Config)
+	}
+}
+
+// TestSummaryConfig: the config section is a copy of what SetConfig got,
+// isolated both ways, and absent (omitted from run.json) without one.
+func TestSummaryConfig(t *testing.T) {
+	c := NewCollector()
+	publish(run(), c)
+	if s := c.Summary(); s.Config != nil {
+		t.Fatalf("config without SetConfig: %+v", s.Config)
+	}
+	if b, _ := json.Marshal(c.Summary()); bytes.Contains(b, []byte(`"config"`)) {
+		t.Fatalf("run.json without a config has a config section: %s", b)
+	}
+	cfg := goldenConfig()
+	cfg.EntryCommands = []string{"god"}
+	cfg.Mock = &MockConfig{Policy: "noisy", Noise: &MockNoise{Noise: 0.3, Swap: 0.1, LowConfidence: 0.1}, Faults: "seed=5"}
+	c.SetConfig(cfg)
+	cfg.Maps[0], cfg.EntryCommands[0], cfg.Mock.Noise.Swap, cfg.Budget.USD = "base1", "notarget", 0.9, 9
+	s := c.Summary()
+	if g := s.Config; g.Maps[0] != "demo1" || g.EntryCommands[0] != "god" || g.Mock.Noise.Swap != 0.1 || g.Budget.USD != 2 {
+		t.Fatalf("SetConfig kept the caller's config: %+v", g)
+	}
+	s.Config.Maps[0], s.Config.Mock.Policy = "base2", "scripted"
+	if g := c.Summary().Config; g.Maps[0] != "demo1" || g.Mock.Policy != "noisy" {
+		t.Fatalf("Summary shares the collector's config: %+v", g)
+	}
+	b, _ := json.Marshal(c.Summary().Config)
+	const want = `"mock":{"policy":"noisy","noise":{"noise":0.3,"swap":0.1,"low_confidence":0.1},"faults":"seed=5"}`
+	if !bytes.Contains(b, []byte(want)) {
+		t.Fatalf("mock config %s, want %s", b, want)
+	}
+	c.SetConfig(nil)
+	if s := c.Summary(); s.Config != nil {
+		t.Fatalf("SetConfig(nil) left %+v", s.Config)
 	}
 }
 
@@ -263,6 +311,7 @@ func TestSummaryEdgeCases(t *testing.T) {
 
 func TestWriteJSON(t *testing.T) {
 	c := NewCollector()
+	c.SetConfig(goldenConfig())
 	publish(run(), c)
 	path := filepath.Join(t.TempDir(), "run.json")
 	if err := WriteJSON(path, c.Summary()); err != nil {
