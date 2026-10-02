@@ -174,6 +174,23 @@ func (p *policy) budgetEvent(st budget.State) {
 	}
 }
 
+// finalBudgetEvent publishes the budget's state at the episode's end, so
+// the last budget event (run.json's budget) carries the spend of every
+// result collected since the level last changed.
+func (p *policy) finalBudgetEvent() {
+	if p.gate == nil || !p.budgetSeen {
+		return
+	}
+	st := p.gate.Budget().State()
+	limit := st.LimitUSD
+	if limit == 0 {
+		limit = st.DailyLimitUSD
+	}
+	hz, only := st.Level()
+	p.pub.publish(trace.TypeBudget, trace.Budget{SpentUSD: st.SpentUSD, LimitUSD: limit, RateHz: hz, ScriptedOnly: only,
+		Reason: st.Reason})
+}
+
 // onRecord publishes a collected result (and charges it to the budget).
 func (p *policy) onRecord(r *decide.Record) {
 	if p.gate != nil {

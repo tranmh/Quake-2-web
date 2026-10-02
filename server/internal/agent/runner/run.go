@@ -654,6 +654,7 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 		Now:            cfg.Now,
 	})
 	wall := cfg.Now().Sub(start).Milliseconds()
+	pol.finalBudgetEvent()
 	er.pub.publish(trace.TypeProvenance, pol.provenance())
 	stats := pol.Stats()
 	_ = closePolicy()

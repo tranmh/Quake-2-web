@@ -16,6 +16,7 @@ import (
 	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/backend/jevtest"
 	"quake2web/server/internal/agent/backend/scripted"
+	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/decide"
 	"quake2web/server/internal/agent/metrics"
 	"quake2web/server/internal/agent/session/sessiontest"
@@ -382,4 +383,39 @@ func TestRunJevKeyNeverWritten(t *testing.T) {
 		}
 	}
 	t.Logf("%d files, %d log bytes, %d api calls: no key", files, logs.Len(), s.API.Calls)
+}
+
+// TestRunJevBudgetSpentFinal runs the jev client on a loopback fake under a
+// USD budget the run degrades along: run.json's budget must report the
+// whole spend (the API's cost), not the spend when the fast lane's rate
+// last changed. A live run once reported $0.50 of $0.61 spent.
+func TestRunJevBudgetSpentFinal(t *testing.T) {
+	t.Parallel()
+	fs := sessiontest.DemoFS(t)
+	srv := jevtest.NewServer(jevtest.Options{APIKey: "sk-test", Policy: jevtest.NewScripted(scripted.Config{Seed: 1})})
+	defer srv.Close()
+	env := map[string]string{jev.EnvAPIKey: "sk-test", jev.EnvBaseURL: srv.URL(), jev.EnvAllowCustomBase: "1"}
+	run := func(lim budget.Limits) *metrics.RunSummary {
+		t.Helper()
+		_, s, err := runDemo1(t, fs, Config{Backend: BackendJev, Seed: 1, Budget: lim,
+			Jev: jev.FromEnv(func(k string) string { return env[k] }), EpisodeTimeout: gameCap(8 * time.Second)})
+		if s == nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	free := run(budget.Limits{})
+	if free.API.CostUSD <= 0 {
+		t.Fatalf("the fake reports no cost: %+v", free.API)
+	}
+	// a cap the run degrades on (past half of it) but does not exhaust: it
+	// keeps spending at the lower rate after the last budget event
+	s := run(budget.Limits{USD: 1.6 * free.API.CostUSD})
+	if s.Budget == nil || s.Budget.RateHz >= budget.DefaultFullHz || s.Budget.ScriptedOnly {
+		t.Fatalf("the budget never degraded: %+v", s.Budget)
+	}
+	if d := s.Budget.SpentUSD - s.API.CostUSD; d > 1e-9 || d < -1e-9 {
+		t.Fatalf("budget spent $%.9f, api cost $%.9f", s.Budget.SpentUSD, s.API.CostUSD)
+	}
+	t.Logf("spent $%.9f of $%.9f at %g Hz", s.Budget.SpentUSD, s.Budget.LimitUSD, s.Budget.RateHz)
 }
