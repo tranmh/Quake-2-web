@@ -59,6 +59,17 @@ const (
 	// another spot (a corner, a gun blocked by the wall next to it).
 	repositionAfter = 1500
 	repositionFar   = 900
+	// keepOffDrain and keepOffMelee: a monster that fights with a drain
+	// (it reaches 256 units) or only in melee (80), in view and nearer
+	// than these, is backed away from at once whatever the intent's
+	// movement (keepOff): the policy's answer comes a latency late, and a
+	// charging monster covers 50 to 100 units meanwhile.
+	keepOffDrain = 304
+	keepOffMelee = 160
+	// lowHealth: under it the bot does not advance on a monster in view
+	// that attacks it within lowHealthNear; it sidesteps instead.
+	lowHealth     = 25
+	lowHealthNear = 600
 	// fightBudget is how long (ms) the bot fights one target before it
 	// disengages for disengageFor (the target out of reach, a stalemate):
 	// it goes on with its objective, shooting on the move.
@@ -225,6 +236,21 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 		f.repositioning = true
 		f.noteReflex("reposition")
 	}
+	from := tr.Pos
+	switch k := b.keepOff(bel); {
+	case k != nil && m != control.MoveRetreat:
+		m, from = control.MoveRetreat, k.Pos
+		b.moveBy = "keep_off"
+	case k != nil:
+		from = k.Pos
+	case m == control.MoveAdvance && bel.Self.Health < lowHealth && tr.Visible && tr.Awareness == worldmodel.Attacking &&
+		dist3(bel.Self.Origin, tr.Pos) < lowHealthNear:
+		m = control.MoveStrafeRight
+		if f.strafe.Current() < 0 {
+			m = control.MoveStrafeLeft
+		}
+		b.moveBy = "low_health"
+	}
 	switch m {
 	case control.MoveAdvance:
 		if tr.Visible && tr.Shootable && dist3(bel.Self.Eye, tr.Pos) < advanceStop(bel.Self.Weapon) {
@@ -246,7 +272,7 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 		}
 	case control.MoveRetreat:
 		if f.goal != goalRetreat || b.now-f.goalAt > retreatRepath || b.navDone() {
-			if !b.retreatGoal(bel, tr.Pos) {
+			if !b.retreatGoal(bel, from) {
 				m = control.MoveStrafeRight // nowhere to go: sidestep instead
 				if f.strafe.Current() < 0 {
 					m = control.MoveStrafeLeft
@@ -267,6 +293,37 @@ func (b *Bot) fightTick(bel *worldmodel.Belief, tr *worldmodel.Track) {
 		f.repositioning = false
 	}
 	f.move = m
+}
+
+// keepOff returns the nearest monster in view the bot must back away
+// from at once: alive, fighting with a drain or only in melee, and within
+// keepOffDrain or keepOffMelee of the bot (nil: none).
+func (b *Bot) keepOff(bel *worldmodel.Belief) *worldmodel.Track {
+	var best *worldmodel.Track
+	bd := float32(0)
+	for i := range bel.Tracks {
+		t := &bel.Tracks[i]
+		if t.Kind != perception.KindMonster.String() || t.Life != worldmodel.LifeAlive || !t.Visible || !t.PosKnown {
+			continue
+		}
+		c := b.classes.ByName(t.Class)
+		if c == nil {
+			continue
+		}
+		reach := float32(0)
+		switch c.Weapon {
+		case perception.WeaponDrain:
+			reach = keepOffDrain
+		case perception.WeaponMelee:
+			reach = keepOffMelee
+		default:
+			continue
+		}
+		if d := dist3(bel.Self.Origin, t.Pos); d < reach && (best == nil || d < bd) {
+			best, bd = t, d
+		}
+	}
+	return best
 }
 
 // advanceStop is the distance from the target under which an advance stops

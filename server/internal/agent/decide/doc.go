@@ -20,11 +20,16 @@
 // once) → Scheduler.Submit → Scheduler.Collect → Arbiter.Apply →
 // Arbiter.Intent.
 //
-// The arbiter does not trust a model's answers one at a time: per field it
+// The arbiter does not trust a model's answers blindly: per field it
 // accumulates them as evidence, each weighted by its confidence and
 // decayed with its age, and decides from the posterior (see
 // ArbiterConfig.Tau); it falls back to the scripted policy only when the
-// evidence is weak or every answer has expired.
+// evidence is weak or every answer has expired. How much one answer
+// counts it learns from the model: per field it estimates how often the
+// model's confident answers are lone swaps, takes a model that does not
+// blip at its newest answer (accumulation would only delay it) and makes
+// a noisy one's change wait for confirming answers (ArbiterConfig.Confirm,
+// TrustBelow).
 //
 // Fairness: everything here reads only the belief (worldmodel), the bot's
 // own state inside it, and static map knowledge (the collision model for

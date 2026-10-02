@@ -35,8 +35,10 @@ const (
 // stale, default, or reflex when the bot's reflexes, watchdogs or its
 // route overrode the decided value), Confidence the answer's, and
 // Fallback why the model's answer was not used (no_answer, not_asked,
-// missing, invalid, unknown_option, low_confidence, ttl, error, timeout,
-// gone, held) or, for a reflex, which override:
+// missing, invalid, unknown_option, weak (the accumulated evidence is too
+// weak or split; traces before evidence accumulation carry
+// low_confidence instead), ttl, error, timeout, gone, held) or, for a
+// reflex, which override:
 //
 //   - mode: route_kill (the route's kill step makes the bot fight its
 //     monster), explore_watchdog (the campaign's explore burst),
@@ -53,7 +55,10 @@ const (
 //   - movement, in a fight only: reposition (backed off after standing
 //     still), in_range (an advance within the weapon's range strafes),
 //     no_return (an advance down a one-way drop holds), no_cover (a
-//     retreat with nowhere to go strafes).
+//     retreat with nowhere to go strafes), keep_off (a drain or melee
+//     monster in view within its reach is backed away from at once),
+//     low_health (an advance on an attacker in view under 25 health
+//     sidesteps).
 //   - weapon: dry (the weapon in hand ran dry), splash (a splash weapon
 //     at a target or a route shoot goal too close), unusable (the decided
 //     weapon is not held or has no ammo: keep).
@@ -100,7 +105,9 @@ type Tick struct {
 	// barrel, splash_close, splash_wall; a route shoot goal's trigger held
 	// too), reposition (backed off after standing still in a fight),
 	// disengage (the fight budget ran out), trapped_kill (typed "kill" in
-	// a pit).
+	// a pit), wedged_kill (typed "kill" wedged: on one spot for 120 s
+	// while the navigator kept recovering, or for 60 s off the nav graph),
+	// stalled_kill (typed "kill" after 250 s without progress).
 	Reflexes []string `json:"reflexes,omitempty"`
 	// Requests are the requests built this tick, by Req (submitted or
 	// dropped at the in-flight cap).

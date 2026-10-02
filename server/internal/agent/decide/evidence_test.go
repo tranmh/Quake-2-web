@@ -10,6 +10,11 @@ import (
 	"quake2web/server/internal/agent/worldmodel"
 )
 
+// untrusted is the configuration of an arbiter that never takes the
+// model at its word (ArbiterConfig.TrustBelow): the accumulation tests,
+// whose consistent answers would otherwise make the model trusted.
+func untrusted() ArbiterConfig { return ArbiterConfig{TrustBelow: -1} }
+
 // noisyChoice is a model-like answer: most of the mass on key, the rest
 // spread over the other options of q.
 func noisyChoice(q *Question, key string, top, conf float64) Answer {
@@ -55,7 +60,7 @@ func TestEvidenceSwapDoesNotFlip(t *testing.T) {
 	good := map[string]string{QTarget: "e1", QFirePolicy: "fire_when_aligned", QMovement: "advance"}
 	swap := map[string]string{QTarget: "e2", QFirePolicy: "hold", QMovement: "retreat"}
 	for _, accumulate := range []bool{true, false} {
-		cfg := ArbiterConfig{}
+		cfg := untrusted()
 		if !accumulate {
 			cfg.Tau = latestOnly()
 		}
@@ -89,7 +94,7 @@ func TestEvidenceSwapDoesNotFlip(t *testing.T) {
 	}
 
 	// the slow lane's mode too
-	fd := &feeder{t: t, a: newTestArbiter(ArbiterConfig{}), b: testBelief()}
+	fd := &feeder{t: t, a: newTestArbiter(untrusted()), b: testBelief()}
 	now := int64(0)
 	for i := 0; i < 5; i++ {
 		fd.answer(LaneSlow, now, map[string]string{QMode: "fight"}, 0.85, 0.7)
@@ -122,7 +127,7 @@ func TestEvidenceSustainedChangeFlips(t *testing.T) {
 			func(in Intent) bool { return in.Mode == ModeFight }},
 	} {
 		t.Run(name, func(t *testing.T) {
-			fd := &feeder{t: t, a: newTestArbiter(ArbiterConfig{}), b: testBelief()}
+			fd := &feeder{t: t, a: newTestArbiter(untrusted()), b: testBelief()}
 			now := int64(1000)
 			for i := 0; i < 10; i++ {
 				if in := fd.answer(c.lane, now, c.from, 0.85, 0.7); c.check(in) {
@@ -165,7 +170,7 @@ func TestEvidenceSustainedChangeFlips(t *testing.T) {
 // that agree decide, and one among confident answers moves the posterior.
 func TestEvidenceLowConfidenceCounts(t *testing.T) {
 	fire := map[string]string{QFirePolicy: "suppress"}
-	fd := &feeder{t: t, a: newTestArbiter(ArbiterConfig{}), b: testBelief()}
+	fd := &feeder{t: t, a: newTestArbiter(untrusted()), b: testBelief()}
 	fd.a.Intent(0, fd.b) // the defaults, held since long before
 	// weights 0.15 x (1, e^-1/3, e^-2/3, e^-1): 0.15, 0.26, 0.33, 0.39
 	for k, now := 1, int64(1000); k <= 4; k, now = k+1, now+100 {
@@ -186,7 +191,7 @@ func TestEvidenceLowConfidenceCounts(t *testing.T) {
 	// decision holds, its posterior drops a little (less than a confident
 	// disagreement would drop it)
 	post := func(conf float64) float64 {
-		fd := &feeder{t: t, a: newTestArbiter(ArbiterConfig{}), b: testBelief()}
+		fd := &feeder{t: t, a: newTestArbiter(untrusted()), b: testBelief()}
 		now := int64(1000)
 		for i := 0; i < 4; i++ {
 			fd.answer(LaneFast, now, fire, 0.9, 0.8)
@@ -210,7 +215,7 @@ func TestEvidenceDropsVanishedOptions(t *testing.T) {
 	for _, how := range []string{"gone", "dead"} {
 		t.Run(how, func(t *testing.T) {
 			b := testBelief()
-			fd := &feeder{t: t, a: newTestArbiter(ArbiterConfig{}), b: b}
+			fd := &feeder{t: t, a: newTestArbiter(untrusted()), b: b}
 			now := int64(1000)
 			for i := 0; i < 3; i++ {
 				fd.seq++
@@ -257,7 +262,7 @@ func TestEvidenceDropsVanishedOptions(t *testing.T) {
 // All contributing answers expired: the scripted fallback, then the
 // default; a lane that stops asking a question drops the field at once.
 func TestEvidenceStale(t *testing.T) {
-	fd := &feeder{t: t, a: newTestArbiter(ArbiterConfig{}), b: testBelief()}
+	fd := &feeder{t: t, a: newTestArbiter(untrusted()), b: testBelief()}
 	for i, now := 0, int64(1000); i < 3; i, now = i+1, now+100 {
 		fd.answer(LaneFast, now, map[string]string{QTarget: "e1"}, 0.85, 0.8)
 	}
@@ -277,7 +282,7 @@ func TestEvidenceStale(t *testing.T) {
 // falls; it rises at once, TestEvidenceSafetyAsymmetry).
 func TestEvidenceScore(t *testing.T) {
 	b := testBelief()
-	a := newTestArbiter(ArbiterConfig{})
+	a := newTestArbiter(untrusted())
 	step(t, a, laneReq(t, 1, LaneSlow, 0, b), map[string]Answer{QDanger: score(3, 0.9)})
 	step(t, a, laneReq(t, 2, LaneSlow, 500, b), map[string]Answer{QDanger: score(1, 0.6)})
 	in := a.Intent(500, b)
@@ -311,7 +316,7 @@ func TestEvidenceScriptedLatestOnly(t *testing.T) {
 // keeps is the model's (not stale), even past the TTL of the answer that
 // set it.
 func TestEvidenceHeldIsModel(t *testing.T) {
-	fd := &feeder{t: t, a: newTestArbiter(ArbiterConfig{}), b: testBelief()}
+	fd := &feeder{t: t, a: newTestArbiter(untrusted()), b: testBelief()}
 	probs := func(e1 float64) map[string]float64 { return map[string]float64{"e1": e1, "e3": 1 - e1} }
 	now := int64(1000)
 	fd.seq++
@@ -341,7 +346,7 @@ func TestEvidenceDeterminism(t *testing.T) {
 	run := func() ([]Intent, ArbiterStats) {
 		rng := rand.New(rand.NewPCG(7, 11))
 		b := testBelief()
-		a := newTestArbiter(ArbiterConfig{})
+		a := newTestArbiter(untrusted())
 		var out []Intent
 		for i := 0; i < 200; i++ {
 			l := LaneFast
@@ -388,7 +393,7 @@ func TestEvidenceDeterminism(t *testing.T) {
 // A value kept only by its dwell time, while fresh answers clearly prefer
 // another, is stale once the answer that set it expired (not the model's).
 func TestEvidenceDwellHeldIsStale(t *testing.T) {
-	fd := &feeder{t: t, a: newTestArbiter(ArbiterConfig{}), b: testBelief()}
+	fd := &feeder{t: t, a: newTestArbiter(untrusted()), b: testBelief()}
 	fd.answer(LaneFast, 0, map[string]string{QFirePolicy: "hold"}, 1, 0.9)
 	for now := int64(100); now <= 300; now += 100 {
 		in := fd.answer(LaneFast, now, map[string]string{QFirePolicy: "suppress"}, 1, 0.9)
@@ -409,7 +414,7 @@ func TestEvidenceDwellHeldIsStale(t *testing.T) {
 // critical danger is acted on at once.
 func TestEvidenceSafetyAsymmetry(t *testing.T) {
 	b := testBelief()
-	a := newTestArbiter(ArbiterConfig{})
+	a := newTestArbiter(untrusted())
 	seq := uint64(0)
 	slow := func(now int64, mode string, danger float64) Intent {
 		t.Helper()
@@ -435,7 +440,7 @@ func TestEvidenceSafetyAsymmetry(t *testing.T) {
 		t.Fatalf("danger after one calm answer: %v", in.Danger)
 	}
 	// below RetreatDanger a lone retreat answer does not flip the mode
-	a = newTestArbiter(ArbiterConfig{})
+	a = newTestArbiter(untrusted())
 	now = 0
 	for i := 0; i < 6; i++ {
 		slow(now, "fight", 1)
@@ -450,7 +455,7 @@ func TestEvidenceSafetyAsymmetry(t *testing.T) {
 // after a switch the earlier keeps back that weapon, not the new one.
 func TestEvidenceWeaponKeep(t *testing.T) {
 	b := testBelief() // the shotgun in hand
-	a := newTestArbiter(ArbiterConfig{})
+	a := newTestArbiter(untrusted())
 	seq := uint64(0)
 	slow := func(b *worldmodel.Belief, now int64, key string, conf float64) Intent {
 		t.Helper()
@@ -496,7 +501,7 @@ func TestEvidenceConfirmation(t *testing.T) {
 		return fd, now
 	}
 	t.Run("confirmed", func(t *testing.T) {
-		fd, now := history(ArbiterConfig{})
+		fd, now := history(untrusted())
 		in := fd.answer(LaneFast, now, to, 0.9, 0.8)
 		if tg, fp := flipped(in); tg || fp {
 			t.Fatalf("one answer flipped: %+v", in)
@@ -527,7 +532,7 @@ func TestEvidenceConfirmation(t *testing.T) {
 		"split":       {to, 0.55, 0.8},
 	} {
 		t.Run(name, func(t *testing.T) {
-			fd, now := history(ArbiterConfig{})
+			fd, now := history(untrusted())
 			top, conf := 0.9, 0.8
 			if name != "disagree" {
 				top, conf = tc.top, tc.conf
@@ -540,10 +545,89 @@ func TestEvidenceConfirmation(t *testing.T) {
 		})
 	}
 	t.Run("disabled", func(t *testing.T) {
-		fd, now := history(ArbiterConfig{Confirm: -1})
+		fd, now := history(ArbiterConfig{Confirm: -1, TrustBelow: -1})
 		fd.answer(LaneFast, now, to, 0.9, 0.8)
 		if tg, fp := flipped(fd.answer(LaneFast, now+period, to, 0.9, 0.8)); tg || fp {
 			t.Fatal("without confirmation two answers outweighed 30")
 		}
 	})
+}
+
+// The arbiter learns how far to trust the model. One whose confident
+// answers do not blip is trusted after a few answers and decides from its
+// newest answer (one changed answer flips the decision); one whose answers
+// blip (lone swaps) is not, and a lone swap does not flip. Low-confidence
+// answers do not count, and the estimate outlives Reset.
+func TestEvidenceTrust(t *testing.T) {
+	e1, e3 := map[string]string{QTarget: "e1", QFirePolicy: "hold"}, map[string]string{QTarget: "e3", QFirePolicy: "suppress"}
+	a := newTestArbiter(ArbiterConfig{})
+	if a.Trusted(FieldTarget) || a.BlipRate(FieldTarget) != 0.05 {
+		t.Fatalf("a new model: trusted %v, blip rate %v", a.Trusted(FieldTarget), a.BlipRate(FieldTarget))
+	}
+	fd := &feeder{t: t, a: a, b: testBelief()}
+	now := int64(1000)
+	for i := 0; i < 5; i++ {
+		fd.answer(LaneFast, now, e1, 0.9, 0.8)
+		now += 100
+	}
+	if !a.Trusted(FieldTarget) {
+		t.Fatalf("not trusted after 5 consistent answers: blip rate %v", a.BlipRate(FieldTarget))
+	}
+	for i := 0; i < 55; i++ {
+		fd.answer(LaneFast, now, e1, 0.9, 0.8)
+		now += 100
+	}
+	if !a.Trusted(FieldTarget) || !a.Trusted(FieldFirePolicy) || a.Trusted(FieldMode) {
+		t.Fatalf("after 60 consistent answers: target %v (%v), fire_policy %v, mode (never answered) %v", a.Trusted(FieldTarget),
+			a.BlipRate(FieldTarget), a.Trusted(FieldFirePolicy), a.Trusted(FieldMode))
+	}
+	in := fd.answer(LaneFast, now, e3, 0.9, 0.8)
+	if in.Target != "e3" || in.FirePolicy != FireSuppress || in.Provenance.Target.Source != SourceModel {
+		t.Fatalf("a trusted model's changed answer: target %q fire %s %+v", in.Target, in.FirePolicy, in.Provenance.Target)
+	}
+	// the answer back makes the one before a blip: counted, but one blip
+	// in 60 answers keeps the model trusted
+	if in := fd.answer(LaneFast, now+100, e1, 0.9, 0.8); in.Target != "e1" {
+		t.Fatalf("and back: %q (blip rate %v)", in.Target, a.BlipRate(FieldTarget))
+	}
+	if r := a.BlipRate(FieldTarget); r < 0.01 || !a.Trusted(FieldTarget) {
+		t.Fatalf("the blip: rate %v, trusted %v", r, a.Trusted(FieldTarget))
+	}
+	a.Reset()
+	if !a.Trusted(FieldTarget) {
+		t.Fatal("Reset forgot the model's reliability")
+	}
+
+	// one lone swap in every six answers: not trusted, swaps do not flip
+	b := newTestArbiter(ArbiterConfig{})
+	fd = &feeder{t: t, a: b, b: testBelief()}
+	now = 1000
+	for i := 0; i < 59; i++ { // the last one is e1
+		k := e1
+		if i%6 == 5 {
+			k = e3
+		}
+		fd.answer(LaneFast, now, k, 0.9, 0.8)
+		now += 100
+	}
+	if b.Trusted(FieldTarget) || b.BlipRate(FieldTarget) < 0.08 {
+		t.Fatalf("a model that blips: trusted %v, blip rate %v", b.Trusted(FieldTarget), b.BlipRate(FieldTarget))
+	}
+	if in := fd.answer(LaneFast, now, e3, 0.9, 0.8); in.Target != "e1" {
+		t.Fatalf("a lone swap of an untrusted model flipped the target: %q", in.Target)
+	}
+
+	// low-confidence answers do not count either way
+	c := newTestArbiter(ArbiterConfig{})
+	fd = &feeder{t: t, a: c, b: testBelief()}
+	for i := 0; i < 40; i++ {
+		k := e1
+		if i%2 == 1 {
+			k = e3
+		}
+		fd.answer(LaneFast, 1000+int64(100*i), k, 0.9, 0.2)
+	}
+	if r := c.BlipRate(FieldTarget); r != 0.05 {
+		t.Fatalf("low-confidence answers moved the blip rate: %v", r)
+	}
 }

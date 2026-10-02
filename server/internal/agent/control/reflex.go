@@ -52,8 +52,11 @@ const (
 	// a live grenade; GrenadeJump the one within which it also jumps.
 	GrenadeRadius = 192
 	GrenadeJump   = 112
-	// StrafeHold is the least time (ms) a strafe keeps its side.
-	StrafeHold = 400
+	// StrafeHold is the least time (ms) a strafe keeps its side: a dodge
+	// pattern's segment (the scripted rhythm's shortest is 600 ms). A
+	// policy answered at 10 Hz whose side choice flips more often would
+	// only jitter the bot on the spot.
+	StrafeHold = 600
 	// MinAimTol and MaxAimTol bound the aim tolerance (degrees).
 	MinAimTol = 0.75
 	MaxAimTol = 10

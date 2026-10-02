@@ -43,10 +43,10 @@
 // random backend depends only on its configuration and seed (the trace
 // compares equal but for the wall clock). So does a lockstep mock run,
 // whose jev client is set to keep its wall-clock state (breaker,
-// cooldowns, refused question sets) out of the answers, with one
-// exception: a loopback attempt slower than the client's fast-lane
-// attempt timeout (jev.MaxFastTimeout, 800 ms; only on a machine loaded
-// far beyond a test run) times out, and the run departs from the seed's.
+// cooldowns, refused question sets) out of the answers and lifts the
+// fast lane's attempt cap (jev.Config.UncapFast, 30 s attempts on both
+// lanes): only a loopback hang longer than 30 s could make it depart from
+// the seed's run.
 // A real Jev client is not bit-deterministic (network, wall-clock
 // timeouts, breaker, cooldown), nor is a run sharing a wall-clock
 // budget.Account limiter.

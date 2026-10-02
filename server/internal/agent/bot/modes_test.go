@@ -372,12 +372,13 @@ func TestTrapKill(t *testing.T) {
 func TestWedgeKill(t *testing.T) {
 	spot := Vec3{1504, 1408, -808}
 	type navFn func(now int64) (bool, int)
+	var off func(now int64) bool // off the graph (nil: never)
 	run := func(nav navFn, at func(now int64) Vec3, until int64) *modeBot {
 		m := newModeBot(t, "demo3", route.Step{Op: route.OpGoto, Pos: &route.Vec{-536, -472, -272}})
 		var now int64
 		m.testNav = func() navEffort {
 			under, n := nav(now)
-			return navEffort{underWay: under, recoveries: n}
+			return navEffort{underWay: under, recoveries: n, offGraph: off != nil && under && off(now)}
 		}
 		for now = 100; now <= until; now += 100 {
 			m.at(now, selfAt(at(now), 100))
@@ -408,6 +409,23 @@ func TestWedgeKill(t *testing.T) {
 	moving := func(now int64) Vec3 { return Vec3{spot[0] + float32(32*(now/10000)), spot[1], spot[2]} }
 	if m := run(stuck, moving, 2*wedgeFor); m.Stats().TrapKills != 0 {
 		t.Fatal("kill while moving")
+	}
+	// off the graph with a goal, no recoveries: wedged after offGraphFor;
+	// off it on half of the frames, or moving, never
+	under := func(int64) (bool, int) { return true, 0 }
+	off = func(int64) bool { return true }
+	if m := run(under, still, offGraphFor-500); m.Stats().TrapKills != 0 {
+		t.Fatal("kill off the graph before offGraphFor")
+	}
+	if m := run(under, still, offGraphFor+300); m.Stats().TrapKills != 1 {
+		t.Fatal("no kill off the graph after offGraphFor")
+	}
+	if m := run(under, moving, 2*offGraphFor); m.Stats().TrapKills != 0 {
+		t.Fatal("kill off the graph while moving")
+	}
+	off = func(now int64) bool { return now%200 == 0 }
+	if m := run(under, still, 2*offGraphFor); m.Stats().TrapKills != 0 {
+		t.Fatal("kill off the graph on half of the frames")
 	}
 }
 
@@ -515,4 +533,42 @@ func TestTickProvenance(t *testing.T) {
 	}
 	m.wantField(t, "mode", "objective", "disengaged")
 	m.wantField(t, "target", "e1", "") // still shot at on the move when in view
+}
+
+// TestStallKill: a level attempt with no progress (no route step done nor
+// its path shortened, no monster the bot fought killed) for stallFor is
+// given up with "kill"; a kill of a monster it fought restarts the clock.
+func TestStallKill(t *testing.T) {
+	run := func(kill int64, until int64) *modeBot {
+		m := newModeBot(t, "demo3", route.Step{Op: route.OpGoto, Pos: &route.Vec{-536, -472, -272}})
+		m.testNav = func() navEffort { return navEffort{} } // standing on purpose: never wedged
+		for now := int64(100); now <= until; now += 100 {
+			bel := selfAt(Vec3{1504, 1408, -808}, 100)
+			e1 := monster("e1", Vec3{1700, 1408, -808})
+			if kill > 0 && now >= kill {
+				e1.Life, e1.Visible = worldmodel.LifeDead, false
+			}
+			bel.Tracks = []worldmodel.Track{e1}
+			*m.intent = decide.Intent{Mode: decide.ModeObjective}
+			if now < 10000 {
+				*m.intent = decide.Intent{Mode: decide.ModeFight, Target: "e1", FirePolicy: decide.FireWhenAligned}
+			}
+			m.at(now, bel)
+		}
+		return m
+	}
+	if m := run(0, stallFor-1000); m.Stats().TrapKills != 0 || m.sent("kill") {
+		t.Fatalf("kill before stallFor: %d", m.Stats().TrapKills)
+	}
+	m := run(0, stallFor+1000)
+	if m.Stats().TrapKills != 1 || !m.sent("kill") || m.field(t, "mode").Value == "" {
+		t.Fatalf("no kill after stallFor: %d", m.Stats().TrapKills)
+	}
+	// the monster fought until 10 s dies at 60 s: the clock starts over
+	if m := run(60000, 60000+stallFor-1000); m.Stats().TrapKills != 0 {
+		t.Fatal("kill within stallFor of a kill")
+	}
+	if m := run(60000, 60000+stallFor+1000); m.Stats().TrapKills != 1 {
+		t.Fatal("no kill stallFor after the last kill")
+	}
 }

@@ -243,7 +243,13 @@ type Bot struct {
 	wedgeAt                               Vec3
 	wedgeSince                            int64
 	wedgeFrames, wedgeNav, wedgeRecovered int
+	wedgeOff                              int // frames off the nav graph
 	navRecoveries                         int
+	// stalled: when the level attempt started (its first decision), the
+	// monsters the bot fought on it (dead: seen killed) and when it last
+	// saw one of them killed (stallTick)
+	attemptAt, foughtKillAt int64
+	fought                  []foughtTrack
 	// testNav, when set, stands in for the navigator's status (tests)
 	testNav func() navEffort
 }
@@ -337,6 +343,7 @@ func (b *Bot) Enter(lv Level) error {
 	b.ticks, b.pending, b.dropped = 0, nil, 0
 	b.trappedSince, b.killAt = 0, 0
 	b.wedgeSince, b.navRecoveries = 0, 0
+	b.attemptAt, b.foughtKillAt, b.fought = 0, 0, b.fought[:0]
 	b.shoot.Reset()
 	return nil
 }
@@ -390,6 +397,7 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 	b.reflexTick(bel)
 	b.trapTick(c, bel)
 	b.wedgeTick(c, bel)
+	b.stallTick(c, bel)
 
 	var obj *decide.ObjectiveView
 	if b.exec != nil {
@@ -477,6 +485,7 @@ func (b *Bot) decide(c *fakeclient.Client, bel *worldmodel.Belief) {
 		b.targetBy = "target_gone" // dead, or a track the bot does not know
 	}
 	b.searchTick(bel)
+	b.noteFought(b.target)
 
 	b.weaponTick(c, bel)
 	b.sideCommands(c, bel)
@@ -872,6 +881,11 @@ const (
 	wedgeFor     = 120000
 	wedgeShare   = 0.75
 	wedgeRecover = 8
+	// offGraphFor: off the nav graph (no node within reach: wedged in
+	// the geometry, say on a ledge's edge), its navigator with a goal on
+	// at least wedgeShare of the frames, the bot that has not moved for
+	// offGraphFor is wedged too: the navigator cannot plan a way out.
+	offGraphFor = 60000
 )
 
 // navEffort is what the navigator does for the bot this frame: under way
@@ -880,6 +894,8 @@ const (
 type navEffort struct {
 	underWay   bool
 	recoveries int
+	// offGraph: under way, but no node within reach of the bot
+	offGraph bool
 }
 
 // navTrying returns the navigator's effort.
@@ -899,13 +915,16 @@ func (b *Bot) navTrying() navEffort {
 	case navrt.Following, navrt.Stuck, navrt.OffGraph:
 		e.underWay = true
 	}
+	e.offGraph = st.Follow == navrt.OffGraph
 	return e
 }
 
 // wedgeTick gives up a level attempt the bot cannot move on from: it has
 // stood on one spot for wedgeFor while its navigator kept trying to move
 // it, its stuck recovery (jump, strafe, back off, repath) included: say,
-// wedged on a monster below its view. Like a player stuck in a pit
+// wedged on a monster below its view; or for offGraphFor off the nav
+// graph with a goal (wedged in the geometry, where the navigator has no
+// node to plan from). Like a player stuck in a pit
 // (trapTick), the bot types "kill"; the campaign counts the death and
 // loads the level-entry save.
 func (b *Bot) wedgeTick(c *fakeclient.Client, bel *worldmodel.Belief) {
@@ -917,7 +936,7 @@ func (b *Bot) wedgeTick(c *fakeclient.Client, bel *worldmodel.Belief) {
 	recovered := eff.recoveries - b.navRecoveries
 	b.navRecoveries = eff.recoveries
 	if b.wedgeSince == 0 || dist3(o, b.wedgeAt) > wedgeMove {
-		b.wedgeAt, b.wedgeSince, b.wedgeFrames, b.wedgeNav, b.wedgeRecovered = o, b.now, 0, 0, 0
+		b.wedgeAt, b.wedgeSince, b.wedgeFrames, b.wedgeNav, b.wedgeRecovered, b.wedgeOff = o, b.now, 0, 0, 0, 0
 		return
 	}
 	b.wedgeFrames++
@@ -925,18 +944,90 @@ func (b *Bot) wedgeTick(c *fakeclient.Client, bel *worldmodel.Belief) {
 	if eff.underWay {
 		b.wedgeNav++
 	}
-	if b.now-b.wedgeSince < wedgeFor || float64(b.wedgeNav) < wedgeShare*float64(b.wedgeFrames) || b.wedgeRecovered < wedgeRecover ||
-		b.killAt > 0 && b.now-b.killAt < trapRetry {
+	if eff.offGraph {
+		b.wedgeOff++
+	}
+	share := func(n int) bool { return float64(n) >= wedgeShare*float64(b.wedgeFrames) }
+	recovering := b.now-b.wedgeSince >= wedgeFor && share(b.wedgeNav) && b.wedgeRecovered >= wedgeRecover
+	offGraph := b.now-b.wedgeSince >= offGraphFor && share(b.wedgeOff)
+	if !recovering && !offGraph || b.killAt > 0 && b.now-b.killAt < trapRetry {
 		return
 	}
 	b.killAt = b.now
 	b.kills++
 	b.fight.noteReflex("wedged_kill")
 	if b.cfg.Logf != nil {
-		b.cfg.Logf("bot: wedged at %v for %.0fs (of %d frames the navigator was under way on %d, %d recoveries): kill", o,
-			float64(b.now-b.wedgeSince)/1000, b.wedgeFrames, b.wedgeNav, b.wedgeRecovered)
+		b.cfg.Logf("bot: wedged at %v for %.0fs (of %d frames the navigator was under way on %d, off the graph on %d, %d recoveries): kill", o,
+			float64(b.now-b.wedgeSince)/1000, b.wedgeFrames, b.wedgeNav, b.wedgeOff, b.wedgeRecovered)
 	}
 	b.wedgeSince = 0
+	c.StringCmd("kill")
+}
+
+// Stall recovery (ms).
+const (
+	// stallFor: a level attempt that made no progress for stallFor (no
+	// route step done nor its path shortened, no monster the bot fought
+	// killed) is given up. The campaign's no-progress watchdog (five
+	// minutes by default) would end the run there; a fresh attempt may
+	// not get stuck where this one did.
+	stallFor = 250000
+)
+
+// foughtTrack is a monster the bot fought on the level attempt.
+type foughtTrack struct {
+	id   string
+	dead bool
+}
+
+// noteFought records the track fought this frame.
+func (b *Bot) noteFought(id string) {
+	if id == "" {
+		return
+	}
+	for i := range b.fought {
+		if b.fought[i].id == id {
+			return
+		}
+	}
+	b.fought = append(b.fought, foughtTrack{id: id})
+}
+
+// stallTick gives up a level attempt that has made no progress for
+// stallFor, as the campaign counts progress: a route step done (or its
+// path left shortened), a monster the bot fought killed. Such an attempt
+// is lost either way: the campaign's no-progress watchdog would end the
+// run, while the level-entry save gives a fresh attempt that may not get
+// stuck where this one did (a door shut behind the bot, a spot off the
+// nav graph, a route monster that never comes). Like a player who
+// cannot get on, the bot types "kill"; the campaign counts the death and
+// reloads (trapTick).
+func (b *Bot) stallTick(c *fakeclient.Client, bel *worldmodel.Belief) {
+	for i := range b.fought {
+		f := &b.fought[i]
+		if f.dead {
+			continue
+		}
+		if t := bel.Track(f.id); t != nil && t.Life != worldmodel.LifeAlive && t.Life != worldmodel.LifeDying {
+			f.dead, b.foughtKillAt = true, b.now
+		}
+	}
+	if b.attemptAt == 0 {
+		b.attemptAt = b.now
+	}
+	if b.exec == nil || b.exec.Done() {
+		return
+	}
+	since := max(b.attemptAt, b.exec.LastProgress(), b.foughtKillAt)
+	if b.now-since < stallFor || b.killAt > 0 && b.now-b.killAt < trapRetry {
+		return
+	}
+	b.killAt = b.now
+	b.kills++
+	b.fight.noteReflex("stalled_kill")
+	if b.cfg.Logf != nil {
+		b.cfg.Logf("bot: no progress for %.0fs at %v (step %d): kill", float64(b.now-since)/1000, bel.Self.Origin, b.exec.Index())
+	}
 	c.StringCmd("kill")
 }
 
@@ -1193,7 +1284,7 @@ type Stats struct {
 	Explores     int // explore bursts started
 	Pressed      bool
 	Ticks        int // decision ticks on the level attempt
-	TrapKills    int // "kill" commands sent from a pit (trapTick) or wedged (wedgeTick)
+	TrapKills    int // "kill" commands sent from a pit (trapTick), wedged (wedgeTick) or stalled (stallTick)
 }
 
 // Stats returns the counters.

@@ -249,6 +249,18 @@ type ArbiterConfig struct {
 	// then decides, a change taking as many answers as its mass needs).
 	Confirm     int
 	ConfirmProb float64
+	// Reliability. Per choice field the arbiter estimates how often the
+	// model's confident answers blip: an answer whose top option differs
+	// from the answer before it while the answer after it goes back (a
+	// lone swap; a model that is right every time blips only where the
+	// state itself flickers). The rate is counted over the last few
+	// hundred answers (it outlives Reset: it is the model's, not the
+	// level's). A field whose blip rate is under TrustBelow (0.04) takes
+	// the model at its word: one confident answer naming a new top option
+	// confirms the change (Confirm 1), so an exact model decides from its
+	// newest answer as if nothing were accumulated, while a noisy one
+	// needs Confirm agreeing answers. A negative TrustBelow never trusts.
+	TrustBelow float64
 
 	// FastTTL and SlowTTL are the least lifetimes of an answer, counted
 	// from its request's SnapTime (300 ms, 1500 ms); the actual TTL is at
@@ -425,14 +437,17 @@ const fbHistory = 32
 // (ArbiterConfig.Tau), decides the field from the posterior while the
 // newest answer is within its TTL and the evidence is strong enough,
 // falls back to the scripted policy otherwise, applies hysteresis to the
-// posterior and records provenance. A single answer that disagrees with
-// the ones before it moves the posterior instead of the decision; a
-// sustained change flips it within a few answers. It is not safe for
+// posterior and records provenance. How far it trusts a single answer it
+// learns per field from the model's own answers (ArbiterConfig.TrustBelow):
+// a model that does not blip decides from its newest answer, a noisy
+// one's lone swap moves the posterior instead of the decision and a
+// sustained change flips it after Confirm answers. It is not safe for
 // concurrent use; it depends only on its inputs, summed in a fixed order
 // (deterministic).
 type Arbiter struct {
 	cfg     ArbiterConfig
 	f       [NumFields]fieldState
+	rel     [NumFields]reliability
 	lastSeq [NumLanes]uint64
 	lastErr [NumLanes]string
 	fbHist  [NumLanes][]fbEntry
@@ -458,6 +473,9 @@ func NewArbiter(cfg ArbiterConfig) *Arbiter {
 	deff(&cfg.MinNoulMargin, 0.2)
 	deff(&cfg.MinPosterior, 0.4)
 	deff(&cfg.ConfirmProb, 0.6)
+	if cfg.TrustBelow == 0 {
+		cfg.TrustBelow = 0.04
+	}
 	if cfg.Confirm == 0 {
 		cfg.Confirm = 2
 	}
@@ -823,11 +841,78 @@ func (a *Arbiter) addEvidence(f Field, req *Request, c *cand) {
 		ev = append(ev[:0], ev[drop:]...)
 	}
 	fs.ev = ev
-	if n := a.cfg.Confirm; n > 0 && tau > 0 && fs.qtype == Choice && len(fs.ev) > n && a.confirms(fs, n, tau) {
+	if fs.qtype != Choice {
+		return
+	}
+	if c.conf >= a.cfg.MinConfidence-1e-9 {
+		top := c.value
+		if w := keepWeapon(f, req); w != "" && top == OptKeep {
+			top = w
+		}
+		a.rel[f].note(top)
+	}
+	n := a.cfg.Confirm
+	if a.Trusted(f) {
+		n = 1
+	}
+	if n > 0 && tau > 0 && len(fs.ev) > n && a.confirms(fs, n, tau) {
 		// a change point: the evidence before the confirming answers is
 		// about the state before the change
 		fs.ev = append(fs.ev[:0], fs.ev[len(fs.ev)-n:]...)
 	}
+}
+
+// reliability is a field's blip count: the confident answers seen and
+// the lone swaps among them, both decayed by relDecay per answer (from
+// the prior relPriorBlips in relPriorAnswers, a rate of 0.05: a new model
+// is not trusted before its first few answers), and the top options of
+// the newest two answers (a level's first answers follow the previous
+// level's last: ids start over, so a level change counts at most one
+// spurious blip).
+type reliability struct {
+	set          bool
+	blips, total float64
+	prev, last   string
+	n            int
+}
+
+const (
+	relDecay        = 1 - 1.0/256
+	relPriorBlips   = 0.5
+	relPriorAnswers = 10
+)
+
+// note counts a confident answer naming top: the answer before it blipped
+// when it differed from the one before that and top goes back to it.
+func (r *reliability) note(top string) {
+	if !r.set {
+		r.set, r.blips, r.total = true, relPriorBlips, relPriorAnswers
+	}
+	r.blips *= relDecay
+	r.total = r.total*relDecay + 1
+	if r.n >= 2 && r.last != r.prev && top == r.prev {
+		r.blips++
+	}
+	r.prev, r.last = r.last, top
+	r.n = min(r.n+1, 2)
+}
+
+// rate is the blip rate (the prior's before any answer).
+func (r *reliability) rate() float64 {
+	if !r.set {
+		return relPriorBlips / relPriorAnswers
+	}
+	return r.blips / r.total
+}
+
+// BlipRate returns a choice field's estimated blip rate: the share of the
+// model's confident answers that are lone swaps (ArbiterConfig.TrustBelow).
+func (a *Arbiter) BlipRate(f Field) float64 { return a.rel[f].rate() }
+
+// Trusted reports whether a field takes the model's newest confident
+// answer at its word (its blip rate is under TrustBelow).
+func (a *Arbiter) Trusted(f Field) bool {
+	return a.cfg.TrustBelow > 0 && a.rel[f].rate() < a.cfg.TrustBelow
 }
 
 // confirms reports whether a field's n newest answers confirm a change
