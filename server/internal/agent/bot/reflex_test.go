@@ -260,3 +260,54 @@ func TestCmdNavFireGate(t *testing.T) {
 		t.Errorf("the blaster at the shoot goal did not fire (reflexes %v)", m.fight.reflexes)
 	}
 }
+
+// TestKeepOff: in a fight the bot backs away at once from a drain or melee
+// monster in view within its reach, whatever the intent's movement (reflex
+// keep_off), and does not advance on an attacker in view under lowHealth
+// (low_health); farther off, or healthier, the intent's movement stands.
+func TestKeepOff(t *testing.T) {
+	mon := func(id, class string, d float32) worldmodel.Track {
+		tr := monster(id, along(openSpot, 0, d))
+		tr.Class = class
+		return tr
+	}
+	run := func(health int, intent decide.Movement, tracks ...worldmodel.Track) (*cmdBot, trace.Field) {
+		m := newCmdBot(t, openSpot)
+		m.bel.Self.Health = health
+		m.bel.Tracks = tracks
+		*m.intent = decide.Intent{Mode: decide.ModeFight, Target: tracks[0].ID, FirePolicy: decide.FireWhenAligned, Movement: intent}
+		m.frame(100)
+		m.cmd()
+		return m, m.field(t, "movement")
+	}
+	for _, tc := range []struct {
+		name   string
+		health int
+		intent decide.Movement
+		tracks []worldmodel.Track
+		move   control.Move
+		reflex string
+	}{
+		{"soldier", 100, decide.MoveStrafeRight, []worldmodel.Track{mon("e1", "soldier", 200)}, control.MoveStrafeRight, ""},
+		{"parasite near", 100, decide.MoveStrafeRight, []worldmodel.Track{mon("e1", "parasite", 200)}, control.MoveRetreat, "keep_off"},
+		{"parasite far", 100, decide.MoveStrafeRight, []worldmodel.Track{mon("e1", "parasite", 400)}, control.MoveStrafeRight, ""},
+		{"berserk near", 100, decide.MoveAdvance, []worldmodel.Track{mon("e1", "soldier", 500), mon("e2", "berserk", 120)}, control.MoveRetreat, "keep_off"},
+		{"berserk far", 100, decide.MoveStrafeLeft, []worldmodel.Track{mon("e1", "berserk", 250)}, control.MoveStrafeLeft, ""},
+		{"low health", 20, decide.MoveAdvance, []worldmodel.Track{mon("e1", "soldier", 500)}, control.MoveStrafeRight, "low_health"},
+		{"healthy", 60, decide.MoveAdvance, []worldmodel.Track{mon("e1", "soldier", 500)}, control.MoveAdvance, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, f := run(tc.health, tc.intent, tc.tracks...)
+			move := m.fight.move
+			if tc.move == control.MoveStrafeRight && tc.reflex == "low_health" && move == control.MoveStrafeLeft {
+				move = control.MoveStrafeRight // either side
+			}
+			if move != tc.move {
+				t.Fatalf("move %s, want %s", m.fight.move, tc.move)
+			}
+			if tc.reflex != "" && (f.Source != trace.SourceReflex || f.Fallback != tc.reflex) || tc.reflex == "" && f.Source == trace.SourceReflex {
+				t.Fatalf("movement field %+v, want reflex %q", f, tc.reflex)
+			}
+		})
+	}
+}
