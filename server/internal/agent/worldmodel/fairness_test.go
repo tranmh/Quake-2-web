@@ -45,9 +45,9 @@ type perturber struct {
 	retries int
 	// by kind of rewrite
 	hiddenMonsters, brushes, heardOnly, oldOrigins, removed, injected, injectedTracked int
-	// heard-only emitters whose origin moved, and those mirrored front to
-	// back (the stereo cue is the same)
-	heardMoved, heardMirrored int
+	// heard-only emitters whose origin moved, those mirrored front to back
+	// (the stereo cue is the same), and the monsters among the moved
+	heardMoved, heardMirrored, heardMonsters int
 }
 
 // percSig is what must not change: the entities seen and those admitted,
@@ -373,6 +373,9 @@ func (p *perturber) perturb(in perception.FrameInput) perception.FrameInput {
 				if mirrored[i] {
 					p.heardMirrored++
 				}
+				if c := cls.Classify(&in.Entities[i]).Class; c != nil && c.Kind == perception.KindMonster {
+					p.heardMonsters++
+				}
 			}
 		case oldOrigin:
 			p.oldOrigins++
@@ -591,12 +594,14 @@ func PerturbationRun(t *testing.T, each func(frame int, verbatim, perturbed *Wor
 		}
 	}
 	t.Logf("%d frames, %d entity states rewritten in %d frames (%d of hidden monsters, %d heard-only of which %d moved "+
-		"and %d mirrored front to back, %d brushes, %d unseen old_origins, %d dropped from the packet), %d resamples; "+
+		"(%d monsters) and %d mirrored front to back, %d brushes, %d unseen old_origins, %d dropped from the packet), %d resamples; "+
 		"%d sounds injected (%d for tracks out of earshot); %d track-frames placed by ear",
-		len(inputs), p.changed, p.frames, p.hiddenMonsters, p.heardOnly, p.heardMoved, p.heardMirrored, p.brushes,
+		len(inputs), p.changed, p.frames, p.hiddenMonsters, p.heardOnly, p.heardMoved, p.heardMonsters, p.heardMirrored,
+		p.brushes,
 		p.oldOrigins, p.removed, p.retries, p.injected, p.injectedTracked, earFrames)
 	if p.frames < len(inputs)/2 || p.hiddenMonsters == 0 || p.brushes == 0 || p.heardOnly == 0 || p.removed == 0 ||
-		p.injectedTracked == 0 || p.heardMoved < p.heardOnly/2 || p.heardMirrored == 0 || earFrames == 0 {
+		p.injectedTracked == 0 || p.heardMoved < p.heardOnly/2 || p.heardMirrored == 0 || p.heardMonsters == 0 ||
+		earFrames == 0 {
 		t.Fatalf("the perturbation did not touch enough: %d frames, %d hidden monster states, %d brushes, "+
 			"%d heard-only (%d moved, %d mirrored), %d dropped, %d sounds for tracks, %d track-frames by ear", p.frames,
 			p.hiddenMonsters, p.brushes, p.heardOnly, p.heardMoved, p.heardMirrored, p.removed, p.injectedTracked, earFrames)
@@ -626,5 +631,116 @@ func TestInjectedSoundsAreNotIgnoredBlindly(t *testing.T) {
 	s.ev.Sounds = []fakeclient.Sound{{SoundNum: deathSoundIndex(s.cs), Ent: 20, Volume: 1, Attenuation: q2const.ATTN_STATIC}}
 	if s.step(); s.w.Belief().Digest() == before || s.track("e1").Life != LifeDying {
 		t.Fatalf("a cry in earshot was ignored: %+v", s.track("e1"))
+	}
+}
+
+// TestHeardOnlyOriginsInvariance is the hearing half of the perturbation
+// test on a synthetic fight with many heard monsters: four soldiers move
+// at random around a turning player, out of view as often as in it, crying
+// out and firing at random. A second world gets the same frames with the
+// origin (and so the velocity) of every soldier only heard redrawn at
+// random wherever every cue of the frame stays the same (often mirrored
+// front to back), and its angles, frame and box rewritten too: its belief
+// must equal the first world's at every frame. A control world that moves
+// the heard soldiers to the other ear must differ.
+func TestHeardOnlyOriginsInvariance(t *testing.T) {
+	a, b, c := newSim(t), newSim(t), newSim(t)
+	checker := perception.NewPerceiver(floorCM(t), perception.NewClassifier(perception.NewClassTable()), nil, perception.Options{})
+	rng := rand.New(rand.NewSource(11))
+	p := &perturber{rng: rand.New(rand.NewSource(12)), checker: checker}
+	type mon struct {
+		num      int32
+		pos, vel Vec3
+	}
+	mons := []mon{{num: 30}, {num: 31}, {num: 32}, {num: 33}}
+	for i := range mons {
+		mons[i].pos = Vec3{p.offset(900), p.offset(900), 24}
+	}
+	moved, mirrored, nHeard, earFrames, differs := 0, 0, 0, 0, false
+	for frame := 0; frame < 400; frame++ {
+		yaw := float32(frame) * 4 // a slow turn: turns tell front from back
+		var ents []shared.EntityState
+		var ev perception.Events
+		for i := range mons {
+			m := &mons[i]
+			if frame%15 == 0 {
+				m.vel = Vec3{float32(rng.Intn(401) - 200), float32(rng.Intn(401) - 200), 0}
+			}
+			m.pos = shared.VectorMA(m.pos, 0.1, m.vel)
+			for k := 0; k < 2; k++ {
+				m.pos[k] = max(-1200, min(1200, m.pos[k]))
+			}
+			ents = append(ents, soldierAt(m.num, m.pos))
+			switch r := rng.Intn(10); {
+			case r < 2:
+				ev.Sounds = append(ev.Sounds, fakeclient.Sound{SoundNum: sSight, Ent: m.num, Volume: 1, Attenuation: float32(1 + rng.Intn(2))})
+			case r < 4:
+				ev.MuzzleFlashes = append(ev.MuzzleFlashes, fakeclient.MuzzleFlash{Ent: m.num, Monster: true, Weapon: q2const.MZ2_SOLDIER_MACHINEGUN_1})
+			}
+		}
+		for _, s := range []*sim{a, b, c} {
+			s.ps.ViewAngles[q2const.YAW] = yaw
+			s.ents, s.ev = append([]shared.EntityState(nil), ents...), ev
+		}
+		in := a.input()
+		pc := checker.Perceive(&in)
+		sig := signature(pc)
+		heard := cued(pc)
+		v := pc.Vision()
+		var right Vec3
+		shared.AngleVectors(a.ps.ViewAngles, nil, &right, nil)
+		for i := range b.ents {
+			e := &b.ents[i]
+			if !heard[e.Number] || pc.Sighting(e.Number) != nil {
+				continue
+			}
+			nHeard++
+			orig := *e
+			ok := false
+			for try := 0; try < 30 && !ok; try++ {
+				mir := p.randomizeHeard(e, orig, v)
+				e.Solid = solidStd // a box the class allows, so a draw that comes into view is told apart
+				pin := b.input()
+				ok = signature(checker.Perceive(&pin)).equal(sig)
+				if ok && e.Origin != orig.Origin {
+					moved++
+					if mir {
+						mirrored++
+					}
+				}
+			}
+			if !ok {
+				*e = orig
+			}
+			// the control: the other ear
+			ce := &c.ents[i]
+			d := shared.VectorSubtract(ce.Origin, v.Eye())
+			ce.Origin = shared.VectorMA(ce.Origin, -2*shared.DotProduct(d, right), right)
+		}
+		if got := b.input(); !signature(checker.Perceive(&got)).equal(sig) {
+			t.Fatalf("frame %d: the perturbation changed the percept", frame)
+		}
+		a.step()
+		b.step()
+		c.step()
+		if da, db := a.w.Belief().Digest(), b.w.Belief().Digest(); da != db {
+			ja, _ := json.Marshal(a.w.Belief().Tracks)
+			jb, _ := json.Marshal(b.w.Belief().Tracks)
+			t.Fatalf("frame %d: beliefs differ\nverbatim:  %s\nperturbed: %s", frame, ja, jb)
+		}
+		differs = differs || c.w.Belief().Digest() != a.w.Belief().Digest()
+		for _, tr := range a.w.Belief().Tracks {
+			if tr.LocKnown && !tr.LocSeen {
+				earFrames++
+			}
+		}
+	}
+	t.Logf("%d heard-only soldier states, %d moved (%d mirrored front to back); %d track-frames placed by ear",
+		nHeard, moved, mirrored, earFrames)
+	if moved < nHeard/2 || mirrored == 0 || earFrames < 100 {
+		t.Fatalf("the perturbation did not touch enough: %d heard-only, %d moved, %d mirrored, %d by ear", nHeard, moved, mirrored, earFrames)
+	}
+	if !differs {
+		t.Fatal("moving the heard soldiers to the other ear did not change the belief: hearing is ignored")
 	}
 }

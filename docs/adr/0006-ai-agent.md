@@ -130,7 +130,8 @@ Everything the bot knows comes from one of the following:
      attributed to a track placed by ear, narrows its arc to that bearing ±30°.
    - **Positions come from sight alone.** A track's `Pos`, `PosKnown` and `Vel` change only on a sighting.
      Out of view, the bot locates a track (`Track.Loc`) at its last position seen while what it hears from it
-     agrees (the bearing in the arc, the same loudness step), and otherwise at a stand-in derived from the cue
+     agrees (the bearing in the arc, the same loudness step); a monster never seen, at the spawn origin of its
+     lump entity (rule 4) while the sounds agree with that; and otherwise at a stand-in derived from the cue
      alone: the middle of the arc, at the middle distance of the loudness step for that sound's attenuation,
      from where the bot stood when it heard it. Consumers that need a point use `Loc`: aiming and turning,
      keeping away, the scan, a retreat's threat, damage attribution, and a route kill step's look and firing
@@ -199,7 +200,10 @@ still hears.
   The two beliefs must have identical digests at every frame, and so must the decisions made from them: both
   lane states and the scripted policy's answers. Two control runs must change the belief, so the comparison
   is not blind: one moves the *seen* monsters by 8 units, the other mirrors the heard-only ones to the other
-  ear.
+  ear. Demo1's first minute holds few monsters heard out of view (16 such states), so
+  `worldmodel.TestHeardOnlyOriginsInvariance` adds a synthetic fight: four soldiers moving at random around
+  a turning player, crying out and firing, with the origin of every one only heard redrawn within its cues
+  (about 450 states, 40 % of them mirrored front to back) and the same two checks.
 - **`.dm2` differential** (`fairness.TestDifferential`). A lockstep episode is recorded the way its client saw
   it: the `.dm2` holds the server messages verbatim. The trace records every decision tick and usercmd.
   `fairness.Rebuild` then plays the recording into a fresh bot on a passive client. That test binary does not

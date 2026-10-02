@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"quake2web/server/internal/agent/mapdata"
 	"quake2web/server/internal/agent/perception"
 	"quake2web/server/internal/q2const"
 	"quake2web/server/internal/qcommon/shared"
@@ -118,5 +119,31 @@ func TestHitNarrowsTheEar(t *testing.T) {
 	}
 	if e.Spread > hitArc+earBin || absf(angleDiff(e.Yaw, 160)) > hitArc || absf(angleDiff(yawTo(Vec3{}, e.Est), e.Yaw)) > 1 {
 		t.Fatalf("after a hit from 160°: %+v", e)
+	}
+}
+
+// TestEarPrefersTheSpawnThatAgrees: a monster never seen, tied to a lump
+// entity, is placed at that entity's spawn origin (static map knowledge)
+// while what is heard agrees with it, and by the cue alone once it does not.
+func TestEarPrefersTheSpawnThatAgrees(t *testing.T) {
+	s := newSim(t)
+	spawn := Vec3{0, 300, 24} // on the left
+	s.ents = []shared.EntityState{voiceAt(30, 90, 320)}
+	s.sound(sSight, 30)
+	s.step()
+	s.w.level.Map = &mapdata.Map{Entities: []mapdata.Entity{{Index: 0}, {Index: 1, Classname: "monster_soldier", Origin: spawn}}}
+	for _, a := range s.w.actors {
+		a.Lump = 1
+	}
+	s.sound(sSight, 30)
+	s.step()
+	if tr := s.track("e1"); !tr.Ear.AtSpawn || tr.Loc != spawn || tr.LocSeen || tr.PosKnown {
+		t.Fatalf("heard where it spawns: %+v", tr)
+	}
+	s.ents = []shared.EntityState{voiceAt(30, -90, 320)} // now on the right
+	s.sound(sSight, 30)
+	s.step()
+	if tr := s.track("e1"); tr.Ear.AtSpawn || tr.Loc == spawn || absf(angleDiff(tr.Ear.Yaw, -90)) > tr.Ear.Spread {
+		t.Fatalf("heard elsewhere: %+v", tr)
 	}
 }

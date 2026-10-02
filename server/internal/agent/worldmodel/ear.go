@@ -17,7 +17,9 @@ import (
 // from back, as a player's turn of the head does. The stand-in position
 // (Ear.Est) is the middle of the narrowed arc at the middle distance of
 // the loudness step, from where the bot stood: a function of the cues
-// and the bot's own state alone.
+// and the bot's own state alone. A monster never seen whose spawn origin
+// the bot knows from the entity lump (static map knowledge) stands in at
+// that origin while the sounds agree with it.
 
 const (
 	// earBins sectors of 360/earBins degrees make up a yaw mask.
@@ -59,6 +61,10 @@ type Ear struct {
 	// Agrees: the last position seen (Track.Pos) fits the last sound: its
 	// bearing is in the arc and it would sound as loud.
 	Agrees bool
+	// AtSpawn: the track was never seen, the bot knows where it spawns
+	// (the entity lump: static map knowledge), and that spawn origin fits
+	// the sounds as Agrees says: Est is the spawn origin.
+	AtSpawn bool
 }
 
 // arcMask returns the sectors whose centers lie within [lo, hi] (degrees,
@@ -147,8 +153,9 @@ func yawTo(a, b Vec3) float32 {
 }
 
 // pickRun picks the run the stand-in goes in when several fit: the one
-// that holds the bearing of the last position seen (seen is false without
-// one), else the one farthest from the view (a source the bot does not
+// that holds the bearing of the last position seen or of the spawn origin
+// the sounds agree with (seen is false without one), else the one farthest
+// from the view (a source the bot does not
 // see is likelier out of view than hidden in it), else the first.
 func pickRun(runs []yawRun, seen bool, seenYaw, viewYaw float32) yawRun {
 	if seen {
@@ -196,28 +203,50 @@ func (w *World) hearCue(a *actor, cue perception.Cue, kind perception.SoundKind,
 		mid = 0
 	}
 	e.Dist = mid
-	w.earPlace(a, viewYaw)
 	e.Agrees = a.PosKnown && m&(1<<sectorOf(yawTo(s.Eye, a.Pos))) != 0 && pc.CueAt(a.Pos, atten, loop).Loud == cue.Loud
+	sp, ok := w.spawnOf(a)
+	e.AtSpawn = ok && !a.PosKnown && m&(1<<sectorOf(yawTo(s.Eye, sp))) != 0 && pc.CueAt(sp, atten, loop).Loud == cue.Loud
+	w.earPlace(a, viewYaw)
 	a.LastUpdate = w.now
 }
 
+// spawnOf returns the spawn origin of the lump entity track a stands for
+// (static map knowledge), ok false without one.
+func (w *World) spawnOf(a *actor) (Vec3, bool) {
+	if a.Lump < 0 || w.level.Map == nil || a.Lump >= len(w.level.Map.Entities) {
+		return Vec3{}, false
+	}
+	return w.level.Map.Entities[a.Lump].Origin, true
+}
+
 // earPlace sets the arc and the stand-in of a's Ear from its yaw mask and
-// Ear.Dist, from where the bot stands now with view yaw viewYaw.
+// Ear.Dist, from where the bot stands now with view yaw viewYaw. Of the
+// runs the mask leaves, the one with the last position seen (or the spawn
+// origin the sounds agree with: Ear.AtSpawn) is picked (pickRun).
 func (w *World) earPlace(a *actor, viewYaw float32) {
 	s := &w.b.Self
-	seenYaw := float32(0)
-	if a.PosKnown {
-		seenYaw = yawTo(s.Eye, a.Pos)
-	}
 	runs := a.earMask.runs()
 	if len(runs) == 0 {
 		return
 	}
-	r := pickRun(runs, a.PosKnown, seenYaw, viewYaw)
 	e := &a.Ear
+	sp, spawn := w.spawnOf(a)
+	spawn = spawn && e.AtSpawn && !a.PosKnown && a.earMask&(1<<sectorOf(yawTo(s.Eye, sp))) != 0
+	prefer, preferYaw := a.PosKnown, float32(0)
+	switch {
+	case a.PosKnown:
+		preferYaw = yawTo(s.Eye, a.Pos)
+	case spawn:
+		prefer, preferYaw = true, yawTo(s.Eye, sp)
+	}
+	r := pickRun(runs, prefer, preferYaw, viewYaw)
 	e.Yaw, e.Spread, e.Ambiguous = r.center(), float32(r.n)*earBin/2, len(runs) > 1
 	sy, cy := math.Sincos(float64(e.Yaw) * math.Pi / 180)
 	e.Est = Vec3{s.Origin[0] + float32(cy)*e.Dist, s.Origin[1] + float32(sy)*e.Dist, s.Origin[2]}
+	e.AtSpawn = spawn
+	if spawn {
+		e.Est = sp
+	}
 }
 
 // hitArc is the half width (degrees) of the arc a hit's recovered bearing
