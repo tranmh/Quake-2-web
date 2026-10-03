@@ -1,5 +1,10 @@
 # Quake 2 Web
 
+[![Demo video: the AI bot playing demo1 with its decision overlay](docs/videos/demo-poster.jpg)](docs/videos/demo-720p.mp4)
+
+▶ [Watch the demo (720p, 3.8 MB)](docs/videos/demo-720p.mp4) ·
+⬇ [Download the original (1080p60, 13 MB)](https://github.com/tranmh/Quake-2-web/raw/main/docs/videos/VIDEO-2026-10-03-08-11-22.mp4)
+
 A faithful port of id Software's Quake II (v3.19, protocol 34) to a modern stack:
 
 - **Go** authoritative server (`server/`): engine server, all game logic (22 monsters, 11 weapons, every map
