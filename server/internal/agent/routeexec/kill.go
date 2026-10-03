@@ -70,7 +70,9 @@ func boxCenter(t *worldmodel.Track, o Vec3) Vec3 {
 // killTrack finds the track of kill step p's monster: the one the world
 // model tied to its lump entity (by class and spawn origin at level entry,
 // once seen), else the nearest track of its class near its spawn origin
-// that is tied to no lump entity.
+// that is tied to no lump entity, else a monster of its family never
+// seen that hearing places at its spawn (Ear.AtSpawn: the only spawn of
+// the family the sounds fit, which says nothing of the entity number).
 func (x *Executor) killTrack(p *plan) *worldmodel.Track {
 	b := x.belief
 	if b == nil {
@@ -79,20 +81,29 @@ func (x *Executor) killTrack(p *plan) *worldmodel.Track {
 	if t := b.TrackByLump(p.ent); t != nil {
 		return t
 	}
-	names := map[string]bool{}
+	names, fams := map[string]bool{}, map[string]bool{}
 	for _, c := range x.classes.ForClassname(p.class) {
 		names[c.Name] = true
+		fams[worldmodel.Family(c)] = true
 	}
-	var best *worldmodel.Track
-	bd := float32(trackMatch)
+	var best, heard *worldmodel.Track
+	bd, hd := float32(trackMatch), float32(trackMatch)
 	for i := range b.Tracks {
 		t := &b.Tracks[i]
-		if t.Lump >= 0 || !names[t.Class] || !t.PosKnown {
-			continue
+		switch {
+		case t.Lump >= 0:
+		case t.PosKnown && names[t.Class]:
+			if d := dist3(t.Pos, p.point); d < bd {
+				best, bd = t, d
+			}
+		case !t.PosKnown && t.Ear.AtSpawn && fams[t.Class]:
+			if d := dist3(t.Loc, p.point); d < hd {
+				heard, hd = t, d
+			}
 		}
-		if d := dist3(t.Pos, p.point); d < bd {
-			best, bd = t, d
-		}
+	}
+	if best == nil {
+		return heard
 	}
 	return best
 }

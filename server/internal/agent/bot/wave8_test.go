@@ -6,6 +6,7 @@ import (
 
 	"quake2web/server/internal/agent/control"
 	"quake2web/server/internal/agent/decide"
+	"quake2web/server/internal/agent/perception"
 	"quake2web/server/internal/agent/trace"
 	"quake2web/server/internal/agent/worldmodel"
 	"quake2web/server/internal/q2const"
@@ -92,6 +93,37 @@ func TestScan(t *testing.T) {
 	m.frame(2400)
 	if math.Abs(float64(angleDiff(m.searchYaw, 90))) > 1 {
 		t.Fatalf("suspect: yaw %v, want 90", m.searchYaw)
+	}
+}
+
+// TestListen: with no target, on the move, the bot looks where an attacker
+// only heard sounded from (its stand-in) when it attacked moments ago and
+// sounded near or mid; not for one that sounded far or attacked long ago.
+func TestListen(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		loud perception.Loudness
+		age  int64
+		want bool
+	}{
+		{"mid", perception.LoudMid, 200, true},
+		{"near", perception.LoudNear, 200, true},
+		{"far", perception.LoudFar, 200, false},
+		{"long ago", perception.LoudMid, listenFor + 500, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newCmdBot(t, openSpot)
+			a := monster("e3", along(openSpot, 90, 600))
+			a.Visible, a.Shootable, a.LocSeen, a.LastAttack = false, false, false, 1000-tc.age
+			a.Ear.Loud = tc.loud
+			m.bel.Tracks = []worldmodel.Track{a}
+			m.bel.Time = 1000
+			m.frame(1000)
+			m.cmd()
+			if got := math.Abs(float64(angleDiff(m.shoot.yaw, 0))) > 1; got != tc.want {
+				t.Fatalf("view yaw %v: turned %v, want %v", m.shoot.yaw, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -27,6 +27,22 @@ func TestTargetAndExit(t *testing.T) {
 	if ov := h.x.Objective(); ov == nil || ov.Exit {
 		t.Fatalf("objective %+v: a kill is left before the exit", ov)
 	}
+	// heard, never seen: no lump entity (the entity number does not say
+	// which gunner it is); a gunner placed by ear at some other spawn is
+	// not the kill's, one placed at this spawn (the only one of its family
+	// the sounds fit) is
+	elsewhere := worldmodel.Track{ID: "e3", Class: "gunner", Lump: -1, Loc: Vec3{spawn[0] + 900, spawn[1], spawn[2]},
+		LocKnown: true, Ear: worldmodel.Ear{AtSpawn: true}, Life: worldmodel.LifeAlive}
+	h.b.Tracks = []worldmodel.Track{elsewhere}
+	if d := h.tick(1); d.Kill == nil || d.Kill.Track != "" {
+		t.Fatalf("kill order %+v: a gunner heard at another spawn taken for the kill's", d.Kill)
+	}
+	atSpawn := elsewhere
+	atSpawn.ID, atSpawn.Loc = "e4", spawn
+	h.b.Tracks = append(h.b.Tracks, atSpawn)
+	if d := h.tick(1); d.Kill == nil || d.Kill.Track != "e4" || !d.Kill.ByEar || dist3(d.Kill.Pos, spawn) > 1 {
+		t.Fatalf("kill order %+v: want the gunner hearing places at the kill's spawn", d.Kill)
+	}
 	moved := Vec3{spawn[0] + 100, spawn[1], spawn[2]}
 	h.b.Tracks = []worldmodel.Track{{ID: "e7", Class: "gunner", Lump: 418, Pos: moved, PosKnown: true, Mins: Vec3{-16, -16, -24},
 		Maxs: Vec3{16, 16, 32}, Visible: true, Shootable: true, Life: worldmodel.LifeAlive}}
