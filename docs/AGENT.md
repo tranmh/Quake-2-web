@@ -19,6 +19,18 @@ make demo                     # the free demo pak -> assets/demo/baseq2/pak0.pak
 make nav                      # nav graphs of demo1-3 + overlay dumps -> assets/nav (optional: built on first use)
 make agent-smoke              # scripted + noisy-mock demo1 runs (mock held to the 0.7 gate) + q2bot validate
 
+make watch                    # q2server + web app, a bot playing live in the browser (BACKEND=jev: .env's key)
+make bot-run && make replay   # a headless run into runs/, then replay it in the browser
+make help                     # every shortcut: runs, validate, replay-check, jev-probe, jev-run ...
+```
+
+`make watch`, `make replay` and `make web` (`tools/bots-web.sh`) read `.env`, start q2server with bots
+on and the in-memory database (`USE_DB=1`: `.env`'s `DATABASE_URL`), start `next dev`, and open the page;
+Ctrl-C stops both. Runs go to `runs/` (`RUNS=dir`), which the server lists for replay, so CLI runs and
+browser-watched runs replay alike. `make replay-check` repeats only on the code that recorded the run: a
+change to the bot's behaviour (perception, the world model, the decide state) makes older runs diverge.
+
+```sh
 cd server
 go run ./cmd/q2bot run -backend scripted -require-complete -max-deaths 25 -level-timeout 60m   # the whole campaign, lockstep, ~40 s
 go run ./cmd/q2bot validate runs/<id>                                 # traces + every .dm2
