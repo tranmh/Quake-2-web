@@ -1,6 +1,6 @@
 diff -ru -a orig/ctf/g_items.c src/ctf/g_items.c
---- orig/ctf/g_items.c	2026-09-25 21:21:49.551750102 +0200
-+++ src/ctf/g_items.c	2026-09-25 21:22:19.141668286 +0200
+--- orig/ctf/g_items.c	2026-10-07 19:25:40.007706130 +0200
++++ src/ctf/g_items.c	2026-10-07 19:25:40.015183946 +0200
 @@ -40,9 +40,9 @@
  gitem_armor_t combatarmor_info	= { 50, 100, .60, .30, ARMOR_COMBAT};
  gitem_armor_t bodyarmor_info	= {100, 200, .80, .60, ARMOR_BODY};
@@ -15,8 +15,8 @@ diff -ru -a orig/ctf/g_items.c src/ctf/g_items.c
  static int	power_shield_index;
  
 diff -ru -a orig/ctf/p_weapon.c src/ctf/p_weapon.c
---- orig/ctf/p_weapon.c	2026-09-25 21:21:49.552452079 +0200
-+++ src/ctf/p_weapon.c	2026-09-25 21:22:50.032041455 +0200
+--- orig/ctf/p_weapon.c	2026-10-07 19:25:40.006640174 +0200
++++ src/ctf/p_weapon.c	2026-10-07 19:25:40.015778477 +0200
 @@ -23,7 +23,7 @@
  #include "m_player.h"
  
@@ -27,8 +27,8 @@ diff -ru -a orig/ctf/p_weapon.c src/ctf/p_weapon.c
  
  
 diff -ru -a orig/game/g_items.c src/game/g_items.c
---- orig/game/g_items.c	2026-09-25 21:21:49.539937301 +0200
-+++ src/game/g_items.c	2026-09-25 21:22:19.140668274 +0200
+--- orig/game/g_items.c	2026-10-07 19:25:40.001558127 +0200
++++ src/game/g_items.c	2026-10-07 19:25:40.016225029 +0200
 @@ -40,9 +40,9 @@
  gitem_armor_t combatarmor_info	= { 50, 100, .60, .30, ARMOR_COMBAT};
  gitem_armor_t bodyarmor_info	= {100, 200, .80, .60, ARMOR_BODY};
@@ -43,8 +43,8 @@ diff -ru -a orig/game/g_items.c src/game/g_items.c
  static int	power_shield_index;
  
 diff -ru -a orig/linux/sys_linux.c src/linux/sys_linux.c
---- orig/linux/sys_linux.c	2026-09-25 21:21:49.558709717 +0200
-+++ src/linux/sys_linux.c	2026-09-25 21:21:49.576952609 +0200
+--- orig/linux/sys_linux.c	2026-10-07 19:25:40.009467979 +0200
++++ src/linux/sys_linux.c	2026-10-07 19:25:40.016596056 +0200
 @@ -205,7 +205,7 @@
  #elif defined __alpha__
  	const char *gamename = "gameaxp.so";
@@ -54,9 +54,34 @@ diff -ru -a orig/linux/sys_linux.c src/linux/sys_linux.c
  #endif
  
  	setreuid(getuid(), getuid());
+diff -ru -a orig/qcommon/cmodel.c src/qcommon/cmodel.c
+--- orig/qcommon/cmodel.c	2026-10-07 19:25:39.996796854 +0200
++++ src/qcommon/cmodel.c	2026-10-07 19:32:34.603969253 +0200
+@@ -103,6 +103,7 @@
+ int			numclusters = 1;
+ 
+ mapsurface_t	nullsurface;
++mapsurface_t	oracle_badsurface;	// target of brush sides with texinfo < 0 (oracle patch)
+ 
+ int			floodvalid;
+ 
+@@ -432,7 +433,12 @@
+ 		j = LittleShort (in->texinfo);
+ 		if (j >= numtexinfo)
+ 			Com_Error (ERR_DROP, "Bad brushside texinfo");
+-		out->surface = &map_surfaces[j];
++		// qbsp writes texinfo -1 for bevel sides; &map_surfaces[-1] points before the array, at
++		// whatever the linker placed there. Pin it to the all-zero surface the fixtures assume.
++		if (j < 0)
++			out->surface = &oracle_badsurface;
++		else
++			out->surface = &map_surfaces[j];
+ 	}
+ }
+ 
 diff -ru -a orig/qcommon/md4.c src/qcommon/md4.c
---- orig/qcommon/md4.c	2026-09-25 21:21:49.531260907 +0200
-+++ src/qcommon/md4.c	2026-09-25 21:21:49.565311216 +0200
+--- orig/qcommon/md4.c	2026-10-07 19:25:39.996618307 +0200
++++ src/qcommon/md4.c	2026-10-07 19:25:40.016753806 +0200
 @@ -12,7 +12,7 @@
  #ifdef __alpha__
  typedef unsigned int UINT4;
@@ -67,8 +92,8 @@ diff -ru -a orig/qcommon/md4.c src/qcommon/md4.c
  
    
 diff -ru -a orig/server/sv_ents.c src/server/sv_ents.c
---- orig/server/sv_ents.c	2026-09-25 21:21:49.534213561 +0200
-+++ src/server/sv_ents.c	2026-09-25 21:21:49.570019421 +0200
+--- orig/server/sv_ents.c	2026-10-07 19:25:39.997526492 +0200
++++ src/server/sv_ents.c	2026-10-07 19:25:40.016959892 +0200
 @@ -506,7 +506,7 @@
  			continue;		// already have the cluster we want
  		src = CM_ClusterPVS(leafs[i]);
@@ -79,8 +104,8 @@ diff -ru -a orig/server/sv_ents.c src/server/sv_ents.c
  }
  
 diff -ru -a orig/server/sv_world.c src/server/sv_world.c
---- orig/server/sv_world.c	2026-09-25 21:21:49.533518971 +0200
-+++ src/server/sv_world.c	2026-09-25 21:21:49.573311312 +0200
+--- orig/server/sv_world.c	2026-10-07 19:25:39.997225274 +0200
++++ src/server/sv_world.c	2026-10-07 19:25:40.017211006 +0200
 @@ -33,7 +33,7 @@
  // (type *)STRUCT_FROM_LINK(link_t *link, type, member)
  // ent = STRUCT_FROM_LINK(link,entity_t,order)
