@@ -133,12 +133,11 @@ describe('parseNavDump: defaults and invalid input', () => {
     expect(d.spawns[0]!.node).toBe(1);
   });
 
-  // parseNavDump's contract: "every edge and spawn names an existing node". Edges check both bounds, spawns
-  // only the upper one, so a negative spawn node is accepted.
-  it.skip('aqaa: open bug, see report - rejects a spawn with a negative node index', () => {
-    expect(() => parse({ spawns: [{ entity: 1, origin: [0, 0, 0], node: -1 }] })).toThrow(
-      /spawns\[0\]: node out of range/,
-    );
+  // A spawn node of -1 is nav.NoNode: the Go graph validator accepts it (spawn point without a node) and
+  // `q2nav dump` writes it through, so the parser must accept it too.
+  it('accepts a spawn without a node (node -1, nav.NoNode)', () => {
+    const d = parse({ spawns: [{ entity: 1, origin: [0, 0, 0], node: -1 }] });
+    expect(d.spawns[0]!.node).toBe(-1);
   });
 });
 
