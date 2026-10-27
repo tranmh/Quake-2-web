@@ -1,5 +1,12 @@
 import { bench, describe } from 'vitest';
-import { buildNavOverlay, cullOverlay, parseNavDump, shortestPath, type NavDump, type RouteTable } from '../src/navOverlay';
+import {
+  buildNavOverlay,
+  cullOverlay,
+  parseNavDump,
+  shortestPath,
+  type NavDump,
+  type RouteTable,
+} from '../src/navOverlay';
 
 // Deterministic grid graph of n*n nodes, 4-neighbour edges both ways, plus some volumes and solids.
 function makeDump(n: number): Record<string, unknown> {
@@ -15,10 +22,21 @@ function makeDump(n: number): Record<string, unknown> {
   const boxes = Math.max(1, n);
   const box = (k: number) => ({ min: [k * 16, k * 8, 0], max: [k * 16 + 32, k * 8 + 32, 64] });
   return {
-    schema: 'q2nav.dump/2', map: 'bench', checksum: 1, skill: 1,
-    edgeKinds: ['walk', 'jump', 'drop'], nodeFlags: ['spawn', 'end', 'mover', 'ladder', 'water'], edgeFlags: [],
-    nodes, edges,
-    volumes: Array.from({ length: boxes }, (_, k) => ({ ...box(k), kind: 'trigger', entity: k + 1, model: `*${k + 1}` })),
+    schema: 'q2nav.dump/2',
+    map: 'bench',
+    checksum: 1,
+    skill: 1,
+    edgeKinds: ['walk', 'jump', 'drop'],
+    nodeFlags: ['spawn', 'end', 'mover', 'ladder', 'water'],
+    edgeFlags: [],
+    nodes,
+    edges,
+    volumes: Array.from({ length: boxes }, (_, k) => ({
+      ...box(k),
+      kind: 'trigger',
+      entity: k + 1,
+      model: `*${k + 1}`,
+    })),
     movers: [],
     lasers: [],
     spawns: [{ entity: 0, origin: [0, 0, 0], node: 0 }],
@@ -33,13 +51,19 @@ function makeRoute(n: number): RouteTable {
   return { name: 'r', map: 'bench', steps };
 }
 
-const SIZES: [string, number][] = [['small 10x10', 10], ['medium 40x40', 40], ['large 120x120', 120]];
+const SIZES: [string, number][] = [
+  ['small 10x10', 10],
+  ['medium 40x40', 40],
+  ['large 120x120', 120],
+];
 let sink: unknown;
 
 describe('parseNavDump', () => {
   for (const [name, n] of SIZES) {
     const raw = makeDump(n);
-    bench(name, () => { sink = parseNavDump(raw); });
+    bench(name, () => {
+      sink = parseNavDump(raw);
+    });
   }
 });
 
@@ -47,14 +71,18 @@ describe('buildNavOverlay (all layers, route)', () => {
   for (const [name, n] of SIZES) {
     const d = parseNavDump(makeDump(n));
     const route = makeRoute(n);
-    bench(name, () => { sink = buildNavOverlay(d, { route }); });
+    bench(name, () => {
+      sink = buildNavOverlay(d, { route });
+    });
   }
 });
 
 describe('shortestPath corner to corner', () => {
   for (const [name, n] of SIZES) {
     const d: NavDump = parseNavDump(makeDump(n));
-    bench(name, () => { sink = shortestPath(d, 0, n * n - 1); });
+    bench(name, () => {
+      sink = shortestPath(d, 0, n * n - 1);
+    });
   }
 });
 
@@ -62,7 +90,9 @@ describe('cullOverlay', () => {
   for (const [name, n] of SIZES) {
     const o = buildNavOverlay(parseNavDump(makeDump(n)), { route: makeRoute(n) });
     const eye: [number, number, number] = [n * 16, n * 16, 32];
-    bench(name, () => { sink = cullOverlay(o, eye, { radius: 1024, maxPoints: 512, maxLines: 1024 }); });
+    bench(name, () => {
+      sink = cullOverlay(o, eye, { radius: 1024, maxPoints: 512, maxLines: 1024 });
+    });
   }
 });
 

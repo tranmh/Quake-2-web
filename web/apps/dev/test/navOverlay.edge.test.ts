@@ -59,7 +59,15 @@ describe('parseNavDump: defaults and invalid input', () => {
       lasers: [{ entity: 5, start: [0, 0, 0], end: [1, 0, 0] }],
       solids: [{ entity: 6, min: [0, 0, 0], max: [1, 1, 1] }],
     });
-    expect(d.volumes[0]).toEqual({ kind: 'item', entity: 3, class: '', model: '', pose: -1, min: [0, 0, 0], max: [1, 1, 1] });
+    expect(d.volumes[0]).toEqual({
+      kind: 'item',
+      entity: 3,
+      class: '',
+      model: '',
+      pose: -1,
+      min: [0, 0, 0],
+      max: [1, 1, 1],
+    });
     expect(d.movers[0]).toMatchObject({ class: '', model: '', kind: '', spawn: 0, gone: false });
     expect(d.lasers[0]!.on).toBe(false);
     expect(d.solids[0]!.box).toBe(false);
@@ -91,12 +99,28 @@ describe('parseNavDump: defaults and invalid input', () => {
     ['edge endpoint == node count', { edges: [[0, 2, 1, 0, 0]] }, /edges\[0\]: node out of range/],
     ['edge with a string', { edges: [[0, '1', 1, 0, 0]] }, /edges\[0\]: not \[from/],
     ['volume not an object', { volumes: [[1]] }, /volumes\[0\]: not an object/],
-    ['volume without kind', { volumes: [{ entity: 1, min: [0, 0, 0], max: [1, 1, 1] }] }, /volumes\[0\]\.kind/],
-    ['volume with fractional pose', { volumes: [{ kind: 'x', entity: 1, pose: 0.5, min: [0, 0, 0], max: [1, 1, 1] }] }, /volumes\[0\]\.pose/],
+    [
+      'volume without kind',
+      { volumes: [{ entity: 1, min: [0, 0, 0], max: [1, 1, 1] }] },
+      /volumes\[0\]\.kind/,
+    ],
+    [
+      'volume with fractional pose',
+      { volumes: [{ kind: 'x', entity: 1, pose: 0.5, min: [0, 0, 0], max: [1, 1, 1] }] },
+      /volumes\[0\]\.pose/,
+    ],
     ['mover without poses', { movers: [{ entity: 1 }] }, /poses: not an array/],
-    ['mover pose without name', { movers: [{ entity: 1, poses: [{ min: [0, 0, 0], max: [1, 1, 1] }] }] }, /movers\[0\]\.poses\[0\]\.name/],
+    [
+      'mover pose without name',
+      { movers: [{ entity: 1, poses: [{ min: [0, 0, 0], max: [1, 1, 1] }] }] },
+      /movers\[0\]\.poses\[0\]\.name/,
+    ],
     ['laser with a bad end', { lasers: [{ entity: 1, start: [0, 0, 0], end: [0, 0] }] }, /lasers\[0\]\.end/],
-    ['spawn node == node count', { spawns: [{ entity: 1, origin: [0, 0, 0], node: 2 }] }, /spawns\[0\]: node out of range/],
+    [
+      'spawn node == node count',
+      { spawns: [{ entity: 1, origin: [0, 0, 0], node: 2 }] },
+      /spawns\[0\]: node out of range/,
+    ],
     ['solid with a string max', { solids: [{ entity: 1, min: [0, 0, 0], max: 'x' }] }, /solids\[0\]\.max/],
     ['button not an integer', { buttons: [1.25] }, /buttons\[0\]: not an integer/],
   ])('rejects %s', (_name, over, re) => {
@@ -166,7 +190,13 @@ describe('buildNavOverlay boxes', () => {
     expect(o.lines).toHaveLength(12 + 12 + 1);
     expect(o.lines.slice(0, 12).every((l) => l.color === BOX_COLORS.volume)).toBe(true);
     expect(o.lines.slice(12, 24).every((l) => l.color === BOX_COLORS.moverPose)).toBe(true);
-    expect(o.lines[24]).toEqual({ from: [0, 0, 0], to: [0, 0, 9], color: BOX_COLORS.laserOff, width: 4, layer: 'boxes' });
+    expect(o.lines[24]).toEqual({
+      from: [0, 0, 0],
+      to: [0, 0, 9],
+      color: BOX_COLORS.laserOff,
+      width: 4,
+      layer: 'boxes',
+    });
   });
 
   it('draws nothing with no layers and keeps the map name', () => {
@@ -175,7 +205,13 @@ describe('buildNavOverlay boxes', () => {
   });
 
   it('turns a plain segment red when a later conditional edge of the same pair and kind follows', () => {
-    const d = parse({ edges: [[0, 1, 1, 0, 0], [1, 0, 1, 1, 0], [0, 1, 2, 0, 0]] });
+    const d = parse({
+      edges: [
+        [0, 1, 1, 0, 0],
+        [1, 0, 1, 1, 0],
+        [0, 1, 2, 0, 0],
+      ],
+    });
     const o = buildNavOverlay(d, { layers: ['edges'] });
     expect(o.lines.map((l) => l.color)).toEqual([CONDITIONAL_COLOR, PAL.yellow]);
   });
@@ -227,11 +263,21 @@ describe('route placement', () => {
         [100, 0, 0, 0, 0],
         [200, 0, 0, 0, 0],
       ],
-      edges: [[0, 1, 1, 0, 0], [1, 2, 1, 0, 0]],
+      edges: [
+        [0, 1, 1, 0, 0],
+        [1, 2, 1, 0, 0],
+      ],
     });
     const o = buildNavOverlay(d3, {
       layers: ['route'],
-      route: { name: 'r', map: 'mini', steps: [{ op: 'goto', pos: [100, 0, 0] }, { op: 'goto', pos: [200, 0, 0] }] },
+      route: {
+        name: 'r',
+        map: 'mini',
+        steps: [
+          { op: 'goto', pos: [100, 0, 0] },
+          { op: 'goto', pos: [200, 0, 0] },
+        ],
+      },
     });
     expect(o.waypoints.map((w) => w.node)).toEqual([0, 1, 2]);
     expect(o.routeNodes).toEqual([0, 1, 2]);
@@ -243,7 +289,13 @@ describe('route placement', () => {
 
 describe('graph helpers', () => {
   it('skips self edges in the adjacency and treats out-of-range nodes as unreachable', () => {
-    const d = parse({ edges: [[0, 0, 1, 0, 0], [0, 1, 1, 0, 0], [0, 1, 2, 0, 0]] });
+    const d = parse({
+      edges: [
+        [0, 0, 1, 0, 0],
+        [0, 1, 1, 0, 0],
+        [0, 1, 2, 0, 0],
+      ],
+    });
     expect(adjacency(d)).toEqual([[1, 1], []]);
     expect(shortestPath(d, 0, 2)).toBeNull();
     expect(shortestPath(d, 1, 0)).toBeNull();
@@ -258,7 +310,12 @@ describe('graph helpers', () => {
         [50, 0, 0, 0, 0],
         [100, 0, 0, 0, 0],
       ],
-      edges: [[0, 1, 1, 0, 0], [1, 3, 1, 0, 0], [0, 2, 1, 0, 0], [2, 3, 1, 0, 0]],
+      edges: [
+        [0, 1, 1, 0, 0],
+        [1, 3, 1, 0, 0],
+        [0, 2, 1, 0, 0],
+        [2, 3, 1, 0, 0],
+      ],
     });
     expect(shortestPath(d, 0, 3)).toEqual([0, 2, 3]);
   });
@@ -320,8 +377,12 @@ describe('route table loading', () => {
     expect(() => parseRouteTable(null)).toThrow(/route table: not an object/);
     expect(() => parseRouteTable({ map: 'm', steps: [] })).toThrow(/route table name/);
     expect(() => parseRouteTable({ name: 'n', steps: [] })).toThrow(/route table map/);
-    expect(() => parseRouteTable({ name: 'n', map: 'm', steps: {} })).toThrow(/route table n: steps is not an array/);
-    expect(() => parseRouteTable({ name: 'n', map: 'm', steps: [{ op: 'goto' }, null] })).toThrow(/step 1 has no op/);
+    expect(() => parseRouteTable({ name: 'n', map: 'm', steps: {} })).toThrow(
+      /route table n: steps is not an array/,
+    );
+    expect(() => parseRouteTable({ name: 'n', map: 'm', steps: [{ op: 'goto' }, null] })).toThrow(
+      /step 1 has no op/,
+    );
     await expect(routeForMap('m', async () => [])).rejects.toThrow(/campaign\.json: not an object/);
   });
 
@@ -342,7 +403,10 @@ describe('route table loading', () => {
   });
 
   it('propagates a broken route table of a visit', async () => {
-    const files: Record<string, unknown> = { 'campaign.json': { visits: ['a.json'] }, 'a.json': { name: 'a' } };
+    const files: Record<string, unknown> = {
+      'campaign.json': { visits: ['a.json'] },
+      'a.json': { name: 'a' },
+    };
     await expect(routeForMap('m', async (f) => files[f])).rejects.toThrow(/route table map/);
   });
 });
