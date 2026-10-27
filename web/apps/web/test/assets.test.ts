@@ -120,14 +120,21 @@ describe('fetchAssetIndex', () => {
     vi.stubGlobal('fetch', fn);
     const err = await fetchAssetIndex('err-1').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err).toMatchObject({ status: 404, code: 'not_found', message: 'asset index for pakset "err-1": no such pakset' });
+    expect(err).toMatchObject({
+      status: 404,
+      code: 'not_found',
+      message: 'asset index for pakset "err-1": no such pakset',
+    });
     // the rejected promise is not cached: a second call fetches again
     await expect(fetchAssetIndex('err-1')).resolves.toEqual(makeIndex());
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to the HTTP status when the error body is not JSON', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>oops</html>', { status: 500 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('<html>oops</html>', { status: 500 })),
+    );
     await expect(fetchAssetIndex('err-2')).rejects.toMatchObject({
       status: 500,
       code: 'http_500',
@@ -211,7 +218,11 @@ describe('AssetLoader', () => {
   it('throws an ApiError on an HTTP error and retries on the next load', async () => {
     const fn = blobServer({});
     const loader = new AssetLoader(makeIndex({ a: { sha256: A } }));
-    await expect(loader.loadFile('a')).rejects.toMatchObject({ status: 404, code: 'asset', message: 'asset a: HTTP 404' });
+    await expect(loader.loadFile('a')).rejects.toMatchObject({
+      status: 404,
+      code: 'asset',
+      message: 'asset a: HTTP 404',
+    });
     await expect(loader.loadFile('a')).rejects.toBeInstanceOf(ApiError);
     expect(fn).toHaveBeenCalledTimes(2);
     expect(loader.stats.network).toBe(0);

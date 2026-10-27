@@ -130,13 +130,30 @@ describe('targetText / actionText', () => {
 describe('statCells', () => {
   it('falls back to the decision cost without totals and formats seconds', () => {
     const cells = Object.fromEntries(
-      statCells({ ...base, latencyMs: 1500, costUsd: 2 } as DecisionView, null).map((c) => [c.label, c.value]),
+      statCells({ ...base, latencyMs: 1500, costUsd: 2 } as DecisionView, null).map((c) => [
+        c.label,
+        c.value,
+      ]),
     );
-    expect(cells).toEqual({ latency: '1.50 s', cost: '$2.00', rate: '–', model: '–', 'k / d': '–', p50: '–' });
+    expect(cells).toEqual({
+      latency: '1.50 s',
+      cost: '$2.00',
+      rate: '–',
+      model: '–',
+      'k / d': '–',
+      p50: '–',
+    });
   });
 
   it('lists the cells in footer order', () => {
-    expect(statCells(null, null).map((c) => c.label)).toEqual(['latency', 'cost', 'rate', 'model', 'k / d', 'p50']);
+    expect(statCells(null, null).map((c) => c.label)).toEqual([
+      'latency',
+      'cost',
+      'rate',
+      'model',
+      'k / d',
+      'p50',
+    ]);
   });
 });
 

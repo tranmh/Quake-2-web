@@ -13,7 +13,14 @@ export function buildIndexEntry(over: Partial<IndexEntry> = {}): IndexEntry {
 }
 
 export function buildMapInfo(over: Partial<MapInfo> = {}): MapInfo {
-  return { name: 'base1', path: 'maps/base1.bsp', sha256: fakeSha(2), message: 'Outer Base', sky: 'unit1_', ...over };
+  return {
+    name: 'base1',
+    path: 'maps/base1.bsp',
+    sha256: fakeSha(2),
+    message: 'Outer Base',
+    sky: 'unit1_',
+    ...over,
+  };
 }
 
 export function buildAssetIndex(over: Partial<AssetIndex> = {}): AssetIndex {
@@ -40,8 +47,12 @@ export function stubFetch(routes: Record<string, FakeRoute | FakeRoute[]>) {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const q = queues.get(url);
     const r = q ? (q.length > 1 ? q.shift()! : q[0]) : { status: 404, body: { error: 'not_found' } };
-    const body = r.body instanceof ArrayBuffer || typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? null);
-    return new Response(body as BodyInit, { status: r.status ?? 200, headers: { 'content-type': 'application/json' } });
+    const body =
+      r.body instanceof ArrayBuffer || typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? null);
+    return new Response(body as BodyInit, {
+      status: r.status ?? 200,
+      headers: { 'content-type': 'application/json' },
+    });
   });
   vi.stubGlobal('fetch', fn);
   return fn;
