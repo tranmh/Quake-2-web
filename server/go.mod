@@ -1,11 +1,11 @@
 module quake2web/server
 
-go 1.22
+go 1.24
 
 require (
 	github.com/coder/websocket v1.8.12
 	github.com/jackc/pgx/v5 v5.7.1
-	github.com/klauspost/compress v1.18.0
+	github.com/klauspost/compress v1.18.7
 	github.com/pressly/goose/v3 v3.21.1
 	github.com/prometheus/client_golang v1.20.5
 	golang.org/x/crypto v0.31.0

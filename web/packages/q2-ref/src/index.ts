@@ -129,7 +129,15 @@ export interface Refresh {
   drawTileClear(x: number, y: number, w: number, h: number, name: string): void;
   drawFill(x: number, y: number, w: number, h: number, c: number): void;
   drawFadeScreen(): void;
-  drawStretchRaw(x: number, y: number, w: number, h: number, cols: number, rows: number, data: Uint8Array): void;
+  drawStretchRaw(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    cols: number,
+    rows: number,
+    data: Uint8Array,
+  ): void;
 
   /** null = game palette. 768 bytes RGB. */
   cinematicSetPalette(palette: Uint8Array | null): void;

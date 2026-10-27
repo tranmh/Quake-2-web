@@ -632,7 +632,8 @@ function validateGlCmds(r: GLState, glcmds: Int32Array, name: string): void {
     const count = glcmds[p++]!;
     if (!count) return;
     const n = Math.abs(count);
-    if (n > (glcmds.length - p) / 3) r.ri.sysError(ERR_DROP, `Mod_LoadAliasModel: ${name} has a bad glcmd list`);
+    if (n > (glcmds.length - p) / 3)
+      r.ri.sysError(ERR_DROP, `Mod_LoadAliasModel: ${name} has a bad glcmd list`);
     p += n * 3;
   }
 }
