@@ -178,7 +178,10 @@ describe('deep BSP trees', () => {
 });
 
 describe.skipIf(demoPak() === null)('crafted MD2', () => {
-  const name = demoPak()?.list().find((n) => n.endsWith('.md2')) ?? '';
+  const name =
+    demoPak()
+      ?.list()
+      .find((n) => n.endsWith('.md2')) ?? '';
 
   it('a glcmd strip count larger than the command list is rejected with ERR_DROP', () => {
     const md2 = Uint8Array.from(demoPak()!.read(name)!);
@@ -199,7 +202,9 @@ describe.skipIf(demoPak() === null)('crafted MD2', () => {
 
   it('every model of the demo pak still loads', () => {
     const r = loadWith({});
-    const models = demoPak()!.list().filter((n) => n.endsWith('.md2') || n.endsWith('.sp2'));
+    const models = demoPak()!
+      .list()
+      .filter((n) => n.endsWith('.md2') || n.endsWith('.sp2'));
     expect(models.length).toBeGreaterThan(10);
     for (const m of models) expect(Mod_ForName(r, m, true)).not.toBeNull();
   });

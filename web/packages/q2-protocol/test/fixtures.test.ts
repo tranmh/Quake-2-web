@@ -6,10 +6,7 @@ import { SizeBuf } from '../src/sizebuf';
 // for the network boundary (a written packet turned into a readable one).
 
 /** Builds a fresh write buffer, optionally capturing overflow prints. */
-export function makeWriter(
-  maxsize = 1400,
-  allowoverflow = false,
-): { sb: SizeBuf; prints: string[] } {
+export function makeWriter(maxsize = 1400, allowoverflow = false): { sb: SizeBuf; prints: string[] } {
   const sb = new SizeBuf(maxsize);
   sb.allowoverflow = allowoverflow;
   const prints: string[] = [];
