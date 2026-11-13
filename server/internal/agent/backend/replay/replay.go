@@ -10,7 +10,8 @@
 // latencies are offered as a decide.LatencyModel so the lockstep schedule
 // repeats too. A recorded timeout replays as an error that is
 // context.DeadlineExceeded, so the scheduler classifies it as a timeout
-// again.
+// again. An answer the decision cache reused (backend/cache) replays with
+// its marker, so it again makes no api_call and costs nothing.
 package replay
 
 import (
@@ -91,6 +92,11 @@ type entry struct {
 	timeout bool
 	latency time.Duration
 	cost    float64
+	// a reused answer's marker and savings (trace.Decision.Cache...)
+	cache      string
+	savedTok   int64
+	savedUSD   float64
+	cacheAgeMs int64
 }
 
 // Backend replays recorded responses. It is safe for concurrent use.
@@ -123,7 +129,8 @@ func New(events []trace.Event, opt Options) (*Backend, error) {
 			return nil, fmt.Errorf("replay: request %d recorded twice in episode %d", d.Req, opt.Episode)
 		}
 		en := &entry{seq: d.Req, lane: d.Lane, digest: d.ReqDigest, raw: d.Response, err: d.Err, timeout: d.Timeout,
-			latency: time.Duration(d.LatencyMs * float64(time.Millisecond)), cost: d.CostUSD}
+			latency: time.Duration(d.LatencyMs * float64(time.Millisecond)), cost: d.CostUSD,
+			cache: d.Cache, savedTok: d.CacheSavedTokens, savedUSD: d.CacheSavedUSD, cacheAgeMs: d.CacheAgeMs}
 		if en.digest == "" && d.State != nil && d.Questions != nil {
 			en.digest = decide.RequestDigest(d.State, d.Questions)
 		}
@@ -218,5 +225,8 @@ func (b *Backend) Decide(ctx context.Context, req *decide.Request) (*decide.Resp
 		return nil, fmt.Errorf("replay: request %d: %w", req.Seq, err)
 	}
 	resp.Seq, resp.Latency, resp.CostUSD = req.Seq, e.latency, e.cost
+	// a recorded reuse of the decision cache replays as one (no api_call,
+	// no charge), with what it saved
+	resp.Cache, resp.SavedTokens, resp.SavedUSD, resp.CacheAgeMs = e.cache, e.savedTok, e.savedUSD, e.cacheAgeMs
 	return resp, nil
 }

@@ -263,6 +263,17 @@ type Response struct {
 	// local backend); Retries the attempts it took beyond the first.
 	Status  int
 	Retries int
+	// Cache marks an answer the decision cache (backend/cache) reused
+	// instead of asking the backend: "exact" or "approx" ("" for the
+	// backend's own). Nothing was sent, so Usage and CostUSD are zero;
+	// SavedTokens and SavedUSD are the input tokens and the cost of the
+	// answer it reused, and CacheAgeMs how old (session ms since its
+	// request's snapshot) that answer was when reused (0 when it came from
+	// another episode).
+	Cache       string
+	SavedTokens int64
+	SavedUSD    float64
+	CacheAgeMs  int64
 }
 
 // DecisionBackend answers question sets. Decide must not modify the

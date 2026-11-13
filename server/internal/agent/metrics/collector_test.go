@@ -333,3 +333,41 @@ func TestWriteJSON(t *testing.T) {
 		t.Fatal("write into a missing directory")
 	}
 }
+
+// TestCacheStats: run.json's cache block counts the marked decisions as
+// hits and the api calls as misses, by lane, and adds up the savings; a
+// run without a cache has none.
+func TestCacheStats(t *testing.T) {
+	evs := []trace.Event{
+		{Type: trace.TypeDecision, Body: trace.Decision{Lane: "fast", Cache: "approx", CacheSavedTokens: 1000, CacheSavedUSD: 0.5}},
+		{Type: trace.TypeDecision, Body: trace.Decision{Lane: "fast", Cache: "approx", CacheSavedTokens: 500, CacheSavedUSD: 0.25}},
+		{Type: trace.TypeDecision, Body: trace.Decision{Lane: "fast"}},
+		{Type: trace.TypeAPICall, Body: trace.APICall{Lane: "fast", Status: 200}},
+		{Type: trace.TypeDecision, Body: trace.Decision{Lane: "slow"}},
+		{Type: trace.TypeAPICall, Body: trace.APICall{Lane: "slow", Status: 200}},
+		{Type: trace.TypeDecision, Body: trace.Decision{Lane: "tick"}},
+	}
+	sum := func(cfg *RunConfig) RunSummary {
+		c := NewCollector()
+		c.SetConfig(cfg)
+		for _, e := range evs {
+			if err := c.Add(e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return c.Summary()
+	}
+	s := sum(&RunConfig{Cache: "approx:fine", CacheTTL: "2s"})
+	c := s.Cache
+	if c == nil || c.Mode != "approx:fine" || c.TTL != "2s" || c.Hits != 2 || c.Misses != 2 || c.HitRate != 0.5 ||
+		c.Lanes["fast"] != (CacheLane{Hits: 2, Misses: 1, HitRate: 2.0 / 3}) || c.Lanes["slow"] != (CacheLane{Misses: 1}) ||
+		c.SavedInputTokens != 1500 || c.SavedUSD != 0.75 || s.API.Calls != 2 {
+		t.Fatalf("cache %+v", c)
+	}
+	if s := sum(&RunConfig{}); s.Cache != nil {
+		t.Fatalf("a run without a cache: %+v", s.Cache)
+	}
+	if s := sum(nil); s.Cache != nil {
+		t.Fatalf("no config: %+v", s.Cache)
+	}
+}

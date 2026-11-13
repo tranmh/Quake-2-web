@@ -84,6 +84,7 @@ lint:
 #   make bot-run BACKEND=ollama MODEL=nimble-v3 [OLLAMA_URL=http://127.0.0.1:11434]   a local Ollama model
 #   make replay [RUN=<id>]                      replay a finished run in the browser (default the newest)
 #   make jev-probe / make jev-run [BUDGET=1]    live Jev API checks (costs real money, capped)
+#   CACHE=exact|approx[:fine|coarse] [CACHE_TTL=2s]  the decision cache for bot-run and jev-run (see docs/AGENT.md)
 RUNS ?= runs
 BACKEND ?= scripted
 MAPS ?=
@@ -93,12 +94,16 @@ RUN ?=
 # BACKEND=ollama only: the model and the server (empty: Q2_OLLAMA_MODEL / OLLAMA_HOST, else nimble-v3 on 127.0.0.1:11434)
 MODEL ?=
 OLLAMA_URL ?=
+# the decision cache (model backends): off, exact, approx[:fine|coarse]; its lifetime in game time (empty: none)
+CACHE ?=
+CACHE_TTL ?=
 export RUNS BACKEND BOT_MAPS RUN
 
 Q2BOT := server/bin/q2bot
 LOADENV := set -a; [ ! -f .env ] || . ./.env; set +a;
 # the evaluation settings of docs/AGENT-EVAL.md (the death cap lets demo3 be retried)
-BOT_FLAGS := -session lockstep -skill 1 -max-deaths 25 -level-timeout 60m $(if $(MAPS),-maps $(MAPS))
+BOT_FLAGS := -session lockstep -skill 1 -max-deaths 25 -level-timeout 60m $(if $(MAPS),-maps $(MAPS)) \
+  $(if $(CACHE),-cache $(CACHE)) $(if $(CACHE_TTL),-cache-ttl $(CACHE_TTL))
 # RUN, else the newest run of $(RUNS) with a run.json
 RUN_DIR = d="$(RUN)"; [ -n "$$d" ] || d=$$(for x in $$(ls -1t $(RUNS) 2>/dev/null); do [ -f "$(RUNS)/$$x/run.json" ] && { echo "$$x"; break; }; done); \
   d=$(RUNS)/$$(basename "$$d"); [ -f "$$d/run.json" ] || { echo "no finished run in $(RUNS) (make bot-run, or RUN=<id>)" >&2; exit 1; };
@@ -115,6 +120,7 @@ help:
 	@echo "  make replay-check [RUN=<id>]            re-run the recorded episodes, no API calls"
 	@echo "  make jev-probe                          a few live Jev requests (well under a cent)"
 	@echo "  make jev-run [BUDGET=1] [MAPS=...]      budget-capped live Jev campaign + validate"
+	@echo "    (bot-run, jev-run: CACHE=exact|approx[:fine|coarse] [CACHE_TTL=2s] adds the decision cache)"
 	@echo "  make agent-smoke                        scripted + mock smoke runs"
 	@echo "Setup: make demo nav. Web: http://localhost:3000. Ctrl-C stops watch/replay/web."
 

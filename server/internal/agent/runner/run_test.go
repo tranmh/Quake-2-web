@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"quake2web/server/internal/agent/backend/cache"
 	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/decide"
@@ -592,5 +593,93 @@ func TestRunInProc(t *testing.T) {
 	_, err = Replay(context.Background(), ReplayConfig{Trace: filepath.Join(r.Dir(), "ep-000", TraceFile), FS: fs})
 	if err == nil || !strings.Contains(err.Error(), "only lockstep runs replay") {
 		t.Fatalf("replay of a realtime trace: %v", err)
+	}
+}
+
+// TestRunMockCache runs the mock with the approximate decision cache in
+// lockstep: hits are marked, make no api_call and cost nothing, run.json
+// counts them from the trace (and validates), the run repeats exactly, and
+// its strict replay answers the hits from the trace.
+func TestRunMockCache(t *testing.T) {
+	t.Parallel()
+	fs := sessiontest.DemoFS(t)
+	ccfg, err := cache.Parse("approx:coarse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func() (*Runner, *metrics.RunSummary) {
+		r, s, err := runDemo1(t, fs, Config{Backend: BackendMock, Seed: 1, EpisodeTimeout: gameCap(0), Cache: ccfg, Trace: TraceFull})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustValid(t, r.Dir(), ValidateOptions{})
+		return r, s
+	}
+	r, s := run()
+	c := s.Cache
+	if c == nil || c.Mode != "approx:coarse" || c.Hits == 0 || c.Misses != s.API.Calls || c.SavedInputTokens <= 0 || c.SavedUSD <= 0 {
+		t.Fatalf("cache %+v, api %+v", c, s.API)
+	}
+	if s.Config == nil || s.Config.Cache != "approx:coarse" {
+		t.Fatalf("config %+v", s.Config)
+	}
+	evs, _ := RunEvents(r.Dir())
+	marked, requests := 0, 0
+	hit := map[uint64]bool{}
+	for _, d := range bodies[trace.Decision](t, evs, trace.TypeDecision) {
+		if d.Lane != "fast" && d.Lane != "slow" {
+			continue
+		}
+		if !strings.HasPrefix(d.Err, "budget: ") {
+			requests++
+		}
+		if d.Cache == "" {
+			continue
+		}
+		marked++
+		hit[d.Req] = true
+		if d.Cache != cache.MarkApprox || d.Response == nil || d.Err != "" || d.InputTokens != 0 || d.CostUSD != 0 ||
+			d.CacheSavedTokens <= 0 || d.LatencyMs != 0 || d.Backend != "jev" {
+			// the mock's client keeps its name ("jev") behind the cache
+			t.Fatalf("hit decision %d: cache %q err %q tokens %d cost %v saved %d latency %v backend %q", d.Req, d.Cache, d.Err,
+				d.InputTokens, d.CostUSD, d.CacheSavedTokens, d.LatencyMs, d.Backend)
+		}
+	}
+	for _, a := range bodies[trace.APICall](t, evs, trace.TypeAPICall) {
+		if hit[a.Req] {
+			t.Fatalf("an api_call for hit %d", a.Req)
+		}
+	}
+	if marked != c.Hits || s.API.Calls+c.Hits != requests {
+		t.Fatalf("%d marked, %d hits; %d calls + %d hits vs %d requests", marked, c.Hits, s.API.Calls, c.Hits, requests)
+	}
+	t.Logf("cache: %d hits / %d misses (%.1f%%), saved %d tokens", c.Hits, c.Misses, 100*c.HitRate, c.SavedInputTokens)
+
+	if testing.Short() {
+		return
+	}
+	// the same seed repeats the run (run.json apart from the run id and
+	// the wall clock)
+	r2, s2 := run()
+	norm := func(s *metrics.RunSummary) []byte {
+		cp := *s
+		cp.Run, cp.Started, cp.WallMs = "", "", 0
+		b, _ := json.Marshal(cp)
+		return b
+	}
+	if !bytes.Equal(norm(s), norm(s2)) {
+		t.Fatalf("two runs differ:\n%s\n%s", norm(s), norm(s2))
+	}
+	if r2.Dir() == r.Dir() {
+		t.Fatal("one run directory for two runs")
+	}
+	rep, err := Replay(context.Background(), ReplayConfig{Trace: filepath.Join(r.Dir(), "ep-000", TraceFile), Mode: ReplayResponses,
+		Strict: true, FS: fs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Diverged() || rep.Err != "" || rep.ResponseDivergence != nil {
+		js, _ := json.MarshalIndent(rep, "", " ")
+		t.Fatalf("cache replay: %s", js)
 	}
 }

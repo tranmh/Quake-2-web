@@ -54,10 +54,13 @@ type RunSummary struct {
 	GameMs int64 `json:"game_ms"`
 	Events int   `json:"events"`
 
-	Totals    Totals           `json:"totals"`
-	Decisions DecisionStats    `json:"decisions"`
-	Ticks     *TickStats       `json:"ticks,omitempty"` // per-tick provenance (tick or provenance events; nil without them)
-	API       APIStats         `json:"api"`
+	Totals    Totals        `json:"totals"`
+	Decisions DecisionStats `json:"decisions"`
+	Ticks     *TickStats    `json:"ticks,omitempty"` // per-tick provenance (tick or provenance events; nil without them)
+	API       APIStats      `json:"api"`
+	// Cache is the decision cache's hits and misses (nil when the run had
+	// none).
+	Cache     *CacheStats      `json:"cache,omitempty"`
 	Budget    *BudgetState     `json:"budget,omitempty"`
 	Errors    int              `json:"errors"`
 	LastError string           `json:"last_error,omitempty"`
@@ -114,6 +117,11 @@ type RunConfig struct {
 	Record bool   `json:"record"`
 	// ReplayTrace is the recording a replay backend answered from.
 	ReplayTrace string `json:"replay_trace,omitempty"`
+	// Cache is the decision cache's mode (exact, approx:fine,
+	// approx:coarse; empty: off) and CacheTTL its lifetime in game time
+	// (empty: none).
+	Cache    string `json:"cache,omitempty"`
+	CacheTTL string `json:"cache_ttl,omitempty"`
 }
 
 // MockConfig is the configuration of a mock run's fake Jev server.
@@ -304,6 +312,29 @@ type APIStats struct {
 	// CombatQPS is the OK answers during combat per second of combat.
 	CombatCalls int     `json:"combat_calls"`
 	CombatQPS   float64 `json:"combat_qps"`
+}
+
+// CacheStats summarizes the decision cache from the trace: Hits are the
+// request decisions marked as reused answers, Misses the api_call events
+// (the requests that went to the backend), both by lane; HitRate is hits
+// over both. SavedInputTokens and SavedUSD add up what the reused answers
+// cost when the backend first gave them.
+type CacheStats struct {
+	Mode             string               `json:"mode"`
+	TTL              string               `json:"ttl,omitempty"`
+	Hits             int                  `json:"hits"`
+	Misses           int                  `json:"misses"`
+	HitRate          float64              `json:"hit_rate"`
+	Lanes            map[string]CacheLane `json:"lanes"`
+	SavedInputTokens int64                `json:"saved_input_tokens"`
+	SavedUSD         float64              `json:"saved_usd"`
+}
+
+// CacheLane is one lane's hits and misses.
+type CacheLane struct {
+	Hits    int     `json:"hits"`
+	Misses  int     `json:"misses"`
+	HitRate float64 `json:"hit_rate"`
 }
 
 // Percentiles are nearest-rank percentiles.

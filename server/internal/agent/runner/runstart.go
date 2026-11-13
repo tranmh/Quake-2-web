@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"quake2web/server/internal/agent/backend/cache"
 	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/metrics"
 	"quake2web/server/internal/agent/trace"
@@ -31,6 +32,8 @@ const (
 	keyMaxDeaths         = "max_deaths"
 	keyMockFaults        = "mock.faults"
 	keyMockPolicy        = "mock.policy"
+	keyCache             = "cache"
+	keyCacheTTL          = "cache.ttl"
 )
 
 // recordedRun is what a trace says about the run that wrote it.
@@ -84,6 +87,8 @@ func configFromRunStart(e trace.Event) (*recordedRun, error) {
 	num(keyLevelTimeout, func(s string) (e error) { c.LevelTimeout, e = time.ParseDuration(s); return })
 	num(keyEpisodeTimeout, func(s string) (e error) { c.EpisodeTimeout, e = time.ParseDuration(s); return })
 	num(keyMaxDeaths, func(s string) (e error) { c.MaxDeaths, e = strconv.Atoi(s); return })
+	num(keyCache, func(s string) (e error) { c.Cache, e = cache.Parse(s); return })
+	num(keyCacheTTL, func(s string) (e error) { c.Cache.TTL, e = time.ParseDuration(s); return })
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +115,7 @@ func runConfig(rs trace.RunStart) *metrics.RunConfig {
 		Campaign: m[keyCampaign], Maps: append([]string(nil), rs.Maps...), Skill: rs.Skill, Seed: rs.Seed,
 		Episodes: max(rs.Episodes, 1), SimLatency: m[keySimLatency], SimLatencyMs: rs.SimLatencyMs,
 		LevelTimeout: m[keyLevelTimeout], EpisodeTimeout: m[keyEpisodeTimeout], Trace: m[keyTrace],
-		Record: m[keyRecord] == "true", ReplayTrace: m[keyReplayTrace]}
+		Record: m[keyRecord] == "true", ReplayTrace: m[keyReplayTrace], Cache: m[keyCache], CacheTTL: m[keyCacheTTL]}
 	c.StopAfter, _ = strconv.Atoi(m[keyStopAfter])
 	c.MaxDeaths, _ = strconv.Atoi(m[keyMaxDeaths])
 	c.MinModelShare, _ = strconv.ParseFloat(m[keyMinModelShare], 64)

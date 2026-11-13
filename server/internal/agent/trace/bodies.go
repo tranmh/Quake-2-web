@@ -130,6 +130,16 @@ type Decision struct {
 	Timeout bool `json:"timeout,omitempty"`
 	// Stale: the answer arrived after its TTL and was not applied.
 	Stale bool `json:"stale,omitempty"`
+	// Cache marks an answer the decision cache reused instead of asking
+	// the backend ("exact" or "approx"; absent: the backend's own answer).
+	// Such a decision has no api_call and no tokens or cost of its own;
+	// CacheSavedTokens and CacheSavedUSD are the input tokens and the cost
+	// of the answer it reused, CacheAgeMs that answer's age in session ms
+	// (absent when it came from another episode).
+	Cache            string  `json:"cache,omitempty"`
+	CacheSavedTokens int64   `json:"cache_saved_tokens,omitempty"`
+	CacheSavedUSD    float64 `json:"cache_saved_usd,omitempty"`
+	CacheAgeMs       int64   `json:"cache_age_ms,omitempty"`
 	// Intent, Tick and Cmds are set on lane tick events only: the Intent
 	// acted on with its provenance, what the bot executed, and the
 	// usercmds built since the previous tick event (see LaneTick).

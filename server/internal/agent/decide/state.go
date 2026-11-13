@@ -388,6 +388,10 @@ func distance(a, b Vec3) float64 {
 	return math.Sqrt(dx*dx + dy*dy + dz*dz)
 }
 
+// DistBucket is the distance bucket (Enemy.Dist) of a distance in units:
+// close, mid or far.
+func DistBucket(units int) string { return distBucket(float64(units)) }
+
 func distBucket(d float64) string {
 	switch {
 	case d < closeDist:

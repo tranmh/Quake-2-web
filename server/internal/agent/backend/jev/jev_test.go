@@ -496,6 +496,128 @@ func TestCircuitBreaker(t *testing.T) {
 	}
 }
 
+// TestWaitWhenOpen: a WaitWhenOpen client waits for the breaker and the
+// cooldown to end instead of refusing, within its context, and lets one
+// probe out at a time while it recovers (real, short durations: the waits
+// run on timers).
+func TestWaitWhenOpen(t *testing.T) {
+	const open = 100 * time.Millisecond
+	five := []jevtest.Fault{jevtest.FaultServer, jevtest.FaultServer, jevtest.FaultServer, jevtest.FaultServer, jevtest.FaultServer}
+	fail5 := func(t *testing.T, c *Client) {
+		t.Helper()
+		for i := 1; i <= 5; i++ {
+			if _, err := c.Decide(context.Background(), request(t, uint64(i), decide.LaneFast)); ClassOf(err) != ClassServer {
+				t.Fatalf("call %d: %v", i, err)
+			}
+		}
+	}
+	waiting := func(cfg *Config) { cfg.BreakerOpen, cfg.WaitWhenOpen = open, true }
+
+	t.Run("breaker", func(t *testing.T) {
+		srv := scriptedServer(t, jevtest.Faults{Sequence: five})
+		c := client(t, srv.URL(), waiting)
+		fail5(t, c)
+		start := time.Now()
+		if _, err := c.Decide(context.Background(), request(t, 6, decide.LaneFast)); err != nil {
+			t.Fatalf("after the breaker: %v", err)
+		}
+		if d := time.Since(start); d < open/2 || srv.Count() != 6 {
+			t.Fatalf("waited %v, %d calls", d, srv.Count())
+		}
+		if s := c.Stats(); s.Errors.Breaker != 0 || s.OK != 1 {
+			t.Fatalf("stats %+v", s)
+		}
+	})
+
+	t.Run("bounded by the context", func(t *testing.T) {
+		srv := scriptedServer(t, jevtest.Faults{Server: 1})
+		c := client(t, srv.URL(), func(cfg *Config) { cfg.BreakerOpen, cfg.WaitWhenOpen = time.Minute, true })
+		fail5(t, c)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		_, err := c.Decide(ctx, request(t, 6, decide.LaneFast))
+		if ClassOf(err) != ClassTimeout || !errors.Is(err, context.DeadlineExceeded) || srv.Count() != 5 {
+			t.Fatalf("a wait past the deadline: %v (%d calls)", err, srv.Count())
+		}
+	})
+
+	t.Run("cooldown", func(t *testing.T) {
+		srv := scriptedServer(t, jevtest.Faults{Sequence: []jevtest.Fault{jevtest.FaultRateLimit}, RetryAfter: open})
+		c := client(t, srv.URL(), func(cfg *Config) { cfg.WaitWhenOpen = true })
+		if _, err := c.Decide(context.Background(), request(t, 1, decide.LaneFast)); ClassOf(err) != ClassRateLimit {
+			t.Fatalf("first call: %v", err)
+		}
+		start := time.Now()
+		if _, err := c.Decide(context.Background(), request(t, 2, decide.LaneFast)); err != nil || srv.Count() != 2 {
+			t.Fatalf("after the cooldown: %v (%d calls)", err, srv.Count())
+		}
+		if d := time.Since(start); d < open/2 {
+			t.Fatalf("waited only %v", d)
+		}
+	})
+
+	// while the server keeps failing, the waiters go out one probe at a
+	// time (each failure reopens the breaker), not all at once
+	t.Run("one probe at a time", func(t *testing.T) {
+		srv := scriptedServer(t, jevtest.Faults{Server: 1})
+		c := client(t, srv.URL(), func(cfg *Config) { waiting(cfg); cfg.RatePerSec = -1 })
+		fail5(t, c)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*open/2)
+		defer cancel()
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if _, err := c.Decide(ctx, request(t, uint64(10+i), decide.LaneFast)); err == nil {
+					t.Error("a call succeeded against a failing server")
+				}
+			}()
+		}
+		wg.Wait()
+		// the breaker reopens for `open` after each probe: about two
+		// probes fit in 2.5 opens
+		if n := srv.Count() - 5; n < 1 || n > 3 {
+			t.Fatalf("%d probes in %v with the breaker open for %v after each", n, 5*open/2, open)
+		}
+	})
+
+	// once the server recovers, the probe succeeds and every waiter goes
+	t.Run("recovered", func(t *testing.T) {
+		srv := scriptedServer(t, jevtest.Faults{Sequence: five})
+		// no token bucket: eight calls at once would empty it (a lockstep
+		// run has none either)
+		c := client(t, srv.URL(), func(cfg *Config) { waiting(cfg); cfg.RatePerSec = -1 })
+		fail5(t, c)
+		var wg sync.WaitGroup
+		var failed atomic.Int32
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if _, err := c.Decide(context.Background(), request(t, uint64(10+i), decide.LaneFast)); err != nil {
+					t.Error(err)
+					failed.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		if failed.Load() != 0 || srv.Count() != 13 {
+			t.Fatalf("%d failed, %d calls", failed.Load(), srv.Count())
+		}
+	})
+
+	// without it the client refuses at once, as before
+	t.Run("off", func(t *testing.T) {
+		srv := scriptedServer(t, jevtest.Faults{Sequence: five})
+		c := client(t, srv.URL(), func(cfg *Config) { cfg.BreakerOpen = open })
+		fail5(t, c)
+		if _, err := c.Decide(context.Background(), request(t, 6, decide.LaneFast)); ClassOf(err) != ClassBreaker {
+			t.Fatalf("breaker open: %v", err)
+		}
+	})
+}
+
 func TestAuthDisables(t *testing.T) {
 	srv := scriptedServer(t, jevtest.Faults{})
 	wrong := client(t, srv.URL(), func(cfg *Config) { cfg.APIKey = trace.NewSecret("sk-wrong") })

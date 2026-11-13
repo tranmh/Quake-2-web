@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"quake2web/server/internal/agent/backend/cache"
 	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/backend/jevtest"
 	"quake2web/server/internal/agent/budget"
@@ -142,6 +143,8 @@ func TestConfigCheck(t *testing.T) {
 		{Config{FS: nopFS{}, Budget: budget.Limits{USD: -1}}, "negative budget"},
 		{Config{FS: nopFS{}, NewInstance: func(int, session.Spec, uint32) (*host.Instance, func(), error) { return nil, nil, nil }},
 			"NewInstance needs an inproc session"},
+		{Config{FS: nopFS{}, Cache: cache.Config{Mode: cache.Exact}}, "needs a model backend"},
+		{Config{FS: nopFS{}, Backend: BackendMock, Cache: cache.Config{Mode: cache.Exact, TTL: -time.Second}}, "negative cache"},
 	}
 	for _, tc := range bad {
 		c := tc.cfg
@@ -247,6 +250,44 @@ func TestRunStartRoundTrip(t *testing.T) {
 	bad := trace.Event{Type: trace.TypeRunStart, Body: trace.RunStart{Schema: "other/1"}}
 	if _, err := configFromRunStart(bad); err == nil {
 		t.Fatal("foreign schema accepted")
+	}
+}
+
+// TestCacheRunStart: the decision cache's mode and TTL go through
+// run_start (a replay's config, run.json's config section); a run without
+// a cache records neither.
+func TestCacheRunStart(t *testing.T) {
+	cc, err := cache.Parse("approx:coarse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc.TTL = 2 * time.Second
+	cfg := Config{FS: nopFS{}, Backend: BackendMock, Cache: cc}
+	if err := cfg.check(); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: cfg, camp: campaignOf("demo1"), visits: []string{"demo1"}, skill: 1, be: &backends{kind: BackendMock}}
+	rs := r.runStartBody()
+	if rs.Config[keyCache] != "approx:coarse" || rs.Config[keyCacheTTL] != "2s" {
+		t.Fatalf("run_start config %v", rs.Config)
+	}
+	rec, err := configFromRunStart(trace.Event{Type: trace.TypeRunStart, Body: rs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.cfg.Cache != cc {
+		t.Fatalf("rebuilt cache %+v, want %+v", rec.cfg.Cache, cc)
+	}
+	if c := runConfig(rs); c.Cache != "approx:coarse" || c.CacheTTL != "2s" {
+		t.Fatalf("run.json config %+v", c)
+	}
+	r.cfg.Cache = cache.Config{}
+	rs = r.runStartBody()
+	if _, ok := rs.Config[keyCache]; ok {
+		t.Fatalf("a run without a cache records one: %v", rs.Config)
+	}
+	if c := runConfig(rs); c.Cache != "" || c.CacheTTL != "" {
+		t.Fatalf("run.json config %+v", c)
 	}
 }
 

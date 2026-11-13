@@ -61,6 +61,7 @@ func (r *Record) Decision(opt RecordOptions) trace.Decision {
 	if resp := r.Result.Resp; resp != nil {
 		d.Response, d.Model = resp.Raw, resp.Model
 		d.InputTokens, d.OutputTokens, d.CostUSD = resp.Usage.InputTokens, resp.Usage.OutputTokens, resp.CostUSD
+		d.Cache, d.CacheSavedTokens, d.CacheSavedUSD, d.CacheAgeMs = resp.Cache, resp.SavedTokens, resp.SavedUSD, resp.CacheAgeMs
 	}
 	if r.Result.Err != nil {
 		d.Err = r.Result.Err.Error()

@@ -224,6 +224,11 @@ Each package's `doc.go` describes it in detail; this is the overview.
     - 401/403 disable the client.
     - 429/529 back off, honouring `Retry-After`.
     - Five consecutive failures open the breaker for 5 s.
+    - In a lockstep `jev` run (`jev.Config.WaitWhenOpen`) a call waits for the breaker or the 429/529
+      cooldown to end instead of failing at once, so the game pauses during an outage instead of racing
+      ahead on the fallback. After either ends, one call goes out at a time (a probe) until one succeeds. The
+      wait is bounded by the scheduler's 60 s hang guard. Realtime clients and the bot server refuse at once,
+      as before.
   - **Recording.** Timeouts are recorded as `decision.timeout`.
 - **Budgets** (`budget`).
   - A budget refusal is recorded as a decision with `err: "budget: …"` and no `api_call`.
@@ -298,6 +303,7 @@ runner rejects, and `jev-probe` without a key).
 | `-cheats god,notarget` | none | Client commands at every level entry: a test run, not a benchmark. |
 | `-replay-trace file` | | The recording `-backend replay` answers from. |
 | `-model m`, `-ollama-url u`, `-ollama-timeout d` | `$Q2_OLLAMA_MODEL` else `nimble-v3`; `$OLLAMA_HOST` else `http://127.0.0.1:11434`; 10m | `-backend ollama` only: the model, its server, and the time one call may take once sent. |
+| `-cache off\|exact\|approx[:fine\|coarse]`, `-cache-ttl d` | off, none | The decision cache of a model backend (see below); `approx` is `approx:fine`. `-cache-ttl` is the oldest answer reused, in game time. `make bot-run`/`jev-run` take `CACHE=` and `CACHE_TTL=`. |
 | `-pak file`, `-nav-dir dir` | the demo pak, `assets/nav` | Game data and nav cache. |
 | `-json`, `-v` | | Print run.json; copy the episode logs to stderr. |
 
@@ -338,6 +344,42 @@ make bot-run BACKEND=ollama MODEL=nimble-v3 [OLLAMA_URL=http://127.0.0.1:11434] 
   demo1 run asks some 600-800 requests.
 - **Realtime.** In an `inproc` session the scheduler's 800 ms/2.5 s deadlines apply, so a slow model only
   times out and the fallback plays. The bot server (`q2server`) does not offer ollama bots.
+
+#### Decision cache
+
+`-cache` (`backend/cache`) answers a request with an answer the model already gave in the same run, instead
+of asking again. It wraps any model backend (`jev`, `mock`, `ollama`) and keeps the backend's name.
+
+- **Modes.** `exact` reuses the answer to an identical request (the request digest: the same state and
+  questions byte for byte). `approx:fine` and `approx:coarse` reuse the answer to a similar request: the key
+  is the lane, the map, every question's option keys in order, and the lane state with its raw numbers
+  bucketed or dropped (bearings to 8 or 4 sectors, `units` and `path` to the distance buckets, `elev` and
+  `health` dropped, `armor`, `damage_last_1s`, `target_since_s` and `deaths_here` to bands, event texts
+  without their ages and damage amounts, kill and secret counts dropped). The package documentation lists
+  every field. The option keys are part of the key, so a reused answer always names options of the new
+  request; the option descriptions (which repeat raw units and bearings) are not.
+- **What a hit is.** The decision event carries `cache: "exact"` or `"approx"`, zero tokens and cost,
+  `cache_saved_tokens` and `cache_saved_usd` (what the reused answer cost) and `cache_age_ms`. A hit makes no
+  `api_call` and is not charged by the budget, and its answers still count as the model's. The cache sits
+  inside the budget gate, so an exhausted budget still stops model answers.
+- **Determinism.** In lockstep the lookup happens when a request is submitted (through the scheduler's
+  latency model) and a hit is collected in the same tick, with a latency of 0. Answers are kept when they
+  are collected, in game-time order, so a request sees the answers collected at earlier ticks. A lockstep
+  run with the cache repeats exactly, and `q2bot replay -strict` replays the hits from the trace. In
+  realtime the lookup happens in the backend call.
+- **Lifetime.** One cache per run, in memory, shared by the episodes, at most 16 384 entries (least
+  recently used out). Only answers without an error that answer every question are kept; a reused answer
+  is not kept again. `-cache-ttl` bounds the age of a reused answer (from the snapshot of the request it
+  answered to the new one's, within an episode).
+- **`run.json`.** A `cache` block: `mode`, `ttl`, `hits` (the marked decisions), `misses` (the `api_call`s),
+  `hit_rate`, per lane, `saved_input_tokens` and `saved_usd`. `api.calls` + `cache.hits` is the number of
+  requests that reached the cache.
+- **Offline.** `q2bot cache-sim runs/<id>...` runs recorded requests through the cache under the same
+  rules without asking any model, for `exact`, `approx:fine` and `approx:coarse`. It reports hits, misses,
+  in-flight duplicates (a miss whose identical predecessor was still waiting for its answer) and savings per
+  lane, the answer fidelity of the hits (how often the reused answer equals the one the model gave to that
+  request, per question), the hit rate under a few TTLs, and the age of the reused answers. A live cache
+  changes what the bot does after a hit, so the offline numbers are an estimate.
 
 ### `q2bot replay -trace runs/<id>/ep-NNN/trace.jsonl.gz [-mode actions|responses] [-strict] [-out dir] [-json]`
 
@@ -456,6 +498,7 @@ runs/<run id>/                      id: <UTC time>-<8 hex>, generated outside ev
 | `decisions` | Request-level counts per field (`model`, `scripted`, `reflex`, `stale`, `model_share`). `decisions` counts requests and `ticks` counts tick events. `comparisons`, `disagreements` and `disagreement_rate` compare the model with the script. |
 | `ticks` | Per-tick provenance of the acted-on values per field (`default`, `model`, `scripted`, `stale`, `reflex`), `gate_model_share`, `tick_events`. |
 | `api` | `calls`, `ok`, `errors`, `retries`, `stale`, `stale_rate`, `by_status`, `latency_ms` (`p50`/`p95`/`p99`/`max`), `input_tokens`, `output_tokens`, `cost_usd`, `combat_calls`, `combat_qps`. |
+| `cache` | With `-cache`: `mode`, `ttl`, `hits`, `misses`, `hit_rate`, `lanes` (`fast`, `slow`: `hits`, `misses`, `hit_rate`), `saved_input_tokens`, `saved_usd`. |
 | `budget` | `spent_usd`, `limit_usd`, `rate_hz`, `scripted_only`, `reason` (with a budget). |
 | `episodes[]` | `index`, `seed`, `outcome`, `reason`, `game_ms`, `totals`, `ticks`, `levels[]` (`lvl`, `map`, `visit`, `outcome`, `time_ms`, `combat_ms`, `deaths`, `reloads`, `damage_taken`, `bot_kills`, `stuck`, game counters). |
 
@@ -502,6 +545,8 @@ A **`decision`** event has one of three lanes:
     `questions`, `response` (the backend's raw answer);
   - `fields[]`: `name`, `value`, `source`, `confidence`, `scripted`, `fallback`;
   - `backend`, `model`, `latency_ms`, tokens, `cost_usd`, `combat`, `err`, `timeout`, `stale`.
+  - With the decision cache, a reused answer: `cache` (`exact`/`approx`), `cache_saved_tokens`,
+    `cache_saved_usd`, `cache_age_ms` (and no `api_call`).
 - **`tick`**: one decision tick of the bot, which happens on each server frame it decided on, alive and
   outside an intermission. Fields:
   - `state_digest`;
@@ -638,8 +683,11 @@ with `cd server && Q2_UPDATE_FIXTURES=1 go test ./internal/agent/decide ./intern
   plays three seeds at a time).
 - **Budgets.** A budgeted lockstep run repeats too, because the requests to refuse are planned from game time
   before each tick. The wall-clock `-account-qps` limiter is outside that guarantee.
+- **Decision cache.** A lockstep run with `-cache` repeats as the same run without it does: the cache is
+  looked up at submission and filled at collection, both in game-time order.
 - **Not deterministic.**
-  - A real Jev client: network, wall-clock timeouts, breaker, cooldown.
+  - A real Jev client: network, wall-clock timeouts, breaker, cooldown (in lockstep it waits them out
+    instead of failing, but the wait and the probes still follow the wall clock).
   - `inproc` runs: realtime pacing.
   - Maps with `func_clock` spawnflags 0, which reads the wall clock. These are not in demo1–3.
 - **Scope of the guarantees.** Nav graphs and recordings are byte-stable on one machine and Go version. Go's

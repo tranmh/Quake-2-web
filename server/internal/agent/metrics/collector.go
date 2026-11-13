@@ -41,6 +41,11 @@ type Collector struct {
 	gate   *GateConfig
 	// config is the run's configuration (SetConfig).
 	config *RunConfig
+	// cache counts the decision cache's hits and misses by lane, and what
+	// the hits saved
+	cacheHits, cacheMisses map[string]int
+	cacheTokens            int64
+	cacheUSD               float64
 }
 
 type episodeAcc struct {
@@ -55,12 +60,14 @@ type episodeAcc struct {
 // NewCollector returns an empty collector.
 func NewCollector() *Collector {
 	return &Collector{
-		s:        RunSummary{Schema: Schema, Outcome: OutcomeIncomplete},
-		episodes: map[int]*episodeAcc{},
-		fields:   map[string]*Provenance{},
-		byStatus: map[string]int{},
-		ticks:    map[int]*tickAcc{},
-		tickEv:   map[int]*tickAcc{},
+		s:           RunSummary{Schema: Schema, Outcome: OutcomeIncomplete},
+		episodes:    map[int]*episodeAcc{},
+		fields:      map[string]*Provenance{},
+		byStatus:    map[string]int{},
+		ticks:       map[int]*tickAcc{},
+		cacheHits:   map[string]int{},
+		cacheMisses: map[string]int{},
+		tickEv:      map[int]*tickAcc{},
 	}
 }
 
@@ -250,6 +257,11 @@ func (c *Collector) add(e trace.Event) error {
 			break
 		}
 		c.s.Decisions.Decisions++
+		if b.Cache != "" {
+			c.cacheHits[b.Lane]++
+			c.cacheTokens += b.CacheSavedTokens
+			c.cacheUSD += b.CacheSavedUSD
+		}
 		for _, f := range b.Fields {
 			p := c.fields[f.Name]
 			if p == nil {
@@ -283,6 +295,7 @@ func (c *Collector) add(e trace.Event) error {
 		}
 		a := &c.s.API
 		a.Calls++
+		c.cacheMisses[b.Lane]++
 		c.byStatus[strconv.Itoa(b.Status)]++
 		ok := b.Err == "" && (b.Status == 0 || b.Status >= 200 && b.Status < 300)
 		if ok {
@@ -451,6 +464,10 @@ func (c *Collector) Summary() RunSummary {
 		a.CombatQPS = float64(a.CombatCalls) / (float64(s.Totals.CombatMs) / 1000)
 	}
 
+	if cfg := c.config; cfg != nil && cfg.Cache != "" {
+		s.Cache = c.cacheStats(cfg)
+	}
+
 	if len(c.ticks) > 0 || len(c.tickEv) > 0 {
 		var all tickAcc
 		set := map[int]bool{}
@@ -476,6 +493,21 @@ func (c *Collector) Summary() RunSummary {
 		s.ModelDriven = g.Passed
 	}
 	return s
+}
+
+// cacheStats summarizes the decision cache of a run configured with cfg.
+func (c *Collector) cacheStats(cfg *RunConfig) *CacheStats {
+	cs := &CacheStats{Mode: cfg.Cache, TTL: cfg.CacheTTL, Lanes: map[string]CacheLane{}, SavedInputTokens: c.cacheTokens,
+		SavedUSD: c.cacheUSD}
+	for _, lane := range []string{"fast", "slow"} {
+		l := CacheLane{Hits: c.cacheHits[lane], Misses: c.cacheMisses[lane]}
+		l.HitRate = ratio(l.Hits, l.Hits+l.Misses)
+		cs.Lanes[lane] = l
+		cs.Hits += l.Hits
+		cs.Misses += l.Misses
+	}
+	cs.HitRate = ratio(cs.Hits, cs.Hits+cs.Misses)
+	return cs
 }
 
 // episodeTicks returns episode n's per-tick provenance: its lane tick

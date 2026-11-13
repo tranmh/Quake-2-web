@@ -17,7 +17,8 @@
 // while (BadSetTTL); 429/529 start a cooldown that honors Retry-After; 5xx
 // and timeouts are retried when the lane allows it (slow: once, fast:
 // never) within the caller's deadline; five consecutive failures open a
-// circuit breaker for five seconds.
+// circuit breaker for five seconds. With WaitWhenOpen (lockstep runs) a
+// call waits for the breaker or the cooldown to end instead of failing.
 package jev
 
 import (
@@ -149,6 +150,16 @@ type Config struct {
 	// locally (DefaultBadSetTTL); then one request may try it again. Sets
 	// are told apart by their shape (questionShape), not their live text.
 	BadSetTTL time.Duration
+	// WaitWhenOpen makes Decide wait, bounded by its context, while the
+	// breaker is open or a 429/529 cooldown runs, instead of refusing at
+	// once; after either ends, until a call succeeds again, one call at a
+	// time goes out (a probe) and the others wait for its outcome, so the
+	// waiters do not all reach a server that may still be failing. For a
+	// lockstep run, whose game clock stands still while it waits: an
+	// outage then pauses the game instead of letting it race ahead on the
+	// fallback. The API keeps its protection (nothing more is sent than
+	// without it). Never for a realtime client, which must answer in time.
+	WaitWhenOpen bool
 
 	// Pricing prices the usage (DefaultPricing). MaxCostUSD, when > 0,
 	// refuses requests once spent (calls already in flight may overshoot
@@ -232,9 +243,12 @@ type Client struct {
 	openUntil      time.Time
 	cooldownUntil  time.Time
 	cooldownStreak int
-	spent          float64
-	lat            *decide.LatencyStats
-	stats          Stats
+	// probe is closed when the probe in flight ends (WaitWhenOpen; nil:
+	// none in flight)
+	probe chan struct{}
+	spent float64
+	lat   *decide.LatencyStats
+	stats Stats
 
 	recMu sync.Mutex
 }
@@ -459,7 +473,10 @@ func (c *Client) fail(e *Error) error {
 func (c *Client) admit(setDigest string) *Error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
+	return c.admitLocked(setDigest, c.now())
+}
+
+func (c *Client) admitLocked(setDigest string, now time.Time) *Error {
 	switch {
 	case c.disabled:
 		return &Error{Class: ClassDisabled, Msg: "disabled after an authentication failure"}
@@ -473,6 +490,76 @@ func (c *Client) admit(setDigest string) *Error {
 		return &Error{Class: ClassBudget, Msg: fmt.Sprintf("budget of $%.4f spent", c.cfg.MaxCostUSD)}
 	}
 	return nil
+}
+
+// recovering reports a client between an outage and its next success: the
+// breaker opened (and may have closed again) or a 429/529 came. Callers
+// hold c.mu.
+func (c *Client) recovering() bool {
+	return c.failures >= c.cfg.BreakerFailures || c.cooldownStreak > 0
+}
+
+// waitAdmit is admit for a WaitWhenOpen client (else admit itself). While
+// the breaker is open or a cooldown runs it waits for its end (a timer;
+// ctx bounds the wait) and asks again. Once admitted while recovering, the
+// call is the probe (probe true; endProbe must follow its attempt), unless
+// another probe is in flight: then it waits for that one to end and asks
+// again. No path loops without waiting on a timer, a probe or ctx.
+func (c *Client) waitAdmit(ctx context.Context, setDigest string) (probe bool, _ *Error) {
+	if !c.cfg.WaitWhenOpen {
+		return false, c.admit(setDigest)
+	}
+	for {
+		c.mu.Lock()
+		now := c.now()
+		e := c.admitLocked(setDigest, now)
+		var wait time.Duration
+		var done <-chan struct{}
+		switch {
+		case e == nil && !c.recovering():
+			c.mu.Unlock()
+			return false, nil
+		case e == nil && c.probe == nil:
+			c.probe = make(chan struct{})
+			c.mu.Unlock()
+			return true, nil
+		case e == nil:
+			done = c.probe
+		case e.Class == ClassBreaker:
+			wait = c.openUntil.Sub(now)
+		case e.Class == ClassCooldown:
+			wait = c.cooldownUntil.Sub(now)
+		default:
+			c.mu.Unlock()
+			return false, e
+		}
+		c.mu.Unlock()
+		var t *time.Timer
+		var tc <-chan time.Time
+		if done == nil {
+			t = time.NewTimer(max(wait, time.Millisecond))
+			tc = t.C
+		}
+		select {
+		case <-ctx.Done():
+			if t != nil {
+				t.Stop()
+			}
+			return false, &Error{Class: classOfCtx(ctx), Msg: "waiting for the breaker or a cooldown: " + ctx.Err().Error()}
+		case <-tc:
+		case <-done:
+		}
+	}
+}
+
+// endProbe ends the probe in flight (waking the calls waiting for it).
+func (c *Client) endProbe() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.probe != nil {
+		close(c.probe)
+		c.probe = nil
+	}
 }
 
 // take asks the rate limiters for a permit: the client's own bucket
@@ -505,13 +592,20 @@ func (c *Client) Decide(ctx context.Context, req *decide.Request) (*decide.Respo
 	}
 	retries := c.retries(req.Lane)
 	for attempt := 0; ; attempt++ {
-		if e := c.admit(setDigest); e != nil {
+		probe, e := c.waitAdmit(ctx, setDigest)
+		if e != nil {
 			return nil, c.fail(e)
 		}
 		if !c.take(len(body) / 4) {
+			if probe {
+				c.endProbe()
+			}
 			return nil, c.fail(&Error{Class: ClassThrottled, Msg: "rate limiter"})
 		}
 		resp, e := c.attempt(ctx, req, body, setDigest, attempt, c.attemptTimeout(ctx, req.Lane, attempt, retries-attempt))
+		if probe {
+			c.endProbe()
+		}
 		if e == nil {
 			resp.Retries = attempt
 			return resp, nil

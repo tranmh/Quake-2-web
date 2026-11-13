@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -235,5 +236,36 @@ func TestMarshalResponseRoundTrip(t *testing.T) {
 	q := &qs[1]
 	if a := OneHot(q, "2"); a.Score != 2 || a.Probabilities["2"] != 1 || a.Probabilities["0"] != 0 || a.Confidence != 1 {
 		t.Errorf("one-hot score %+v", a)
+	}
+}
+
+// TestWithUsage: the usage is replaced (or added) and the rest kept, in
+// order; ParseQuestions reads a questions object back in order.
+func TestWithUsage(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"model":"m","answers":{"a":{"choice":"x"}},"usage":{"input_tokens":12,"output_tokens":3}}`: `{"model":"m","answers":{"a":{"choice":"x"}},"usage":{"input_tokens":0,"output_tokens":0}}`,
+		`{"usage":{"prompt_tokens":5}, "answers": {}}`:                                               `{"usage":{"input_tokens":0,"output_tokens":0},"answers":{}}`,
+		`{"answers":{}}`: `{"answers":{},"usage":{"input_tokens":0,"output_tokens":0}}`,
+		`{"usage":{},"answers":{},"usage":{"input_tokens":1}}`: `{"usage":{"input_tokens":0,"output_tokens":0},"answers":{}}`,
+	} {
+		got, err := WithUsage([]byte(in), Usage{})
+		if err != nil || string(got) != want {
+			t.Errorf("WithUsage(%s) = %s, %v; want %s", in, got, err, want)
+		}
+	}
+	if _, err := WithUsage([]byte(`[1]`), Usage{}); err == nil {
+		t.Error("a non-object accepted")
+	}
+	st := &State{Me: Me{HP: "ok", Weapon: "shotgun", Ammo: "ok", Weapons: []string{"blaster", "shotgun"}},
+		Enemies: []Enemy{{ID: "e2", Class: "soldier", Dist: "mid"}, {ID: "e1", Class: "gunner", Dist: "far"}}}
+	for _, lane := range []Lane{LaneFast, LaneSlow} {
+		req, err := NewRequest(1, lane, 0, st, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		qs, err := ParseQuestions(req.QuestionsJSON())
+		if err != nil || !reflect.DeepEqual(qs, req.Questions) {
+			t.Fatalf("%s: parsed %+v, %v; want %+v", lane, qs, err, req.Questions)
+		}
 	}
 }

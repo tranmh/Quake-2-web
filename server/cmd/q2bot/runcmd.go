@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"quake2web/server/internal/agent/backend/cache"
 	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/backend/ollama"
 	"quake2web/server/internal/agent/budget"
@@ -69,6 +70,8 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 	model := fs.String("model", "", "-backend ollama's model (default: $"+ollama.EnvModel+", else "+ollama.DefaultModel+"); jev's comes from $"+jev.EnvModel)
 	ollamaURL := fs.String("ollama-url", "", "-backend ollama's server (default: $"+ollama.EnvHost+", else "+ollama.DefaultBaseURL+")")
 	ollamaTO := fs.Duration("ollama-timeout", 0, "-backend ollama's timeout per call, from its send (0: 10m)")
+	cacheMode := fs.String("cache", "off", "decision cache of a model backend: off, exact (equal requests), approx[:fine|coarse] (similar requests; approx is approx:fine); see docs/AGENT.md")
+	cacheTTL := fs.Duration("cache-ttl", 0, "the oldest answer the cache reuses, in game time (0: no limit)")
 	verbose := fs.Bool("v", false, "copy the episodes' log lines to stderr")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
@@ -132,6 +135,10 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 	if cfg.Trace, err = runner.ParseTrace(*traceMode); err != nil {
 		return usageErr(err)
 	}
+	if cfg.Cache, err = cache.Parse(*cacheMode); err != nil {
+		return usageErr(err)
+	}
+	cfg.Cache.TTL = *cacheTTL
 	pol, err := budget.ParsePolicy(*onEx)
 	if err != nil {
 		return usageErr(err)
@@ -160,6 +167,12 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 		return usageErr(fmt.Errorf("%s: only for -backend ollama", strings.Join(ollamaFlags, ", ")))
 	case *ollamaTO < 0:
 		return usageErr(fmt.Errorf("-ollama-timeout %v", *ollamaTO))
+	case *cacheTTL < 0:
+		return usageErr(fmt.Errorf("-cache-ttl %v", *cacheTTL))
+	case *cacheTTL > 0 && !cfg.Cache.Enabled():
+		return usageErr(errors.New("-cache-ttl needs -cache exact or approx"))
+	case cfg.Cache.Enabled() && cfg.Backend != runner.BackendJev && cfg.Backend != runner.BackendMock && cfg.Backend != runner.BackendOllama:
+		return usageErr(fmt.Errorf("-cache: only for the model backends (jev, mock, ollama), not %s", cfg.Backend))
 	}
 	if cfg.Backend == runner.BackendOllama {
 		// the flags, else the environment, else the client's defaults
@@ -333,6 +346,9 @@ func configLine(c *metrics.RunConfig) string {
 	if c.ReplayTrace != "" {
 		add("replaying %s", c.ReplayTrace)
 	}
+	if c.Cache != "" {
+		add("cache %s ttl %s", c.Cache, cmp.Or(c.CacheTTL, "none"))
+	}
 	return strings.Join(parts, ", ")
 }
 
@@ -369,6 +385,12 @@ func printSummary(w io.Writer, s *metrics.RunSummary, dir string) {
 	a := s.API
 	fmt.Fprintf(w, "  api         %d calls (%d ok, %d errors, %d stale), latency p50/p95/p99 %.0f/%.0f/%.0f ms, %.1f QPS in combat, %d input tokens, $%.6f\n",
 		a.Calls, a.OK, a.Errors, a.Stale, a.LatencyMs.P50, a.LatencyMs.P95, a.LatencyMs.P99, a.CombatQPS, a.InputTokens, a.CostUSD)
+	if c := s.Cache; c != nil {
+		f, sl := c.Lanes["fast"], c.Lanes["slow"]
+		fmt.Fprintf(w, "  cache       %s: %d hits / %d misses (%.1f%%; fast %d/%d %.1f%%, slow %d/%d %.1f%%), saved %d input tokens, $%.6f\n",
+			c.Mode, c.Hits, c.Misses, 100*c.HitRate, f.Hits, f.Misses, 100*f.HitRate, sl.Hits, sl.Misses, 100*sl.HitRate,
+			c.SavedInputTokens, c.SavedUSD)
+	}
 	if s.Ticks != nil {
 		names := make([]string, 0, len(s.Ticks.Fields))
 		for n := range s.Ticks.Fields {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"quake2web/server/internal/agent/backend/ablate"
+	"quake2web/server/internal/agent/backend/cache"
 	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/backend/jevtest"
 	"quake2web/server/internal/agent/backend/ollama"
@@ -40,10 +41,18 @@ type backends struct {
 	recordedKind string
 	recLatency   map[int]map[uint64]time.Duration
 	recMaxSeq    map[int]uint64
+	// cache is the run's decision cache (nil: none; never for a replay,
+	// which answers a recorded hit from the trace); lockstep selects its
+	// lookup at submission.
+	cache    *cache.Store
+	lockstep bool
 }
 
 func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
-	b := &backends{kind: cfg.Backend, logf: logf}
+	b := &backends{kind: cfg.Backend, logf: logf, lockstep: cfg.Session == SessionLockstep}
+	if cfg.Cache.Enabled() && modelBackend(cfg.Backend) {
+		b.cache = cache.NewStore(cfg.Cache)
+	}
 	jc := cfg.Jev
 	if cfg.Session == SessionLockstep {
 		// the client's own bucket runs on the wall clock, which lockstep
@@ -63,6 +72,13 @@ func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
 	}
 	switch cfg.Backend {
 	case BackendJev:
+		if cfg.Session == SessionLockstep {
+			// the breaker and the cooldowns run on the wall clock, which
+			// lockstep compresses: refused at once, a few seconds of outage
+			// became minutes of game on the fallback. Waiting them out
+			// pauses the game instead; the API keeps its protection.
+			jc.WaitWhenOpen = true
+		}
 		c, err := jev.New(jc)
 		if err != nil {
 			return nil, err
@@ -278,6 +294,10 @@ type episodeBackend struct {
 	// hangGuard overrides the lockstep scheduler's wall-clock hang guard
 	// (0: decide.DefaultWallTimeout); see ollamaHangGuard.
 	hangGuard time.Duration
+	// cache is backend wrapped in the run's decision cache (nil: none):
+	// in lockstep the scheduler's latency model must be its Latency, and
+	// every collected result must reach its Record.
+	cache *cache.Backend
 }
 
 // episode returns episode ep's backend; lat is the run's simulated
@@ -287,9 +307,9 @@ func (b *backends) episode(ep int, seed uint64, strict bool, lat decide.LatencyM
 	case BackendScripted:
 		return &episodeBackend{backend: scripted.New(scripted.Config{Seed: seed}), source: decide.SourceScripted}, nil
 	case BackendJev, BackendMock:
-		return &episodeBackend{backend: b.client, source: decide.SourceModel}, nil
+		return b.cached(&episodeBackend{backend: b.client, source: decide.SourceModel}, ep), nil
 	case BackendOllama:
-		return &episodeBackend{backend: b.ollama, source: decide.SourceModel, hangGuard: ollamaHangGuard(b.ollama.Timeout())}, nil
+		return b.cached(&episodeBackend{backend: b.ollama, source: decide.SourceModel, hangGuard: ollamaHangGuard(b.ollama.Timeout())}, ep), nil
 	case BackendConstant:
 		return &episodeBackend{backend: ablate.NewConstant(), source: decide.SourceModel}, nil
 	case BackendRandom:
@@ -306,6 +326,16 @@ func (b *backends) episode(ep int, seed uint64, strict bool, lat decide.LatencyM
 			source: answerSource(b.recordedKind), replay: rb}, nil
 	}
 	return nil, fmt.Errorf("runner: unknown backend %q", b.kind)
+}
+
+// cached puts a model backend's episode behind the run's decision cache
+// (when it has one); the cache keeps the backend's name.
+func (b *backends) cached(eb *episodeBackend, ep int) *episodeBackend {
+	if b.cache != nil {
+		eb.cache = b.cache.Episode(eb.backend, ep, b.lockstep)
+		eb.backend = eb.cache
+	}
+	return eb
 }
 
 func (b *backends) close() {

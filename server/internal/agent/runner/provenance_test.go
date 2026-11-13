@@ -312,6 +312,46 @@ func TestMockLockstepClient(t *testing.T) {
 	}
 }
 
+// TestJevLockstepClient: a lockstep run's jev client waits for its
+// breaker to close (and then sends), where a realtime one refuses at once:
+// a lockstep game must not race ahead on the fallback while the breaker
+// is open on the wall clock.
+func TestJevLockstepClient(t *testing.T) {
+	st := &decide.State{Mode: "fight", Me: decide.Me{HP: "ok", Health: 70, Weapon: "shotgun", Ammo: "ok", Weapons: []string{"shotgun"}},
+		Enemies: []decide.Enemy{{ID: "e1", Class: "soldier", Dist: "mid", Units: 420, Visible: true, Shootable: true, Threat: "med"}}}
+	const open = 100 * time.Millisecond
+	classes := func(session string) []jev.ErrorClass {
+		five := []jevtest.Fault{jevtest.FaultServer, jevtest.FaultServer, jevtest.FaultServer, jevtest.FaultServer, jevtest.FaultServer}
+		srv := jevtest.NewServer(jevtest.Options{APIKey: "sk-test", Policy: jevtest.NewScripted(scripted.Config{Seed: 1}),
+			Faults: jevtest.Faults{Sequence: five}})
+		defer srv.Close()
+		b, err := newBackends(&Config{Backend: BackendJev, Session: session, Seed: 1,
+			Jev: jev.Config{BaseURL: srv.URL(), APIKey: trace.NewSecret("sk-test"), AllowCustomBase: true, BreakerOpen: open}}, t.Logf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer b.close()
+		var out []jev.ErrorClass
+		for seq := uint64(1); seq <= 6; seq++ {
+			req, err := decide.NewRequest(seq, decide.LaneFast, 1000*int64(seq), st, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = b.client.Decide(context.Background(), req)
+			out = append(out, jev.ClassOf(err))
+		}
+		return out
+	}
+	start := time.Now()
+	got := classes(SessionLockstep)
+	if got[4] != jev.ClassServer || got[5] != "" || time.Since(start) < open/2 {
+		t.Fatalf("lockstep calls %v in %v: the sixth must wait for the breaker and succeed", got, time.Since(start))
+	}
+	if got := classes(SessionInProc); got[5] != jev.ClassBreaker {
+		t.Fatalf("realtime calls %v: the sixth must be refused by the open breaker", got)
+	}
+}
+
 // TestRunJevKeyNeverWritten runs the jev backend configured from the
 // environment (TYPESAFE_API_KEY, JEV_BASE_URL on a loopback fake): the
 // key reaches the server, and no file of the run directory (traces

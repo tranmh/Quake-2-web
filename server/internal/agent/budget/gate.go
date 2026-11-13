@@ -127,7 +127,8 @@ func (g *Gate) Submitted(now int64, l decide.Lane) {
 
 // Charge accounts a collected result: a request the wrapped backend sent
 // counts as a query, with its response's cost and input tokens (a refused
-// one costs nothing).
+// one costs nothing, nor does an answer the decision cache reused: a cache
+// inside the gate answers without sending).
 func (g *Gate) Charge(r *decide.Record) {
 	req := r.Result.Req
 	if req == nil {
@@ -140,7 +141,8 @@ func (g *Gate) Charge(r *decide.Record) {
 		g.refused[req.Lane]++
 	}
 	g.mu.Unlock()
-	if !sent {
+	if !sent || r.Result.Resp != nil && r.Result.Resp.Cache != "" {
+		// refused, or an answer the decision cache reused: nothing was sent
 		return
 	}
 	var cost float64

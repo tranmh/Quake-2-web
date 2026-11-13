@@ -6,9 +6,11 @@
 //	          [-require-complete] [-min-model-share 0.7] [-json] [-pak pak0.pak] [-nav-dir assets/nav]
 //	          [-mock-policy noisy|scripted] [-mock-noise 0.3] [-mock-swap 0.1] [-mock-lowconf 0.1]
 //	          [-model nimble-v3] [-ollama-url http://127.0.0.1:11434] [-ollama-timeout 10m]
+//	          [-cache off|exact|approx[:fine|coarse]] [-cache-ttl 0]
 //	q2bot replay -trace runs/<id>/ep-000/trace.jsonl.gz [-mode actions|responses] [-strict] [-out dir] [-json]
 //	q2bot summarize runs/<id> [-dry-run] [-force] [-json]
 //	q2bot validate runs/<id> [-min-model-share 0.7] [-json]
+//	q2bot cache-sim runs/<id>... [-json]
 //	q2bot jev-probe [-lane fast|slow] [-n 1] [-out live-probe.json]
 //
 // run plays the campaign (package agent/runner) and writes the run
@@ -16,7 +18,9 @@
 // demos/NN-<map>.dm2, log.txt}}; the run id is generated. replay re-runs a
 // recorded lockstep episode and reports the first divergence. summarize
 // recomputes run.json from the traces. validate checks the traces, every
-// demo and, with -min-model-share, the provenance gate. jev-probe sends
+// demo and, with -min-model-share, the provenance gate. cache-sim replays
+// recorded runs' requests through the decision cache (backend/cache) and
+// reports its hits, savings and answer fidelity, asking no model. jev-probe sends
 // one real request to the Jev API and records the exchange.
 //
 // The Jev API key is read from the environment only (TYPESAFE_API_KEY,
@@ -57,10 +61,12 @@ func commands() []command {
 		{"run", "run [-maps a,b | -campaign dir] [-backend b] [-session s] [-sim-latency d] [-episodes n] [-seed n] [-out dir] " +
 			"[-trace m] [-record] [-budget-usd x] [-budget-queries n] [-max-qps x] [-on-exhausted p] [-require-complete] " +
 			"[-min-model-share x] [-json] [-pak file] [-nav-dir dir] [-mock-policy noisy|scripted] [-mock-noise x] [-mock-swap x] " +
-			"[-mock-lowconf x] [-model m] [-ollama-url u] [-ollama-timeout d] (-h for all)", runRun},
+			"[-mock-lowconf x] [-model m] [-ollama-url u] [-ollama-timeout d] [-cache off|exact|approx[:fine|coarse]] [-cache-ttl d] " +
+			"(-h for all)", runRun},
 		{"replay", "replay -trace runs/<id>/ep-NNN/trace.jsonl.gz [-mode actions|responses] [-strict] [-out dir] [-json] [-pak file]", runReplay},
 		{"summarize", "summarize runs/<id> [-dry-run] [-force] [-json]", runSummarize},
 		{"validate", "validate runs/<id> [-min-model-share x] [-max-stale-rate x] [-json]", runValidate},
+		{"cache-sim", "cache-sim runs/<id>... [-json]  (the decision cache on recorded requests: no model is asked)", runCacheSim},
 		{"jev-probe", "jev-probe [-lane fast|slow] [-n 1] [-out file] [-state lane-state.json] (needs TYPESAFE_API_KEY)", runProbe},
 	}
 }

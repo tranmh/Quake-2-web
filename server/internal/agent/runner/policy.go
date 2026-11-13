@@ -77,6 +77,9 @@ type policy struct {
 	gate  *budget.Gate
 	pub   *publisher
 	mode  TraceMode
+	// record sees every collected result after it is charged (the decision
+	// cache keeps the answers; nil: none)
+	record func(*decide.Record)
 	// stop is called once when the budget is exhausted under the Stop
 	// policy (it ends the episode).
 	stop func(budget.State)
@@ -106,10 +109,11 @@ type policyConfig struct {
 	pub       *publisher
 	mode      TraceMode
 	stop      func(budget.State)
+	onRecord  func(*decide.Record)
 }
 
 func newPolicy(c policyConfig) (*policy, error) {
-	p := &policy{probe: c.probe, gate: c.gate, pub: c.pub, mode: c.mode, stop: c.stop}
+	p := &policy{probe: c.probe, gate: c.gate, pub: c.pub, mode: c.mode, stop: c.stop, record: c.onRecord}
 	be := c.backend
 	if c.gate != nil {
 		be = c.gate.Wrap(be)
@@ -200,10 +204,14 @@ func (p *policy) onRecord(r *decide.Record) {
 	if p.gate != nil {
 		p.gate.Charge(r)
 	}
+	if p.record != nil {
+		p.record(r)
+	}
 	p.pub.publish(trace.TypeDecision, r.Decision(p.mode.options(p.decisions)))
 	p.decisions++
-	if !budget.IsRefused(r.Result.Err) {
-		// a refused request never reached the backend: no call to account
+	// a refused request never reached the backend, nor did one the decision
+	// cache answered: no call to account
+	if !budget.IsRefused(r.Result.Err) && (r.Result.Resp == nil || r.Result.Resp.Cache == "") {
 		p.pub.publish(trace.TypeAPICall, r.APICall())
 	}
 }

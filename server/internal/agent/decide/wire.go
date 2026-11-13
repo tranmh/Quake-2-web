@@ -163,16 +163,8 @@ func ParseRequestBody(body []byte) (*WireRequest, error) {
 		case "questions":
 			haveQuestions = true
 			w.QuestionsJSON = kv.val
-			qs, err := orderedObject(kv.val)
-			if err != nil {
-				return nil, fmt.Errorf("questions: %w", err)
-			}
-			for _, qv := range qs {
-				q, err := parseQuestion(qv.key, qv.val)
-				if err != nil {
-					return nil, err
-				}
-				w.Questions = append(w.Questions, q)
+			if w.Questions, err = ParseQuestions(kv.val); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -180,6 +172,25 @@ func ParseRequestBody(body []byte) (*WireRequest, error) {
 		return nil, fmt.Errorf("%w: missing state or questions", ErrMalformed)
 	}
 	return w, nil
+}
+
+// ParseQuestions decodes a request's "questions" object (a request body's,
+// or a trace decision's), keeping the order of the questions and of their
+// criteria.
+func ParseQuestions(raw []byte) ([]Question, error) {
+	qs, err := orderedObject(raw)
+	if err != nil {
+		return nil, fmt.Errorf("questions: %w", err)
+	}
+	var out []Question
+	for _, qv := range qs {
+		q, err := parseQuestion(qv.key, qv.val)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, nil
 }
 
 func parseQuestion(id string, raw json.RawMessage) (Question, error) {
@@ -667,6 +678,53 @@ func MarshalResponse(model string, qs []Question, answers map[string]Answer, usa
 	buf.WriteString(`,"output_tokens":`)
 	writeJSON(&buf, usage.OutputTokens)
 	buf.WriteString(`}}`)
+	return buf.Bytes(), nil
+}
+
+// WithUsage returns the response body raw with its usage replaced by u
+// (added last when it has none); its other members are kept as they are,
+// in order.
+func WithUsage(raw []byte, u Usage) (json.RawMessage, error) {
+	top, err := orderedObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	usage := func() {
+		buf.WriteString(`"usage":{"input_tokens":`)
+		writeJSON(&buf, u.InputTokens)
+		buf.WriteString(`,"output_tokens":`)
+		writeJSON(&buf, u.OutputTokens)
+		buf.WriteByte('}')
+	}
+	buf.WriteByte('{')
+	done := false
+	for i, kv := range top {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		if kv.key == "usage" && !done {
+			usage()
+			done = true
+			continue
+		}
+		if kv.key == "usage" {
+			buf.Truncate(buf.Len() - 1) // a repeated usage member: dropped
+			continue
+		}
+		writeJSON(&buf, kv.key)
+		buf.WriteByte(':')
+		if err := json.Compact(&buf, kv.val); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrMalformed, err)
+		}
+	}
+	if !done {
+		if len(top) > 0 {
+			buf.WriteByte(',')
+		}
+		usage()
+	}
+	buf.WriteByte('}')
 	return buf.Bytes(), nil
 }
 

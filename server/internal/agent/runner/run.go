@@ -481,6 +481,12 @@ func (r *Runner) runStartBody() trace.RunStart {
 	if cfg.MaxDeaths != 0 {
 		m[keyMaxDeaths] = strconv.Itoa(cfg.MaxDeaths)
 	}
+	if cfg.Cache.Enabled() {
+		m[keyCache] = cfg.Cache.String()
+		if cfg.Cache.TTL > 0 {
+			m[keyCacheTTL] = cfg.Cache.TTL.String()
+		}
+	}
 	if cfg.Backend == BackendMock {
 		f := mockFaults(cfg)
 		m[keyMockFaults] = fmt.Sprintf("seed=%d server=%g missing=%g ratelimit=%g overload=%g malformed=%g", f.Seed, f.Server,
@@ -615,6 +621,13 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	if lat == nil {
 		lat = r.latency().model(seed)
 	}
+	var onRecord func(*decide.Record)
+	if be.cache != nil {
+		// the cache looks up at submission (lockstep) and keeps the
+		// answers as they are collected
+		lat, onRecord = be.cache.Latency(lat), be.cache.Record
+		defer func() { r.logf("%s: %s", tag, be.cache.Summary()) }()
+	}
 	var gate *budget.Gate
 	if r.bud != nil {
 		gate = r.bud.Gate()
@@ -622,7 +635,7 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	pol, err := newPolicy(policyConfig{
 		backend: be.backend, fallback: scripted.New(scripted.Config{Seed: seed}), source: be.source,
 		lockstep: cfg.Session == SessionLockstep, latency: lat, hangGuard: hangGuard,
-		probe: &levelProbe{lib: r.lib, logf: er.log.logf}, gate: gate, pub: er.pub, mode: cfg.Trace,
+		probe: &levelProbe{lib: r.lib, logf: er.log.logf}, gate: gate, pub: er.pub, mode: cfg.Trace, onRecord: onRecord,
 		stop: func(st budget.State) {
 			er.log.logf("runner: %s: stopping the run", st.Reason)
 			cancel()

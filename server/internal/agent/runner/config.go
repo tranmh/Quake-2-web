@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"quake2web/server/internal/agent/backend/cache"
 	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/backend/jevtest"
 	"quake2web/server/internal/agent/backend/ollama"
@@ -283,6 +284,11 @@ type Config struct {
 	MockNoise, MockSwap, MockLowConfidence float64
 	// ReplayTrace is the recorded trace BackendReplay answers from.
 	ReplayTrace string
+	// Cache is the decision cache of a model backend (jev, mock, ollama;
+	// zero: off): one store for the run, its TTL in game time. A replay
+	// records it but answers a recorded hit from the trace, not from a
+	// cache (backend/cache).
+	Cache cache.Config
 
 	// EntryCommands are client commands sent at every level entry
 	// (cheats such as "god" and "notarget" for a test run).
@@ -383,6 +389,12 @@ func (c *Config) check() error {
 		if c.Ollama.Timeout < 0 {
 			return fmt.Errorf("%w: negative ollama timeout %v", ErrConfig, c.Ollama.Timeout)
 		}
+	}
+	if c.Cache.Enabled() && !modelBackend(c.Backend) && c.Backend != BackendReplay {
+		return fmt.Errorf("%w: the decision cache needs a model backend (jev, mock, ollama), not %s", ErrConfig, c.Backend)
+	}
+	if c.Cache.TTL < 0 || c.Cache.MaxEntries < 0 {
+		return fmt.Errorf("%w: negative cache TTL or size", ErrConfig)
 	}
 	if c.HangGuard < 0 {
 		return fmt.Errorf("%w: negative hang guard %v", ErrConfig, c.HangGuard)
