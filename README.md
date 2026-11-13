@@ -51,6 +51,9 @@ A headless bot plays the single-player demo campaign: demo1 → demo2 → demo3 
 It perceives only what a player could (field of view, line of sight, audible sounds), and a pluggable
 decision backend chooses what it does:
 - [Jev](https://docs.typesafe.ai), TypeSafe's System One model, is the primary backend;
+- `ollama` runs a local decision model such as `nimble-v3` on [Ollama](https://ollama.com) 0.40.4 or
+  later, which serves the same protocol as Jev: free and needs no key, but too slow to play without a
+  GPU (about 90 s per decision on a CPU);
 - `scripted` (the baseline), `mock` (the real Jev client against a fake server), `replay`, and the
   `constant` and `random` ablations are the others.
 
@@ -70,8 +73,17 @@ go run ./cmd/q2bot run -backend mock -maps demo1 -min-model-share 0.7 -require-c
 go run ./cmd/q2nav plan -pak ../assets/demo/baseq2/pak0.pak           # validate the route tables
 ```
 
+A local model through Ollama:
+
+```sh
+docker run -d --name q2-ollama -p 127.0.0.1:11434:11434 -v q2-ollama:/root/.ollama ollama/ollama:0.40.4
+docker exec q2-ollama ollama pull nimble-v3
+make bot-run BACKEND=ollama MODEL=nimble-v3    # OLLAMA_URL=http://host:11434 for a remote GPU host
+```
+
 How to run, schemas and metrics: [`docs/AGENT.md`](docs/AGENT.md). Design and fairness rules:
-[ADR-0006](docs/adr/0006-ai-agent.md). Evaluation: [`docs/AGENT-EVAL.md`](docs/AGENT-EVAL.md).
+[ADR-0006](docs/adr/0006-ai-agent.md). Evaluation: [`docs/AGENT-EVAL.md`](docs/AGENT-EVAL.md). Jev compared with
+nimble-v3: [`docs/benchmarks/jev-vs-nimble-v3.md`](docs/benchmarks/jev-vs-nimble-v3.md).
 
 ## How quality is verified
 
