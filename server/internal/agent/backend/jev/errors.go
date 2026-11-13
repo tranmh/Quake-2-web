@@ -39,10 +39,17 @@ type Error struct {
 	// RetryAfter is the server's Retry-After (429/529).
 	RetryAfter time.Duration
 	Msg        string
+	// Backend is the client's Config.Name when it is not "jev" (the
+	// errors' prefix).
+	Backend string
 }
 
 func (e *Error) Error() string {
-	s := "jev: " + string(e.Class)
+	name := "jev"
+	if e.Backend != "" {
+		name = e.Backend
+	}
+	s := name + ": " + string(e.Class)
 	if e.Status != 0 {
 		s += fmt.Sprintf(" (status %d)", e.Status)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/backend/jevtest"
+	"quake2web/server/internal/agent/backend/ollama"
 	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/campaign"
 	"quake2web/server/internal/agent/decide"
@@ -28,6 +29,9 @@ const (
 	// BackendMock is the jev client against an in-process fake Jev server
 	// (backend/jevtest) answering with its noisy, model-like policy.
 	BackendMock = "mock"
+	// BackendOllama is a decision model served locally by Ollama, which
+	// speaks jev's protocol (backend/ollama; Config.Ollama): free, slow.
+	BackendOllama = "ollama"
 	// BackendReplay answers from a recorded trace (Config.ReplayTrace).
 	BackendReplay = "replay"
 	// BackendConstant and BackendRandom are the ablations
@@ -47,11 +51,13 @@ func MockPolicies() []string { return []string{MockPolicyNoisy, MockPolicyScript
 
 // Backends lists the backend names.
 func Backends() []string {
-	return []string{BackendScripted, BackendJev, BackendMock, BackendReplay, BackendConstant, BackendRandom}
+	return []string{BackendScripted, BackendJev, BackendMock, BackendOllama, BackendReplay, BackendConstant, BackendRandom}
 }
 
 // modelBackend reports the backends that query a model.
-func modelBackend(name string) bool { return name == BackendJev || name == BackendMock }
+func modelBackend(name string) bool {
+	return name == BackendJev || name == BackendMock || name == BackendOllama
+}
 
 // Sessions (Config.Session).
 const (
@@ -207,7 +213,8 @@ type Config struct {
 	Backend string
 	Session string
 	// SimLatency is the simulated backend latency in lockstep (unset:
-	// DefaultModelLatency for jev and mock, none for local backends). A
+	// DefaultModelLatency for jev, mock and ollama, none for the other
+	// local backends). A
 	// replay answers with each recorded request's recorded latency and
 	// uses this one (unset: the recorded backend's default) for the
 	// requests its trace lacks. In an InProc session it delays the mock
@@ -249,6 +256,15 @@ type Config struct {
 	// taken from the environment only). For BackendMock only Model is
 	// used.
 	Jev jev.Config
+	// Ollama configures the ollama client (BackendOllama: the model, the
+	// server's URL and the per-call timeout; cmd/q2bot fills it from its
+	// flags and OLLAMA_HOST / Q2_OLLAMA_MODEL).
+	Ollama ollama.Config
+	// HangGuard, when set, is the lockstep scheduler's wall-clock hang
+	// guard: how long a request may take, from its submission, before it
+	// resolves as a timeout (0: decide.DefaultWallTimeout, 60 s, except
+	// for BackendOllama: ollamaHangGuard of its timeout).
+	HangGuard time.Duration
 	// MockFaults injects faults into the mock server (nil:
 	// DefaultMockFaults).
 	MockFaults *jevtest.Faults
@@ -359,6 +375,17 @@ func (c *Config) check() error {
 		if c.Session != SessionLockstep {
 			return fmt.Errorf("%w: backend replay needs a lockstep session", ErrConfig)
 		}
+	}
+	if c.Backend == BackendOllama {
+		if _, err := ollama.BaseURL(c.Ollama.BaseURL); err != nil {
+			return fmt.Errorf("%w: %v", ErrConfig, err)
+		}
+		if c.Ollama.Timeout < 0 {
+			return fmt.Errorf("%w: negative ollama timeout %v", ErrConfig, c.Ollama.Timeout)
+		}
+	}
+	if c.HangGuard < 0 {
+		return fmt.Errorf("%w: negative hang guard %v", ErrConfig, c.HangGuard)
 	}
 	if c.Episodes < 0 {
 		return fmt.Errorf("%w: %d episodes", ErrConfig, c.Episodes)

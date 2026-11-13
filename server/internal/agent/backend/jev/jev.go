@@ -165,6 +165,16 @@ type Config struct {
 	HTTPClient *http.Client
 	// Logf logs rare events (disable, breaker, bad question sets).
 	Logf func(format string, args ...any)
+
+	// Name is the backend's name (Name, the prefix of logs and errors;
+	// "": "jev"). NoAuth sends no Authorization header and needs no key,
+	// so the base may also be plain http on any host (nothing secret is
+	// sent); Free prices every call at 0. Together they serve a local
+	// server that speaks the same protocol (backend/ollama: Ollama's
+	// /v1/systemone).
+	Name   string
+	NoAuth bool
+	Free   bool
 	// Now is the clock (nil: time.Now).
 	Now func() time.Time
 }
@@ -238,8 +248,8 @@ func isLoopback(host string) bool {
 }
 
 // checkBase validates the base URL against the safety rules and returns
-// the endpoint.
-func checkBase(raw string, allowCustom bool) (string, error) {
+// the endpoint. noAuth (no key is sent) allows plain http on any host.
+func checkBase(raw string, allowCustom, noAuth bool) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.Opaque != "" {
 		return "", fmt.Errorf("%w: %q", ErrBaseURL, raw)
@@ -252,7 +262,7 @@ func checkBase(raw string, allowCustom bool) (string, error) {
 	switch u.Scheme {
 	case "https":
 	case "http":
-		if !loop {
+		if !loop && !noAuth {
 			return "", fmt.Errorf("%w: %s must use https (http only for loopback)", ErrBaseURL, u.Redacted())
 		}
 	default:
@@ -291,11 +301,14 @@ func New(cfg Config) (*Client, error) {
 	if isAlias(cfg.Model) && !cfg.AllowAlias {
 		return nil, fmt.Errorf("%w: %q", ErrAlias, cfg.Model)
 	}
-	endpoint, err := checkBase(cfg.BaseURL, cfg.AllowCustomBase)
+	endpoint, err := checkBase(cfg.BaseURL, cfg.AllowCustomBase, cfg.NoAuth)
 	if err != nil {
 		return nil, err
 	}
-	if !cfg.APIKey.IsSet() {
+	if cfg.Name == "" {
+		cfg.Name = "jev"
+	}
+	if !cfg.APIKey.IsSet() && !cfg.NoAuth {
 		return nil, ErrNoKey
 	}
 	defd := func(d *time.Duration, v time.Duration) {
@@ -324,7 +337,9 @@ func New(cfg Config) (*Client, error) {
 	if cfg.BreakerFailures <= 0 {
 		cfg.BreakerFailures = 5
 	}
-	if cfg.Pricing == (Pricing{}) {
+	if cfg.Free {
+		cfg.Pricing = Pricing{}
+	} else if cfg.Pricing == (Pricing{}) {
 		cfg.Pricing = DefaultPricing()
 	}
 	if cfg.RatePerSec == 0 {
@@ -352,7 +367,7 @@ func New(cfg Config) (*Client, error) {
 }
 
 // Name implements decide.DecisionBackend.
-func (c *Client) Name() string { return "jev" }
+func (c *Client) Name() string { return c.cfg.Name }
 
 // Model returns the pinned model id.
 func (c *Client) Model() string { return c.cfg.Model }
@@ -434,6 +449,9 @@ func (c *Client) count(class ErrorClass) {
 // fail counts a failed call and returns it.
 func (c *Client) fail(e *Error) error {
 	c.count(e.Class)
+	if c.cfg.Name != "jev" {
+		e.Backend = c.cfg.Name
+	}
 	return e
 }
 
@@ -567,7 +585,9 @@ func (c *Client) attempt(ctx context.Context, req *decide.Request, body []byte, 
 	if err != nil {
 		return nil, &Error{Class: ClassTransport, Msg: err.Error()}
 	}
-	hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey.Reveal())
+	if !c.cfg.NoAuth {
+		hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey.Reveal())
+	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("Accept", "application/json")
 	hreq.Header.Set("User-Agent", "quake2web-q2bot/1")
@@ -669,12 +689,12 @@ func (c *Client) classify(hresp *http.Response, data []byte, setDigest string) *
 		e.Class = ClassAuth
 		if !c.disabled {
 			c.disabled = true
-			c.logf("jev: authentication failed (status %d): client disabled", st)
+			c.logf("%s: authentication failed (status %d): client disabled", c.cfg.Name, st)
 		}
 	case st == http.StatusBadRequest || st == http.StatusUnprocessableEntity:
 		e.Class = ClassBadRequest
 		if !now.Before(c.bad[setDigest]) {
-			c.logf("jev: status %d for question set %s: refused locally for %v", st, setDigest, c.cfg.BadSetTTL)
+			c.logf("%s: status %d for question set %s: refused locally for %v", c.cfg.Name, st, setDigest, c.cfg.BadSetTTL)
 		}
 		c.bad[setDigest] = now.Add(c.cfg.BadSetTTL)
 	case st == http.StatusTooManyRequests || st == 529:
@@ -729,7 +749,7 @@ func (c *Client) noteFailure(class ErrorClass) {
 	if c.failures >= c.cfg.BreakerFailures {
 		now := c.now()
 		if !now.Before(c.openUntil) {
-			c.logf("jev: %d consecutive failures: circuit breaker open for %v", c.failures, c.cfg.BreakerOpen)
+			c.logf("%s: %d consecutive failures: circuit breaker open for %v", c.cfg.Name, c.failures, c.cfg.BreakerOpen)
 		}
 		c.openUntil = now.Add(c.cfg.BreakerOpen)
 	}

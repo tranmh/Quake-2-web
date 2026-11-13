@@ -9,6 +9,7 @@ import (
 	"quake2web/server/internal/agent/backend/ablate"
 	"quake2web/server/internal/agent/backend/jev"
 	"quake2web/server/internal/agent/backend/jevtest"
+	"quake2web/server/internal/agent/backend/ollama"
 	"quake2web/server/internal/agent/backend/replay"
 	"quake2web/server/internal/agent/backend/scripted"
 	"quake2web/server/internal/agent/decide"
@@ -19,14 +20,17 @@ import (
 const mockKey = "q2bot-mock-key"
 
 // backends holds a run's backend resources: the jev client (jev, mock)
-// and the mock server, shared by the episodes, or the recorded trace
-// (replay).
+// and the mock server, or the ollama client, shared by the episodes, or
+// the recorded trace (replay).
 type backends struct {
 	kind   string
 	client *jev.Client
 	mock   *jevtest.Server
-	// model is the pinned model id (jev, mock).
+	ollama *ollama.Client
+	// model is the pinned model id (jev, mock) or the model name (ollama).
 	model string
+	// logf logs the ollama client's stats when the run ends.
+	logf func(string, ...any)
 	// recorded: the replay backend's trace, the name its decisions were
 	// made under and that run's backend kind; recLatency the recorded
 	// latency of every request by episode and Seq, recMaxSeq the last
@@ -39,7 +43,7 @@ type backends struct {
 }
 
 func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
-	b := &backends{kind: cfg.Backend}
+	b := &backends{kind: cfg.Backend, logf: logf}
 	jc := cfg.Jev
 	if cfg.Session == SessionLockstep {
 		// the client's own bucket runs on the wall clock, which lockstep
@@ -83,6 +87,16 @@ func newBackends(cfg *Config, logf func(string, ...any)) (*backends, error) {
 			return nil, err
 		}
 		b.client, b.model = c, c.Model()
+	case BackendOllama:
+		oc := cfg.Ollama
+		if oc.Logf == nil {
+			oc.Logf = logf
+		}
+		c, err := ollama.New(oc)
+		if err != nil {
+			return nil, err
+		}
+		b.ollama, b.model = c, c.Model()
 	case BackendReplay:
 		evs, err := trace.ReadFile(cfg.ReplayTrace)
 		if err != nil {
@@ -181,6 +195,21 @@ func mockLockstep(jc *jev.Config) {
 // mockAttemptTimeout is a lockstep mock run's attempt timeout.
 const mockAttemptTimeout = 30 * time.Second
 
+// ollamaHangGuard is the lockstep scheduler's hang guard for an ollama
+// client whose calls time out after timeout. The scheduler's guard
+// (decide.DefaultWallTimeout, 60 s) runs from a request's submission and
+// cancels the call: a local model on a CPU takes longer than that for a
+// single call, and it answers one call at a time, so a request also waits
+// behind every call submitted before it. Under the default guard every
+// such request would resolve as a timeout (the fallback's answer) though
+// the model never failed. Each call ahead takes at most timeout once
+// sent, and the scheduler keeps at most HardMaxInFlight requests per lane
+// in flight, so a model that answers never reaches this bound; the
+// client's own per-call timeout is the real hang guard.
+func ollamaHangGuard(timeout time.Duration) time.Duration {
+	return time.Duration(decide.NumLanes*decide.DefaultHardInFlight+1) * timeout
+}
+
 // replayLatency is a replay's latency model: the recorded latency of a
 // recorded request, the run's simulated latency for the others (requests
 // still in flight when the recorded episode ended, which the trace never
@@ -246,6 +275,9 @@ type episodeBackend struct {
 	latency decide.LatencyModel
 	source  decide.Source
 	replay  *replay.Backend
+	// hangGuard overrides the lockstep scheduler's wall-clock hang guard
+	// (0: decide.DefaultWallTimeout); see ollamaHangGuard.
+	hangGuard time.Duration
 }
 
 // episode returns episode ep's backend; lat is the run's simulated
@@ -256,6 +288,8 @@ func (b *backends) episode(ep int, seed uint64, strict bool, lat decide.LatencyM
 		return &episodeBackend{backend: scripted.New(scripted.Config{Seed: seed}), source: decide.SourceScripted}, nil
 	case BackendJev, BackendMock:
 		return &episodeBackend{backend: b.client, source: decide.SourceModel}, nil
+	case BackendOllama:
+		return &episodeBackend{backend: b.ollama, source: decide.SourceModel, hangGuard: ollamaHangGuard(b.ollama.Timeout())}, nil
 	case BackendConstant:
 		return &episodeBackend{backend: ablate.NewConstant(), source: decide.SourceModel}, nil
 	case BackendRandom:
@@ -277,6 +311,11 @@ func (b *backends) episode(ep int, seed uint64, strict bool, lat decide.LatencyM
 func (b *backends) close() {
 	if b.mock != nil {
 		b.mock.Close()
+	}
+	if b.ollama != nil && b.logf != nil {
+		// the wall-clock cost of the calls, which a lockstep run's
+		// run.json (simulated latencies) does not show
+		b.logf("%s", b.ollama.Stats().Summary())
 	}
 }
 

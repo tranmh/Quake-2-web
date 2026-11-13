@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"quake2web/server/internal/agent/backend/jev"
+	"quake2web/server/internal/agent/backend/ollama"
 	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/metrics"
 	"quake2web/server/internal/agent/runner"
@@ -39,7 +40,7 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 	skill := fs.Int("skill", -1, "game skill 0..3 (-1: the campaign's)")
 	backend := fs.String("backend", runner.BackendScripted, "decision backend: "+strings.Join(runner.Backends(), "|"))
 	sess := fs.String("session", runner.SessionLockstep, "session: lockstep (virtual clock) or inproc (realtime)")
-	simLat := fs.String("sim-latency", "", "simulated backend latency in lockstep: 212ms, or samples 80ms,150ms,300ms (default: 212ms for jev and mock, none for the local backends, the recorded ones for replay)")
+	simLat := fs.String("sim-latency", "", "simulated backend latency in lockstep: 212ms, or samples 80ms,150ms,300ms (default: 212ms for jev, mock and ollama, none for the other local backends, the recorded ones for replay)")
 	episodes := fs.Int("episodes", 1, "episodes to play (episode i plays with seed+i)")
 	seed := fs.Uint64("seed", 1, "the run's seed")
 	out := fs.String("out", "runs", "where the run directory <id> is made")
@@ -65,6 +66,9 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 	mockNoise := fs.Float64("mock-noise", 0.3, "noisy mock: the largest share of probability mass spread over random options (0: off)")
 	mockSwap := fs.Float64("mock-swap", 0.1, "noisy mock: the chance an answer's top two options swap (0: off)")
 	mockLowConf := fs.Float64("mock-lowconf", 0.1, "noisy mock: the chance an answer comes with a confidence in [0.05, 0.3] (0: off)")
+	model := fs.String("model", "", "-backend ollama's model (default: $"+ollama.EnvModel+", else "+ollama.DefaultModel+"); jev's comes from $"+jev.EnvModel)
+	ollamaURL := fs.String("ollama-url", "", "-backend ollama's server (default: $"+ollama.EnvHost+", else "+ollama.DefaultBaseURL+")")
+	ollamaTO := fs.Duration("ollama-timeout", 0, "-backend ollama's timeout per call, from its send (0: 10m)")
 	verbose := fs.Bool("v", false, "copy the episodes' log lines to stderr")
 	pos, err := parseFlags(fs, args)
 	if err != nil {
@@ -85,9 +89,14 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 	shares := map[string]*float64{"mock-noise": &cfg.MockNoise, "mock-swap": &cfg.MockSwap, "mock-lowconf": &cfg.MockLowConfidence}
 	vals := map[string]float64{"mock-noise": *mockNoise, "mock-swap": *mockSwap, "mock-lowconf": *mockLowConf}
 	var badShare error
+	var ollamaFlags []string
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "mock-policy" {
 			cfg.MockPolicy = *mockPol
+		}
+		switch f.Name {
+		case "model", "ollama-url", "ollama-timeout":
+			ollamaFlags = append(ollamaFlags, "-"+f.Name)
 		}
 		if p, ok := shares[f.Name]; ok {
 			v := vals[f.Name]
@@ -147,6 +156,24 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 		return usageErr(errors.New("negative budget"))
 	case cfg.Backend == runner.BackendReplay && cfg.ReplayTrace == "":
 		return usageErr(errors.New("-backend replay needs -replay-trace"))
+	case len(ollamaFlags) > 0 && cfg.Backend != runner.BackendOllama:
+		return usageErr(fmt.Errorf("%s: only for -backend ollama", strings.Join(ollamaFlags, ", ")))
+	case *ollamaTO < 0:
+		return usageErr(fmt.Errorf("-ollama-timeout %v", *ollamaTO))
+	}
+	if cfg.Backend == runner.BackendOllama {
+		// the flags, else the environment, else the client's defaults
+		cfg.Ollama = ollama.FromEnv(e.getenv)
+		if *model != "" {
+			cfg.Ollama.Model = *model
+		}
+		if *ollamaURL != "" {
+			cfg.Ollama.BaseURL = *ollamaURL
+		}
+		cfg.Ollama.Timeout = *ollamaTO
+		if _, err := ollama.BaseURL(cfg.Ollama.BaseURL); err != nil {
+			return usageErr(err)
+		}
 	}
 	// the key comes from the environment only
 	cfg.Jev = jev.FromEnv(e.getenv)

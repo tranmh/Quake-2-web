@@ -81,6 +81,7 @@ lint:
 # ---- AI bot shortcuts. They read .env (TYPESAFE_API_KEY for BACKEND=jev); see docs/AGENT.md. ----
 #   make watch [BACKEND=jev] [BOT_MAPS=demo1]   watch a bot play live in the browser
 #   make bot-run [BACKEND=mock] [MAPS=demo1]    a headless run into $(RUNS), then make replay
+#   make bot-run BACKEND=ollama MODEL=nimble-v3 [OLLAMA_URL=http://127.0.0.1:11434]   a local Ollama model
 #   make replay [RUN=<id>]                      replay a finished run in the browser (default the newest)
 #   make jev-probe / make jev-run [BUDGET=1]    live Jev API checks (costs real money, capped)
 RUNS ?= runs
@@ -89,6 +90,9 @@ MAPS ?=
 BOT_MAPS ?= demo1,demo2,demo3
 BUDGET ?= 1
 RUN ?=
+# BACKEND=ollama only: the model and the server (empty: Q2_OLLAMA_MODEL / OLLAMA_HOST, else nimble-v3 on 127.0.0.1:11434)
+MODEL ?=
+OLLAMA_URL ?=
 export RUNS BACKEND BOT_MAPS RUN
 
 Q2BOT := server/bin/q2bot
@@ -105,6 +109,7 @@ help:
 	@echo "  make replay [RUN=<id>] [RUNS=runs]     replay a finished run in the browser (default: newest)"
 	@echo "  make web                                server + web app, bots page only"
 	@echo "  make bot-run [BACKEND=...] [MAPS=demo1] headless lockstep run into RUNS"
+	@echo "  make bot-run BACKEND=ollama MODEL=nimble-v3 [OLLAMA_URL=...]  the same with a local Ollama model"
 	@echo "  make runs                               list runs with outcome and cost"
 	@echo "  make validate [RUN=<id>]                check traces, demos and run.json"
 	@echo "  make replay-check [RUN=<id>]            re-run the recorded episodes, no API calls"
@@ -128,7 +133,8 @@ web: demo
 	tools/bots-web.sh web
 
 bot-run: demo $(Q2BOT)
-	@$(LOADENV) $(Q2BOT) run -backend $(BACKEND) $(BOT_FLAGS) $(if $(filter jev,$(BACKEND)),-budget-usd $(BUDGET) -on-exhausted stop) -out $(RUNS)
+	@$(LOADENV) $(Q2BOT) run -backend $(BACKEND) $(BOT_FLAGS) $(if $(filter jev,$(BACKEND)),-budget-usd $(BUDGET) -on-exhausted stop) \
+	  $(if $(filter ollama,$(BACKEND)),$(if $(MODEL),-model $(MODEL)) $(if $(OLLAMA_URL),-ollama-url $(OLLAMA_URL))) -out $(RUNS)
 
 runs:
 	@for d in $$(ls -1t $(RUNS) 2>/dev/null); do [ -f "$(RUNS)/$$d/run.json" ] || continue; \

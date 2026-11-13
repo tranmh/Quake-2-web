@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"time"
+
 	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/campaign"
 	"quake2web/server/internal/agent/decide"
@@ -97,11 +99,13 @@ type policyConfig struct {
 	source   decide.Source
 	lockstep bool
 	latency  decide.LatencyModel
-	probe    *levelProbe
-	gate     *budget.Gate
-	pub      *publisher
-	mode     TraceMode
-	stop     func(budget.State)
+	// hangGuard is the lockstep scheduler's WallTimeout (0: its default).
+	hangGuard time.Duration
+	probe     *levelProbe
+	gate      *budget.Gate
+	pub       *publisher
+	mode      TraceMode
+	stop      func(budget.State)
 }
 
 func newPolicy(c policyConfig) (*policy, error) {
@@ -112,7 +116,7 @@ func newPolicy(c policyConfig) (*policy, error) {
 	}
 	sc := decide.SchedulerConfig{Mode: decide.Realtime}
 	if c.lockstep {
-		sc.Mode, sc.SimLatency = decide.Lockstep, c.latency
+		sc.Mode, sc.SimLatency, sc.WallTimeout = decide.Lockstep, c.latency, c.hangGuard
 	}
 	pl, err := decide.NewPipeline(decide.PipelineConfig{
 		Backend:   be,

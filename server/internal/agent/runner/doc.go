@@ -1,8 +1,8 @@
 // Package runner runs the agent headlessly: Episodes episodes of the
 // campaign (or its first visits, Config.Maps) on a session (lockstep for
 // evaluation and CI, InProc for realtime watching), with one decision
-// backend (scripted, jev, mock, replay, or the constant and random
-// ablations), and writes the run directory:
+// backend (scripted, jev, mock, ollama, replay, or the constant and
+// random ablations), and writes the run directory:
 //
 //	<OutDir>/<run id>/
 //	  run.json                 the run summary (metrics.RunSummary, schema q2bot.run/1)

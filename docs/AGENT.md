@@ -280,9 +280,9 @@ runner rejects, and `jev-probe` without a key).
 |---|---|---|
 | `-maps demo1,demo2,demo3` | whole campaign | The campaign's first visits to play: `demo1` alone, or a prefix. |
 | `-campaign dir` | `fixtures/agent/routes` | Route tables (`campaign.json` or its directory). |
-| `-backend` | `scripted` | `scripted`, `jev`, `mock`, `replay`, `constant` (always the same option of each question), `random` (a seeded random option, answered one-hot with full confidence). |
+| `-backend` | `scripted` | `scripted`, `jev`, `mock`, `ollama` (a local model, see below), `replay`, `constant` (always the same option of each question), `random` (a seeded random option, answered one-hot with full confidence). |
 | `-session` | `lockstep` | `lockstep` (virtual clock, deterministic) or `inproc` (realtime host instance). |
-| `-sim-latency 212ms` / `80ms,150ms,300ms` | 212ms for jev/mock, none for local backends, recorded for replay | Simulated backend latency in lockstep: fixed, or drawn per request from the samples by a hash of the seed and the request number. With an inproc mock it delays the fake server's replies. |
+| `-sim-latency 212ms` / `80ms,150ms,300ms` | 212ms for jev/mock/ollama, none for the other local backends, recorded for replay | Simulated backend latency in lockstep: fixed, or drawn per request from the samples by a hash of the seed and the request number. With an inproc mock it delays the fake server's replies. |
 | `-mock-policy` | `noisy` | Mock answers: `scripted` (the scripted policy through the real jev client: a clean model) or `noisy`. `-mock-noise 0.3`, `-mock-swap 0.1` and `-mock-lowconf 0.1` tune the noise (0 turns an effect off). |
 | `-episodes n`, `-seed n` | 1, 1 | Episode i plays with seed+i. |
 | `-skill n` | the campaign's (1) | 0..3. |
@@ -297,12 +297,47 @@ runner rejects, and `jev-probe` without a key).
 | `-max-deaths n`, `-level-timeout d`, `-episode-timeout d` | 5, 20m, 90m | Campaign watchdogs, in game time (`-1`: no death cap). |
 | `-cheats god,notarget` | none | Client commands at every level entry: a test run, not a benchmark. |
 | `-replay-trace file` | | The recording `-backend replay` answers from. |
+| `-model m`, `-ollama-url u`, `-ollama-timeout d` | `$Q2_OLLAMA_MODEL` else `nimble-v3`; `$OLLAMA_HOST` else `http://127.0.0.1:11434`; 10m | `-backend ollama` only: the model, its server, and the time one call may take once sent. |
 | `-pak file`, `-nav-dir dir` | the demo pak, `assets/nav` | Game data and nav cache. |
 | `-json`, `-v` | | Print run.json; copy the episode logs to stderr. |
 
 `-backend jev` reads `TYPESAFE_API_KEY` from the environment (never a flag), along with `JEV_BASE_URL`,
 `JEV_ALLOW_CUSTOM_BASE` and `JEV_MODEL` (default `jev-1.13.0`). Without a key it exits 2. The evaluation runs
 of [AGENT-EVAL.md](AGENT-EVAL.md) use `-session lockstep -skill 1 -seed 1 -max-deaths 25 -level-timeout 60m`.
+
+#### Local models via Ollama
+
+`-backend ollama` (`backend/ollama`) asks a decision model served by [Ollama](https://ollama.com) >= 0.40.4,
+such as `nimble-v3`. Ollama serves jev's own protocol at `POST /v1/systemone`. Decision models have no
+`/api/chat`. The client is the jev client configured for a local server, so the request body is the one jev
+gets (the same lane state and questions) and the answers are decoded the same way, with the model's
+probabilities and confidence. No key is needed:
+
+```bash
+ollama pull nimble-v3                      # or: docker exec <container> ollama pull nimble-v3
+make bot-run BACKEND=ollama MODEL=nimble-v3 [OLLAMA_URL=http://127.0.0.1:11434] [MAPS=demo1]
+# or: server/bin/q2bot run -backend ollama -model nimble-v3 -session lockstep -skill 1 -maps demo1 -out runs
+```
+
+- **No key, no cost.** No `Authorization` header is sent, so `TYPESAFE_API_KEY` never reaches the local
+  server. Every call is priced at 0. `run.json` shows `backend: "ollama"`, the `model`, `cost_usd: 0` and the
+  tokens Ollama reports. It is a model backend, so the provenance gate applies. Errors and logs read
+  `ollama: <class> ...`.
+- **One attempt.** There is no retry, rate limiter, circuit breaker, 429 cooldown, locally refused question
+  set or 800 ms fast-lane cap. Both lanes get `-ollama-timeout` (default 10m) per call. Calls are sent one at
+  a time (as an `OLLAMA_NUM_PARALLEL=1` server answers them), and the timeout counts from a call's send, not
+  from its wait in that queue.
+- **Lockstep latency.** As for jev, a request is due 212 ms of game time after it is asked (`-sim-latency`),
+  and the game waits at that point for the answer however long it takes in wall-clock time. On a CPU, a 9B
+  model takes about 30 s to 2 min per request (3.5 min cold). For this backend the scheduler's wall-clock
+  hang guard (60 s from submission, which would cancel every such call) is raised to 33 times the timeout:
+  more than a full queue of calls that each take the whole timeout. `runner.Config.HangGuard` overrides it.
+  `run.json`'s `latency_ms` is therefore the simulated latency. The real wall-clock cost is logged when the
+  run ends: `ollama <model>: N calls ..., wall latency p50/p95/p99 ...`. This mode measures decision quality,
+  not whether the model is fast enough to play live. A run takes about (requests) x (seconds per request): a
+  demo1 run asks some 600-800 requests.
+- **Realtime.** In an `inproc` session the scheduler's 800 ms/2.5 s deadlines apply, so a slow model only
+  times out and the fallback plays. The bot server (`q2server`) does not offer ollama bots.
 
 ### `q2bot replay -trace runs/<id>/ep-NNN/trace.jsonl.gz [-mode actions|responses] [-strict] [-out dir] [-json]`
 
@@ -426,7 +461,7 @@ runs/<run id>/                      id: <UTC time>-<8 hex>, generated outside ev
 
 **The provenance gate.** A run is model-driven only when all of these hold:
 
-- a model backend (`jev`, `mock`) answered for the whole run, and the budget was not exhausted;
+- a model backend (`jev`, `mock`, `ollama`) answered for the whole run, and the budget was not exhausted;
 - `target`, `fire_policy` and `mode` each acted on the model's answer on at least `MinModelShare` (0.7) of
   their decided ticks;
 - at most `MaxStaleRate` (0.15) of the answers were stale;

@@ -607,6 +607,10 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	}
 	ectx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	hangGuard := be.hangGuard
+	if cfg.HangGuard > 0 {
+		hangGuard = cfg.HangGuard
+	}
 	lat := be.latency
 	if lat == nil {
 		lat = r.latency().model(seed)
@@ -617,7 +621,7 @@ func (r *Runner) episode(ctx context.Context, ep int) (EpisodeReport, error) {
 	}
 	pol, err := newPolicy(policyConfig{
 		backend: be.backend, fallback: scripted.New(scripted.Config{Seed: seed}), source: be.source,
-		lockstep: cfg.Session == SessionLockstep, latency: lat,
+		lockstep: cfg.Session == SessionLockstep, latency: lat, hangGuard: hangGuard,
 		probe: &levelProbe{lib: r.lib, logf: er.log.logf}, gate: gate, pub: er.pub, mode: cfg.Trace,
 		stop: func(st budget.State) {
 			er.log.logf("runner: %s: stopping the run", st.Reason)

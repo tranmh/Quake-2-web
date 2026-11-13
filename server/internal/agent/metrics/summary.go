@@ -71,7 +71,7 @@ type RunSummary struct {
 // the API key is never part of a run's configuration.
 type RunConfig struct {
 	Backend string `json:"backend"`
-	// ModelBackend: the backend queries a model (jev, mock).
+	// ModelBackend: the backend queries a model (jev, mock, ollama).
 	ModelBackend bool   `json:"model_backend"`
 	Model        string `json:"model,omitempty"` // pinned model id
 	Session      string `json:"session"`         // lockstep | inproc

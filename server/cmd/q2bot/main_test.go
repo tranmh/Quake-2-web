@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"quake2web/server/internal/agent/backend/jevtest"
+	"quake2web/server/internal/agent/backend/ollama"
 	"quake2web/server/internal/agent/backend/scripted"
 	"quake2web/server/internal/agent/budget"
 	"quake2web/server/internal/agent/metrics"
@@ -46,6 +47,10 @@ func TestUsage(t *testing.T) {
 		{[]string{"run", "-min-model-share", "2"}, "shares in 0..1"},
 		{[]string{"run", "-backend", "replay"}, "needs -replay-trace"},
 		{[]string{"run", "-backend", "jev"}, "needs TYPESAFE_API_KEY"},
+		{[]string{"run", "-backend", "jev", "-model", "jev-1.13.0"}, "-model: only for -backend ollama"},
+		{[]string{"run", "-ollama-url", "127.0.0.1:11434"}, "-ollama-url: only for -backend ollama"},
+		{[]string{"run", "-backend", "ollama", "-ollama-url", "ftp://h"}, "invalid base URL"},
+		{[]string{"run", "-backend", "ollama", "-ollama-timeout", "-1s"}, "-ollama-timeout -1s"},
 		{[]string{"run", "-api-key", "x"}, "flag provided but not defined"},
 		{[]string{"run", "extra"}, `unexpected argument "extra"`},
 		{[]string{"replay"}, "-trace is required"},
@@ -108,6 +113,29 @@ func TestRunConfig(t *testing.T) {
 	}
 	if cfg, _, _ := runConfig(e, []string{"-campaign", file}); cfg.RoutesDir != dir {
 		t.Fatalf("campaign dir %q", cfg.RoutesDir)
+	}
+}
+
+// TestRunConfigOllama: -backend ollama takes its model and server from
+// the flags, else OLLAMA_HOST and Q2_OLLAMA_MODEL, else the client's
+// defaults, and needs no API key; other backends get no ollama config.
+func TestRunConfigOllama(t *testing.T) {
+	vars := map[string]string{}
+	e := &env{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, getenv: func(k string) string { return vars[k] }}
+	cfg, _, err := runConfig(e, []string{"-backend", "ollama"})
+	if err != nil || cfg.Backend != runner.BackendOllama || !reflect.DeepEqual(cfg.Ollama, ollama.Config{}) {
+		t.Fatalf("defaults %+v %v", cfg.Ollama, err)
+	}
+	vars[ollama.EnvHost], vars[ollama.EnvModel] = "10.1.2.3:11434", "env-model"
+	if cfg, _, err = runConfig(e, []string{"-backend", "ollama"}); err != nil || cfg.Ollama.BaseURL != "10.1.2.3:11434" || cfg.Ollama.Model != "env-model" {
+		t.Fatalf("environment %+v %v", cfg.Ollama, err)
+	}
+	cfg, _, err = runConfig(e, []string{"-backend", "ollama", "-model", "nimble-v3", "-ollama-url", "http://127.0.0.1:9999", "-ollama-timeout", "2m"})
+	if err != nil || cfg.Ollama.BaseURL != "http://127.0.0.1:9999" || cfg.Ollama.Model != "nimble-v3" || cfg.Ollama.Timeout != 2*time.Minute {
+		t.Fatalf("flags %+v %v", cfg.Ollama, err)
+	}
+	if cfg, _, err = runConfig(e, []string{"-backend", "mock"}); err != nil || !reflect.DeepEqual(cfg.Ollama, ollama.Config{}) {
+		t.Fatalf("mock %+v %v", cfg.Ollama, err)
 	}
 }
 

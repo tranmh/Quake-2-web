@@ -16,8 +16,8 @@ const (
 type RunStart struct {
 	Schema  string `json:"schema"` // Schema
 	Backend string `json:"backend"`
-	// ModelBackend is true for backends that query a model (jev, mock),
-	// false for scripted, replay and ablation backends.
+	// ModelBackend is true for backends that query a model (jev, mock,
+	// ollama), false for scripted, replay and ablation backends.
 	ModelBackend bool              `json:"model_backend"`
 	Model        string            `json:"model,omitempty"` // pinned model id
 	Session      string            `json:"session"`         // lockstep | inproc

@@ -347,7 +347,9 @@ func visible(owner int64, public bool, u api.BotUser) bool {
 }
 
 // allowedBackend reports the backends a bot may run with (a replay needs
-// a recorded trace and lockstep: not for live bots).
+// a recorded trace and lockstep: not for live bots; ollama is a local
+// model for lockstep evaluation, which the server has no configuration
+// for and whose calls would miss a realtime bot's deadlines).
 func allowedBackend(name string) bool {
 	switch name {
 	case BackendScripted, BackendJev, BackendMock, BackendConstant, BackendRandom:
