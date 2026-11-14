@@ -61,7 +61,7 @@ func runConfig(e *env, args []string) (runner.Config, runOptions, error) {
 	cheats := fs.String("cheats", "", "client commands sent at every level entry, comma separated (god,notarget: a test run, not a benchmark)")
 	levelTO := fs.Duration("level-timeout", 0, "a level's game-time watchdog (0: 20m)")
 	epTO := fs.Duration("episode-timeout", 0, "an episode's game-time watchdog (0: 90m)")
-	maxDeaths := fs.Int("max-deaths", 0, "deaths allowed per level (0: 5, -1: none)")
+	maxDeaths := fs.Int("max-deaths", 0, "deaths allowed per level (0: 5, -1: the first death ends the run)")
 	replayTrace := fs.String("replay-trace", "", "the recorded trace -backend replay answers from")
 	mockPol := fs.String("mock-policy", runner.MockPolicyNoisy, "-backend mock's answer policy: noisy (the scripted policy's answers perturbed like a model: spread mass, swapped top two, low confidence) or scripted (the scripted policy alone: a clean model); both answer from the lane state the jev client sends")
 	mockNoise := fs.Float64("mock-noise", 0.3, "noisy mock: the largest share of probability mass spread over random options (0: off)")
@@ -297,7 +297,7 @@ func configLine(c *metrics.RunConfig) string {
 	}
 	switch {
 	case c.MaxDeaths < 0:
-		add("no death cap")
+		add("first death ends the run")
 	case c.MaxDeaths > 0:
 		add("max deaths %d", c.MaxDeaths)
 	default:

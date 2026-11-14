@@ -269,7 +269,7 @@ func TestPrintSummaryConfig(t *testing.T) {
 	s.Config = &metrics.RunConfig{Backend: "scripted", MaxDeaths: -1}
 	b.Reset()
 	printSummary(&b, s, "")
-	if want := "  config      no death cap, level timeout default, no demos\n"; !strings.Contains(b.String(), want) {
+	if want := "  config      first death ends the run, level timeout default, no demos\n"; !strings.Contains(b.String(), want) {
 		t.Fatalf("summary lacks\n%s\n%s", want, b.String())
 	}
 	s.Config = nil

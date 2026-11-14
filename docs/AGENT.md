@@ -299,7 +299,7 @@ runner rejects, and `jev-probe` without a key).
 | `-account-qps x` | none | Wall-clock rate limit shared by all of the run's calls (an API account; breaks lockstep determinism). |
 | `-require-complete` | off | Exit 1 unless every episode completes. |
 | `-min-model-share 0.7`, `-max-stale-rate 0.15` | not enforced | The provenance gate: exit 1 unless model-driven. |
-| `-max-deaths n`, `-level-timeout d`, `-episode-timeout d` | 5, 20m, 90m | Campaign watchdogs, in game time (`-1`: no death cap). |
+| `-max-deaths n`, `-level-timeout d`, `-episode-timeout d` | 5, 20m, 90m | Campaign watchdogs, in game time (`-1`: the first death ends the run). |
 | `-cheats god,notarget` | none | Client commands at every level entry: a test run, not a benchmark. |
 | `-replay-trace file` | | The recording `-backend replay` answers from. |
 | `-model m`, `-ollama-url u`, `-ollama-timeout d` | `$Q2_OLLAMA_MODEL` else `nimble-v3`; `$OLLAMA_HOST` else `http://127.0.0.1:11434`; 10m | `-backend ollama` only: the model, its server, and the time one call may take once sent. |
