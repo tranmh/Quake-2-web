@@ -15,6 +15,10 @@ ready for that (`make bot-run BACKEND=ollama MODEL=nimble-v3 OLLAMA_URL=...`, se
 
 A side finding: **live jev played worse than the scripted bot** in these runs.
 
+Update 2026-11-14: nimble-v3 has since played demo1 in lockstep on this CPU, with no deaths. The
+run took 8.1 h at 4 threads, with each answer simulated at 212 ms. See
+[nimble-v3 plays demo1](nimble-v3-demo1-quality.md).
+
 ## What was compared
 
 | | jev | nimble-v3 |
