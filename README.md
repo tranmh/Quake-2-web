@@ -84,7 +84,8 @@ make bot-run BACKEND=ollama MODEL=nimble-v3    # OLLAMA_URL=http://host:11434 fo
 How to run, schemas and metrics: [`docs/AGENT.md`](docs/AGENT.md). Design and fairness rules:
 [ADR-0006](docs/adr/0006-ai-agent.md). Evaluation: [`docs/AGENT-EVAL.md`](docs/AGENT-EVAL.md). Jev compared with
 nimble-v3: [`docs/benchmarks/jev-vs-nimble-v3.md`](docs/benchmarks/jev-vs-nimble-v3.md). nimble-v3 playing demo1:
-[`docs/benchmarks/nimble-v3-demo1-quality.md`](docs/benchmarks/nimble-v3-demo1-quality.md).
+[`docs/benchmarks/nimble-v3-demo1-quality.md`](docs/benchmarks/nimble-v3-demo1-quality.md). tev1:0.8b on the
+whole campaign: [`docs/benchmarks/tev1-0.8b-campaign.md`](docs/benchmarks/tev1-0.8b-campaign.md).
 
 ## How quality is verified
 
